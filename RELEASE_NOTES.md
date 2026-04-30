@@ -19,6 +19,18 @@ You can also go to System Settings > Privacy & Security and click "Open Anyway" 
 
 The app is open-source and its code is publicly available for anyone to inspect.
 
+## [0.1.8] - 2026-04-30
+
+This release expands playback controls, improves autoplay behavior across local and WebDAV media, and makes window state restoration more consistent.
+
+### Highlights
+
+- Added a **Disable Subtitles** option to force subtitles off when opening media.
+- Improved **Auto-Play Next** handling for both **local files** and **WebDAV playback**.
+- Added persistence for **manual window state**.
+- Improved the **Network** panel with current playback highlighting and visible folder path context.
+- Added a quick link to the **Soia subreddit** from Settings.
+
 ## [0.1.7] - 2026-04-24
 
 This release improves macOS compatibility and stream playback reliability.

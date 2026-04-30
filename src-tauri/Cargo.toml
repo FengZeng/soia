@@ -1,6 +1,6 @@
 [package]
 name = "soia"
-version = "0.1.7"
+version = "0.1.8"
 description = "A Tauri App"
 license = "GPL-3.0-only"
 authors = ["FengZeng"]

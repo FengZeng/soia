@@ -1,7 +1,7 @@
 {
   "name": "soia",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "license": "GPL-3.0-only",
   "type": "module",
   "packageManager": "pnpm@10.30.3",

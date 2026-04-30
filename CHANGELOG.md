@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.8] - 2026-04-30
+
+### Features
+
+- Added a Disable Subtitles option to force subtitles off on file load.
+- Added persistent manual window state restoration.
+- Added a link to the Soia subreddit in Settings.
+
+### Improvements
+
+- Added current playback highlighting and folder path context in the Network panel.
+- Added a global video settings toggle with persisted profile support and per-file local adjustments.
+- Default compact mode remains enabled to reduce accidental window decorations.
+- Improved sibling Auto-Play Next behavior for local media and WebDAV media.
+
 ## [0.1.7] - 2026-04-24
 
 ### Features
