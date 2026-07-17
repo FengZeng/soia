@@ -1,6 +1,7 @@
 mod event_loop;
 mod ffi;
 mod handle;
+mod series_match;
 mod ytdlp_resolver;
 mod ytdlp_settings;
 mod stream_https;

@@ -1,12 +1,13 @@
 use super::ffi::{
-    mpv_destroy, mpv_event_id, mpv_format, mpv_free, mpv_get_property_string, mpv_node,
-    mpv_observe_property, mpv_wait_event, MpvEventEndFile, MpvEventProperty,
+    mpv_command, mpv_destroy, mpv_event_id, mpv_format, mpv_free, mpv_get_property_string,
+    mpv_node, mpv_observe_property, mpv_wait_event, MpvEventEndFile, MpvEventProperty,
 };
+use super::series_match::SeriesMatcher;
 use crate::AppState;
 use log::{debug, error, info, trace, warn};
 use serde::Serialize;
 use std::ffi::{c_void, CStr, CString};
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -371,6 +372,29 @@ fn observe_property(client: *mut c_void, id: u64, name: &str, format: mpv_format
     }
 }
 
+unsafe fn apply_carried_track_ids(client: *mut c_void, sid: i64, aid: i64) {
+    let set_cmd = CString::new("set").expect("MPV command contains null byte");
+
+    for (name, value) in [("sid", sid), ("aid", aid)] {
+        let property_name = CString::new(name).expect("MPV property name contains null byte");
+        let property_value = CString::new(value.to_string())
+            .expect("MPV property value contains null byte");
+        let args: [*const c_char; 4] = [
+            set_cmd.as_ptr(),
+            property_name.as_ptr(),
+            property_value.as_ptr(),
+            std::ptr::null(),
+        ];
+        let result = mpv_command(client, args.as_ptr());
+        if result < 0 {
+            warn!(
+                "track carry-over: failed to set {}={} (mpv error {})",
+                name, value, result
+            );
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn sync_render_target_after_file_loaded(app_handle: &AppHandle) {
     let Some(window) = app_handle.get_webview_window("main") else {
@@ -527,6 +551,13 @@ pub(super) fn mpv_event_loop(
     let hwdec_current_name =
         CString::new("hwdec-current").expect("Property name contains null byte");
 
+    let mut series_matcher = SeriesMatcher::new();
+    let mut last_selected_sid: i64 = 0;
+    let mut last_selected_aid: i64 = 0;
+    let mut carried_sid: i64 = 0;
+    let mut carried_aid: i64 = 0;
+    let mut is_current_file_loaded: bool = false;
+
     unsafe {
         observe_property(
             event_client,
@@ -625,6 +656,11 @@ pub(super) fn mpv_event_loop(
                     last_seekable_ranges.clear();
                     last_is_buffering = false;
                     last_download_speed_bps = 0.0;
+                    carried_sid = last_selected_sid;
+                    carried_aid = last_selected_aid;
+                    is_current_file_loaded = false;
+                    last_media_title = None;
+                    series_matcher.on_file_started();
                     if last_hwdec_current.take().is_some() {
                         emit_event(&app_handle, "mpv-hwdec-current", "");
                     }
@@ -657,6 +693,16 @@ pub(super) fn mpv_event_loop(
                     last_download_speed_bps = 0.0;
                     eof_reached.store(false, Ordering::SeqCst);
                     is_playing.store(true, Ordering::Relaxed);
+                    is_current_file_loaded = true;
+                    if let Some(title) = last_media_title.as_deref() {
+                        if series_matcher.on_media_title_change(title) {
+                            apply_carried_track_ids(
+                                event_client,
+                                carried_sid,
+                                carried_aid,
+                            );
+                        }
+                    }
                 }
                 mpv_event_id::MPV_EVENT_PLAYBACK_RESTART => {
                     #[cfg(debug_assertions)]
@@ -852,6 +898,17 @@ pub(super) fn mpv_event_loop(
                                         let title = c_str.to_string_lossy().into_owned();
                                         if last_media_title.as_deref() != Some(title.as_str()) {
                                             last_media_title = Some(title.clone());
+
+                                            if is_current_file_loaded
+                                                && series_matcher.on_media_title_change(&title)
+                                            {
+                                                apply_carried_track_ids(
+                                                    event_client,
+                                                    carried_sid,
+                                                    carried_aid,
+                                                );
+                                            }
+
                                             emit_event(
                                                 &app_handle,
                                                 "mpv-media-title",
@@ -1125,6 +1182,16 @@ pub(super) fn mpv_event_loop(
                                             });
                                         }
                                         if !tracks.is_empty() {
+                                            // Track selected sid/aid for carry-over
+                                            last_selected_sid = tracks.iter()
+                                                .find(|t| t.track_type == "sub" && t.selected)
+                                                .map(|t| t.id)
+                                                .unwrap_or(0);
+                                            last_selected_aid = tracks.iter()
+                                                .find(|t| t.track_type == "audio" && t.selected)
+                                                .map(|t| t.id)
+                                                .unwrap_or(0);
+
                                             emit_event(
                                                 &app_handle,
                                                 "mpv-tracks-update",
