@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod app_bootstrap;
+pub mod protocol;
+mod core;
 mod check_update;
 mod commands;
 mod media_extensions;
@@ -26,6 +28,7 @@ pub struct AppState {
     pub mpv_player: Arc<Mutex<MpvHandle>>,
     pub pending_play_history_entry: Mutex<Option<store::play_history::PlayHistoryEntry>>,
     now_playing: Mutex<NowPlayingState>,
+    pub(crate) playback_state: core::state::PlaybackStatePublisher,
 }
 
 #[derive(Default)]
@@ -464,7 +467,6 @@ pub fn run() {
             commands::network::browse_network_connection,
             commands::network::load_network_file,
             commands::now_playing::set_now_playing_metadata,
-            commands::now_playing::set_now_playing_status,
             commands::now_playing::clear_now_playing,
             commands::now_playing::capture_now_playing_artwork,
             remote_control::get_remote_control_info,

@@ -167,6 +167,44 @@ fn emit_progress(
     );
 }
 
+fn update_snapshot(
+    app_handle: &AppHandle,
+    update: impl FnOnce(&mut crate::core::state::PlaybackSnapshot),
+) {
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    let snapshot = state.playback_state.update(update);
+    emit_event(app_handle, "playback-snapshot", snapshot);
+}
+
+fn publish_playback_snapshot(
+    app_handle: &AppHandle,
+    position: f64,
+    duration: f64,
+    buffered_position: f64,
+    is_playing: bool,
+    is_buffering: bool,
+    title: Option<Option<String>>,
+) {
+    update_snapshot(app_handle, |snapshot| {
+        snapshot.position = sanitize_non_negative_f64(position);
+        snapshot.duration = sanitize_non_negative_f64(duration);
+        snapshot.buffered_position = sanitize_non_negative_f64(buffered_position);
+        snapshot.is_playing = is_playing;
+        snapshot.is_buffering = is_buffering;
+        if let Some(title) = title {
+            snapshot.title = title;
+        }
+    });
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    if let Ok(mut now_playing) = state.now_playing.lock() {
+        now_playing.position = sanitize_non_negative_f64(position);
+        now_playing.is_playing = is_playing;
+    };
+    if let Err(error) = crate::platform::apply_now_playing_status(app_handle, &state) {
+        warn!("MPV Event Loop: failed to apply now-playing status: {error}");
+    }
+}
+
 fn end_file_reason_label(reason: c_int) -> &'static str {
     match reason {
         0 => "eof",
@@ -518,6 +556,10 @@ pub(super) fn mpv_event_loop(
     const DEMUXER_CACHE_STATE_ID: u64 = 11;
     const PAUSED_FOR_CACHE_ID: u64 = 12;
     const HWDEC_CURRENT_ID: u64 = 13;
+    const VOLUME_ID: u64 = 14;
+    const MUTE_ID: u64 = 15;
+    const PLAYLIST_POSITION_ID: u64 = 16;
+    const PLAYLIST_COUNT_ID: u64 = 17;
 
     let mut last_time_pos: f64 = 0.0;
     let mut last_duration: f64 = 0.0;
@@ -632,6 +674,10 @@ pub(super) fn mpv_event_loop(
             "hwdec-current",
             mpv_format::MPV_FORMAT_STRING,
         );
+        observe_property(event_client, VOLUME_ID, "volume", mpv_format::MPV_FORMAT_DOUBLE);
+        observe_property(event_client, MUTE_ID, "mute", mpv_format::MPV_FORMAT_FLAG);
+        observe_property(event_client, PLAYLIST_POSITION_ID, "playlist-pos", mpv_format::MPV_FORMAT_INT64);
+        observe_property(event_client, PLAYLIST_COUNT_ID, "playlist-count", mpv_format::MPV_FORMAT_INT64);
 
         debug!("MPV Event Loop: Started observing properties.");
 
@@ -660,6 +706,15 @@ pub(super) fn mpv_event_loop(
                     carried_aid = last_selected_aid;
                     is_current_file_loaded = false;
                     last_media_title = None;
+                    publish_playback_snapshot(
+                        &app_handle,
+                        last_time_pos,
+                        last_duration,
+                        last_buffered_pos,
+                        !last_is_paused,
+                        last_is_buffering,
+                        None,
+                    );
                     series_matcher.on_file_started();
                     if last_hwdec_current.take().is_some() {
                         emit_event(&app_handle, "mpv-hwdec-current", "");
@@ -884,6 +939,7 @@ pub(super) fn mpv_event_loop(
                                     if last_media_title.is_some() {
                                         last_media_title = None;
                                         emit_event(&app_handle, "mpv-media-title", "");
+                                        update_snapshot(&app_handle, |snapshot| snapshot.title = None);
                                     }
                                 } else {
                                     let title_ptr = mpv_get_property_string(
@@ -913,6 +969,15 @@ pub(super) fn mpv_event_loop(
                                                 &app_handle,
                                                 "mpv-media-title",
                                                 title.clone(),
+                                            );
+                                            publish_playback_snapshot(
+                                                &app_handle,
+                                                last_time_pos,
+                                                last_duration,
+                                                last_buffered_pos,
+                                                !last_is_paused,
+                                                last_is_buffering,
+                                                Some(Some(title)),
                                             );
                                         }
                                         // println!("mpv media title: {}", title);
@@ -1050,6 +1115,27 @@ pub(super) fn mpv_event_loop(
                                     && !value_ptr.is_null()
                                 {
                                     last_is_buffering = *(value_ptr as *mut c_int) != 0;
+                                }
+                            }
+                            VOLUME_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_DOUBLE && !value_ptr.is_null() {
+                                    let volume = *(value_ptr as *mut f64);
+                                    update_snapshot(&app_handle, |snapshot| snapshot.volume = volume.clamp(0.0, 130.0));
+                                }
+                            }
+                            MUTE_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_FLAG && !value_ptr.is_null() {
+                                    update_snapshot(&app_handle, |snapshot| snapshot.muted = *(value_ptr as *mut c_int) != 0);
+                                }
+                            }
+                            PLAYLIST_POSITION_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_INT64 && !value_ptr.is_null() {
+                                    update_snapshot(&app_handle, |snapshot| snapshot.playlist_position = *(value_ptr as *mut i64));
+                                }
+                            }
+                            PLAYLIST_COUNT_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_INT64 && !value_ptr.is_null() {
+                                    update_snapshot(&app_handle, |snapshot| snapshot.playlist_count = *(value_ptr as *mut i64));
                                 }
                             }
                             WIDTH_ID => {
@@ -1215,6 +1301,15 @@ pub(super) fn mpv_event_loop(
                                 last_is_buffering,
                                 last_download_speed_bps,
                             );
+                            publish_playback_snapshot(
+                                &app_handle,
+                                last_time_pos,
+                                last_duration,
+                                last_buffered_pos,
+                                !last_is_paused,
+                                last_is_buffering,
+                                None,
+                            );
                         }
                     }
                 }
@@ -1248,6 +1343,15 @@ pub(super) fn mpv_event_loop(
                     end_file_emitted_for_current_item = reason == 0;
                     is_rendering.store(false, Ordering::Relaxed);
                     wake_lock_manager.update(false);
+                    publish_playback_snapshot(
+                        &app_handle,
+                        last_time_pos,
+                        last_duration,
+                        last_buffered_pos,
+                        false,
+                        false,
+                        None,
+                    );
                 }
                 mpv_event_id::MPV_EVENT_IDLE => {
                     if let Err(error) = crate::flush_pending_play_history_entry(&app_handle) {
@@ -1259,6 +1363,7 @@ pub(super) fn mpv_event_loop(
                     is_rendering.store(false, Ordering::Relaxed);
                     set_render_target_visible(&app_handle, false);
                     wake_lock_manager.update(false);
+                    publish_playback_snapshot(&app_handle, 0.0, 0.0, 0.0, false, false, Some(None));
                 }
                 _ => {}
             }
