@@ -33,6 +33,8 @@ import { usePlaybackNavigation } from "./composables/usePlaybackNavigation";
 import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePersistence";
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
+import { useRemotePlaybackNavigation } from "./composables/useRemotePlaybackNavigation";
+import { useRemotePlaybackSeek } from "./composables/useRemotePlaybackSeek";
 
 const {
     isMacOS,
@@ -143,6 +145,11 @@ const playbackNavigation = usePlaybackNavigation({
     player,
     playlistState,
     playPath,
+});
+
+useRemotePlaybackNavigation({
+    playPreviousTrack: playbackNavigation.playPreviousTrack,
+    playNextTrack: playbackNavigation.playNextTrack,
 });
 
 const isWindowsPlatform =
@@ -258,6 +265,8 @@ const { onSeek, onSeekRelative } = usePlaybackSeekActions({
     isLoading,
     loadingUrl,
 });
+
+useRemotePlaybackSeek({ onSeek, onSeekRelative });
 
 const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
     {

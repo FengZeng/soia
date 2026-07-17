@@ -1,7 +1,7 @@
 use crate::{json_value_to_string, mpv_command_checked, AppState};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, options, post};
@@ -9,23 +9,54 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
+use qrcode::QrCode;
+use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
-use std::sync::OnceLock;
-use tauri::Manager;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager};
 use tokio::net::TcpListener;
 
-const DEFAULT_BIND_ADDR: &str = "127.0.0.1:17668";
+const DEFAULT_BIND_ADDR: &str = "0.0.0.0:17668";
 const BIND_ENV_VAR: &str = "SOIA_REMOTE_CONTROL_ADDR";
 const TOKEN_ENV_VAR: &str = "SOIA_REMOTE_CONTROL_TOKEN";
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
 static REMOTE_CONTROL_ADDR: OnceLock<SocketAddr> = OnceLock::new();
+static REMOTE_CONTROL_TOKEN: OnceLock<String> = OnceLock::new();
+static REMOTE_CONTROL_RUNTIME: OnceLock<Arc<Mutex<RemoteControlRuntime>>> = OnceLock::new();
+const PAIR_CODE_TTL: Duration = Duration::from_secs(60);
+
+struct RemoteControlRuntime {
+    enabled: bool,
+    pair_code: Option<(String, Instant)>,
+    sessions: std::collections::HashSet<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemoteControlInfo {
+    pub url: String,
+    pub qr_svg: String,
+    pub enabled: bool,
+}
 
 #[derive(Clone)]
 struct RemoteControlState {
     app_handle: tauri::AppHandle,
     token: Option<String>,
+    web_root: PathBuf,
+    runtime: Arc<Mutex<RemoteControlRuntime>>,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairRequest { pair_code: String }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemoteControlStatus { enabled: bool, connected_devices: usize }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -39,7 +70,8 @@ enum CommandRequest {
 enum WebSocketClientMessage {
     Command {
         id: Option<String>,
-        args: Vec<serde_json::Value>,
+        action: String,
+        value: Option<f64>,
     },
     Ping {
         id: Option<String>,
@@ -59,9 +91,23 @@ struct CommandResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePlaybackState {
+    title: Option<String>,
+    duration: f64,
+    position: f64,
+    is_playing: bool,
+    volume: f64,
+    muted: bool,
+    playlist_position: i64,
+    playlist_count: i64,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum WebSocketServerMessage {
     Hello { protocol_version: u32 },
+    State { state: RemotePlaybackState },
     Pong { id: Option<String> },
     CommandResult { id: Option<String>, ok: bool },
     Error { id: Option<String>, error: String },
@@ -114,6 +160,13 @@ pub(crate) fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let listener = StdTcpListener::bind(&bind_addr).map_err(|error| error.to_string())?;
     let addr = listener.local_addr().map_err(|error| error.to_string())?;
     let token = resolve_auth_token();
+    let control_runtime = Arc::new(Mutex::new(RemoteControlRuntime {
+        enabled: true,
+        pair_code: None,
+        sessions: Default::default(),
+    }));
+    let _ = REMOTE_CONTROL_RUNTIME.set(control_runtime.clone());
+    let server_token = token.clone();
     validate_bind_addr(addr, token.as_deref())?;
     listener
         .set_nonblocking(true)
@@ -139,7 +192,7 @@ pub(crate) fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
             runtime.block_on(async move {
                 match TcpListener::from_std(listener) {
                     Ok(listener) => {
-                        let router = build_router(app_handle_for_thread, token);
+                        let router = build_router(app_handle_for_thread, server_token, control_runtime);
                         if let Err(error) = axum::serve(listener, router).await {
                             warn!("remote control: server failed: {error}");
                         }
@@ -151,14 +204,20 @@ pub(crate) fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let _ = REMOTE_CONTROL_ADDR.set(addr);
+    let _ = REMOTE_CONTROL_TOKEN.set(token.unwrap_or_default());
     info!("remote control: listening on http://{addr}");
     Ok(())
 }
 
-fn build_router(app_handle: tauri::AppHandle, token: Option<String>) -> Router {
-    let state = RemoteControlState { app_handle, token };
+fn build_router(app_handle: tauri::AppHandle, token: Option<String>, runtime: Arc<Mutex<RemoteControlRuntime>>) -> Router {
+    let web_root = remote_web_root(&app_handle);
+    let state = RemoteControlState { app_handle, token, web_root, runtime };
     Router::new()
         .route("/health", get(health))
+        .route("/remote", get(remote_page))
+        .route("/remote/", get(remote_page))
+        .route("/remote/*path", get(remote_asset))
+        .route("/api/pair", post(pair))
         .route("/mpv/command", post(mpv_command).options(options_handler))
         .route("/ws", get(websocket))
         .route("/*path", options(options_handler))
@@ -168,6 +227,70 @@ fn build_router(app_handle: tauri::AppHandle, token: Option<String>) -> Router {
 
 async fn health() -> Response {
     with_cors(Json(HealthResponse { ok: true }))
+}
+
+async fn remote_page(State(state): State<RemoteControlState>) -> Response {
+    if !is_enabled(&state) { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+    serve_remote_file(&state.web_root, "remote.html")
+}
+
+async fn remote_asset(
+    State(state): State<RemoteControlState>,
+    Path(path): Path<String>,
+) -> Response {
+    if !is_enabled(&state) { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+    if path.split('/').any(|segment| segment == "..") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    serve_remote_file(&state.web_root, &path)
+}
+
+async fn pair(
+    State(state): State<RemoteControlState>,
+    Json(payload): Json<PairRequest>,
+) -> Result<Response, RemoteError> {
+    let session = {
+        let mut runtime = state.runtime.lock().map_err(|error| RemoteError::unauthorized(error.to_string()))?;
+        if !runtime.enabled { return Err(RemoteError::unauthorized("remote control is disabled")); }
+        let valid = runtime.pair_code.take().is_some_and(|(code, expires_at)| {
+            expires_at > Instant::now() && code == payload.pair_code
+        });
+        if !valid { return Err(RemoteError::unauthorized("invalid or expired pairing code")); }
+        let session = uuid::Uuid::now_v7().to_string();
+        runtime.sessions.insert(session.clone());
+        session
+    };
+    let cookie = format!("soia_remote_session={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400");
+    Ok(([(header::SET_COOKIE, cookie)], Json(CommandResponse { ok: true })).into_response())
+}
+
+fn serve_remote_file(web_root: &std::path::Path, name: &str) -> Response {
+    let path = web_root.join(name);
+    let Ok(bytes) = std::fs::read(&path) else {
+        warn!("remote control: web asset unavailable: {}", path.display());
+        return (StatusCode::NOT_FOUND, "Remote web UI is not available in this build.").into_response();
+    };
+    let content_type = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    };
+    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+}
+
+fn remote_web_root(app_handle: &tauri::AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist");
+    }
+    app_handle
+        .path()
+        .resource_dir()
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist"))
+        .join("dist")
 }
 
 async fn options_handler() -> Response {
@@ -189,17 +312,23 @@ async fn mpv_command(
 async fn websocket(
     State(state): State<RemoteControlState>,
     headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    match authorize_headers(&state, &headers) {
+    let session = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(remote_session_from_cookie)
+        .map(str::to_owned);
+    match authorize(&state, &headers, query.get("token").map(String::as_str)) {
         Ok(()) => upgrade
-            .on_upgrade(move |socket| handle_websocket(socket, state))
+            .on_upgrade(move |socket| handle_websocket(socket, state, session))
             .into_response(),
         Err(error) => error.into_response(),
     }
 }
 
-async fn handle_websocket(socket: WebSocket, state: RemoteControlState) {
+async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
     let hello = WebSocketServerMessage::Hello {
         protocol_version: 1,
@@ -208,7 +337,19 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState) {
         return;
     }
 
-    while let Some(message) = receiver.next().await {
+    if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: remote_playback_state(&state.app_handle) }).await.is_err() {
+        return;
+    }
+    let mut state_interval = tokio::time::interval(std::time::Duration::from_millis(750));
+
+    loop {
+        tokio::select! {
+            _ = state_interval.tick() => {
+                if !is_enabled(&state) || session.as_ref().is_some_and(|session| !is_active_session(&state, session)) { return; }
+                if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: remote_playback_state(&state.app_handle) }).await.is_err() { return; }
+            }
+            message = receiver.next() => {
+        let Some(message) = message else { return; };
         let message = match message {
             Ok(message) => message,
             Err(error) => {
@@ -232,6 +373,8 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState) {
             }
             _ => {}
         }
+            }
+        }
     }
 }
 
@@ -241,8 +384,8 @@ fn handle_websocket_text(
 ) -> WebSocketServerMessage {
     match serde_json::from_str::<WebSocketClientMessage>(text) {
         Ok(WebSocketClientMessage::Ping { id }) => WebSocketServerMessage::Pong { id },
-        Ok(WebSocketClientMessage::Command { id, args }) => {
-            match execute_mpv_command(&state.app_handle, CommandRequest::Object { args }) {
+        Ok(WebSocketClientMessage::Command { id, action, value }) => {
+            match execute_remote_action(&state.app_handle, &action, value) {
                 Ok(()) => WebSocketServerMessage::CommandResult { id, ok: true },
                 Err(error) => WebSocketServerMessage::Error {
                     id,
@@ -290,11 +433,194 @@ fn execute_mpv_command(
     mpv_command_checked(&mpv_guard, &args_str)
 }
 
+fn execute_remote_action(app_handle: &tauri::AppHandle, action: &str, value: Option<f64>) -> Result<(), String> {
+    match action {
+        "previous" => {
+            app_handle
+                .emit("soia-remote-playback-navigation", -1)
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        "next" => {
+            app_handle
+                .emit("soia-remote-playback-navigation", 1)
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        "seek" | "seekRelative" => {
+            let position = if action == "seek" {
+                value.unwrap_or(0.0).max(0.0)
+            } else {
+                value.unwrap_or(0.0).clamp(-600.0, 600.0)
+            };
+            app_handle
+                .emit(
+                    "soia-remote-playback-seek",
+                    serde_json::json!({
+                        "relative": action == "seekRelative",
+                        "position": position,
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let args: Vec<String> = match action {
+        "togglePause" => vec!["cycle".into(), "pause".into()],
+        "setVolume" => vec!["set".into(), "volume".into(), value.unwrap_or(100.0).clamp(0.0, 130.0).to_string()],
+        "toggleMute" => vec!["cycle".into(), "mute".into()],
+        _ => return Err("unsupported remote action".to_string()),
+    };
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    let mpv_guard = state.mpv_player.lock().map_err(|error| error.to_string())?;
+    mpv_command_checked(&mpv_guard, &args_ref)
+}
+
+fn remote_playback_state(app_handle: &tauri::AppHandle) -> RemotePlaybackState {
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    let player = state.mpv_player.lock().ok().map(|mpv| RemotePlayerProperties {
+        volume: mpv.get_property_string("volume").ok().and_then(|value| value.parse().ok()).unwrap_or(100.0),
+        muted: mpv.get_property_string("mute").ok().is_some_and(|value| value == "yes" || value == "true"),
+        playlist_position: mpv.get_property_string("playlist-pos").ok().and_then(|value| value.parse().ok()).unwrap_or(-1),
+        playlist_count: mpv.get_property_string("playlist-count").ok().and_then(|value| value.parse().ok()).unwrap_or(0),
+    }).unwrap_or_default();
+    let snapshot = match state.now_playing.lock() {
+        Ok(now_playing) => RemotePlaybackState {
+            title: now_playing.title.clone(),
+            duration: now_playing.duration.unwrap_or(0.0),
+            position: now_playing.position,
+            is_playing: now_playing.is_playing,
+            volume: player.volume,
+            muted: player.muted,
+            playlist_position: player.playlist_position,
+            playlist_count: player.playlist_count,
+        },
+        Err(error) => {
+            warn!("remote control: failed to read playback state: {error}");
+            RemotePlaybackState { title: None, duration: 0.0, position: 0.0, is_playing: false, volume: player.volume, muted: player.muted, playlist_position: player.playlist_position, playlist_count: player.playlist_count }
+        }
+    };
+    snapshot
+}
+
+#[derive(Default)]
+struct RemotePlayerProperties { volume: f64, muted: bool, playlist_position: i64, playlist_count: i64 }
+
 fn resolve_auth_token() -> Option<String> {
     std::env::var(TOKEN_ENV_VAR)
         .ok()
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
+        .or_else(|| Some(uuid::Uuid::now_v7().to_string()))
+}
+
+#[tauri::command]
+pub(crate) fn get_remote_control_info() -> Result<RemoteControlInfo, String> {
+    let addr = REMOTE_CONTROL_ADDR
+        .get()
+        .ok_or_else(|| "Remote control service is not running".to_string())?;
+    let runtime = remote_runtime()?;
+    let pair_code = {
+        let mut runtime = runtime.lock().map_err(|error| error.to_string())?;
+        if !runtime.enabled { return Err("Web Remote is disabled".to_string()); }
+        let pair_code = uuid::Uuid::now_v7().to_string();
+        runtime.pair_code = Some((pair_code.clone(), Instant::now() + PAIR_CODE_TTL));
+        pair_code
+    };
+    let host = if addr.ip().is_unspecified() { local_network_ip()? } else { addr.ip().to_string() };
+    let url = format!("http://{host}:{}/remote/#pair={pair_code}", addr.port());
+    let qr_svg = QrCode::new(url.as_bytes())
+        .map_err(|error| error.to_string())?
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(220, 220)
+        .dark_color(qrcode::render::svg::Color("#15151b"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    Ok(RemoteControlInfo { url, qr_svg, enabled: true })
+}
+
+#[tauri::command]
+pub(crate) fn get_remote_control_status() -> Result<RemoteControlStatus, String> {
+    let runtime = remote_runtime()?;
+    let runtime = runtime.lock().map_err(|error| error.to_string())?;
+    Ok(RemoteControlStatus { enabled: runtime.enabled, connected_devices: runtime.sessions.len() })
+}
+
+#[tauri::command]
+pub(crate) fn set_remote_control_enabled(enabled: bool) -> Result<RemoteControlStatus, String> {
+    let runtime = remote_runtime()?;
+    let mut runtime = runtime.lock().map_err(|error| error.to_string())?;
+    runtime.enabled = enabled;
+    runtime.pair_code = None;
+    if !enabled { runtime.sessions.clear(); }
+    Ok(RemoteControlStatus { enabled: runtime.enabled, connected_devices: runtime.sessions.len() })
+}
+
+#[tauri::command]
+pub(crate) fn disconnect_remote_control_devices() -> Result<RemoteControlStatus, String> {
+    let runtime = remote_runtime()?;
+    let mut runtime = runtime.lock().map_err(|error| error.to_string())?;
+    runtime.pair_code = None;
+    runtime.sessions.clear();
+    Ok(RemoteControlStatus { enabled: runtime.enabled, connected_devices: 0 })
+}
+
+fn remote_runtime() -> Result<&'static Arc<Mutex<RemoteControlRuntime>>, String> {
+    REMOTE_CONTROL_RUNTIME.get().ok_or_else(|| "Remote control service is not running".to_string())
+}
+
+fn is_enabled(state: &RemoteControlState) -> bool {
+    state.runtime.lock().map(|runtime| runtime.enabled).unwrap_or(false)
+}
+
+fn is_active_session(state: &RemoteControlState, session: &str) -> bool {
+    state.runtime.lock().map(|runtime| runtime.sessions.contains(session)).unwrap_or(false)
+}
+
+fn local_network_ip() -> Result<String, String> {
+    let mut candidates: Vec<(u8, std::net::Ipv4Addr)> = get_if_addrs::get_if_addrs()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|interface| !is_virtual_interface(&interface.name))
+        .filter_map(|interface| match interface.addr {
+            get_if_addrs::IfAddr::V4(address) => Some(address.ip),
+            get_if_addrs::IfAddr::V6(_) => None,
+        })
+        .filter(|ip| is_usable_private_ipv4(*ip))
+        .map(|ip| (private_ip_priority(ip), ip))
+        .collect();
+
+    candidates.sort_by_key(|(priority, ip)| (*priority, *ip));
+    candidates
+        .first()
+        .map(|(_, ip)| ip.to_string())
+        .ok_or_else(|| "No private local network address found".to_string())
+}
+
+fn is_virtual_interface(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["lo", "utun", "tun", "tap", "docker", "vbox", "vmnet", "bridge"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+fn is_usable_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_private()
+        && !ip.is_loopback()
+        && !ip.is_unspecified()
+        && !(ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19))
+}
+
+fn private_ip_priority(ip: std::net::Ipv4Addr) -> u8 {
+    match ip.octets() {
+        [192, 168, ..] => 0,
+        [10, ..] => 1,
+        [172, 16..=31, ..] => 2,
+        _ => 3,
+    }
 }
 
 fn validate_bind_addr(addr: SocketAddr, token: Option<&str>) -> Result<(), String> {
@@ -307,6 +633,15 @@ fn validate_bind_addr(addr: SocketAddr, token: Option<&str>) -> Result<(), Strin
 }
 
 fn authorize_headers(state: &RemoteControlState, headers: &HeaderMap) -> Result<(), RemoteError> {
+    authorize(state, headers, None)
+}
+
+fn authorize(state: &RemoteControlState, headers: &HeaderMap, query_token: Option<&str>) -> Result<(), RemoteError> {
+    if !is_enabled(state) { return Err(RemoteError::unauthorized("remote control is disabled")); }
+    let session = headers.get(header::COOKIE).and_then(|value| value.to_str().ok()).and_then(remote_session_from_cookie);
+    if session.is_some_and(|session| is_active_session(state, session)) {
+        return Ok(());
+    }
     let Some(expected_token) = state.token.as_deref() else {
         return Ok(());
     };
@@ -321,11 +656,15 @@ fn authorize_headers(state: &RemoteControlState, headers: &HeaderMap) -> Result<
                 .and_then(|value| value.to_str().ok())
         });
 
-    if provided_token == Some(expected_token) {
+    if provided_token == Some(expected_token) || query_token == Some(expected_token) {
         Ok(())
     } else {
         Err(RemoteError::unauthorized("missing or invalid remote control token"))
     }
+}
+
+fn remote_session_from_cookie(cookie: &str) -> Option<&str> {
+    cookie.split(';').map(str::trim).find_map(|part| part.strip_prefix("soia_remote_session="))
 }
 
 fn with_cors(response: impl IntoResponse) -> Response {

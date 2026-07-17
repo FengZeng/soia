@@ -7,6 +7,7 @@ const props = defineProps<{
     bufferedPercent: number;
     formatTime: (seconds: number) => string;
     controlsVisible?: boolean;
+    showHoverTooltip?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -151,7 +152,7 @@ onUnmounted(() => {
         @mouseleave="hideHoverTime"
     >
         <div
-            v-if="showHoverTime"
+            v-if="showHoverTime && props.showHoverTooltip !== false"
             class="time-tooltip"
             :style="{ left: hoverPercent + '%' }"
         >

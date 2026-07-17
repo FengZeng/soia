@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useSettingsPanel } from "../composables/useSettingsPanel";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 import {
@@ -96,6 +97,106 @@ const onlineSubtitleTabs = [
 const activeOnlineSubtitleTab = ref<(typeof onlineSubtitleTabs)[number]["id"]>(
     "opensubtitles",
 );
+
+type RemoteControlInfo = { url: string; qrSvg: string };
+type RemoteControlStatus = { enabled: boolean; connectedDevices: number };
+const remoteControlInfo = ref<RemoteControlInfo | null>(null);
+const remoteControlError = ref("");
+const isLoadingRemoteControl = ref(false);
+const remoteControlStatus = ref<RemoteControlStatus | null>(null);
+const isRemoteQrOpen = ref(false);
+const remoteQrSecondsRemaining = ref(60);
+let remoteQrMonitorTimer: number | null = null;
+let remoteQrExpiresAt = 0;
+let remoteQrInitialDeviceCount = 0;
+let isRemoteQrStatusRequestPending = false;
+
+const closeRemoteQrDialog = () => {
+    isRemoteQrOpen.value = false;
+    remoteControlInfo.value = null;
+    if (remoteQrMonitorTimer !== null) {
+        window.clearInterval(remoteQrMonitorTimer);
+        remoteQrMonitorTimer = null;
+    }
+};
+
+const monitorRemoteQr = () => {
+    remoteQrExpiresAt = Date.now() + 60_000;
+    remoteQrSecondsRemaining.value = 60;
+    remoteQrMonitorTimer = window.setInterval(async () => {
+        const remaining = Math.max(0, Math.ceil((remoteQrExpiresAt - Date.now()) / 1000));
+        remoteQrSecondsRemaining.value = remaining;
+        if (remaining <= 0) {
+            closeRemoteQrDialog();
+            return;
+        }
+        if (isRemoteQrStatusRequestPending) return;
+        isRemoteQrStatusRequestPending = true;
+        try {
+            const status = await invoke<RemoteControlStatus>("get_remote_control_status");
+            remoteControlStatus.value = status;
+            if (status.connectedDevices > remoteQrInitialDeviceCount) {
+                closeRemoteQrDialog();
+            }
+        } catch {
+            // Keep the QR visible until it expires if status polling briefly fails.
+        } finally {
+            isRemoteQrStatusRequestPending = false;
+        }
+    }, 500);
+};
+
+const showRemoteControl = async () => {
+    isLoadingRemoteControl.value = true;
+    remoteControlError.value = "";
+    try {
+        closeRemoteQrDialog();
+        const status = await invoke<RemoteControlStatus>("get_remote_control_status");
+        remoteControlStatus.value = status;
+        remoteQrInitialDeviceCount = status.connectedDevices;
+        remoteControlInfo.value = await invoke<RemoteControlInfo>("get_remote_control_info");
+        isRemoteQrOpen.value = true;
+        monitorRemoteQr();
+    } catch (error) {
+        remoteControlError.value = String(error);
+    } finally {
+        isLoadingRemoteControl.value = false;
+    }
+};
+
+const refreshRemoteControlStatus = async () => {
+    remoteControlStatus.value = await invoke<RemoteControlStatus>("get_remote_control_status");
+};
+
+const setRemoteControlEnabled = async (enabled: boolean) => {
+    isLoadingRemoteControl.value = true;
+    try {
+        remoteControlStatus.value = await invoke<RemoteControlStatus>("set_remote_control_enabled", { enabled });
+        closeRemoteQrDialog();
+    } catch (error) {
+        remoteControlError.value = String(error);
+    } finally {
+        isLoadingRemoteControl.value = false;
+    }
+};
+
+const onRemoteControlToggle = (event: Event) => {
+    void setRemoteControlEnabled((event.target as HTMLInputElement).checked);
+};
+
+const disconnectRemoteControlDevices = async () => {
+    try {
+        remoteControlStatus.value = await invoke<RemoteControlStatus>("disconnect_remote_control_devices");
+    } catch (error) {
+        remoteControlError.value = String(error);
+    }
+};
+
+const onRemoteQrKeydown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && isRemoteQrOpen.value) {
+        closeRemoteQrDialog();
+    }
+};
 
 const visibleOnlineSubtitleItems = (group: SettingGroup): SettingItem[] => {
     const activeTab =
@@ -390,15 +491,19 @@ watch(
 );
 
 onMounted(() => {
+    void refreshRemoteControlStatus().catch((error: unknown) => { remoteControlError.value = String(error); });
     document.addEventListener("pointerdown", onDocumentPointerDown);
     document.addEventListener("scroll", updateOpenSelectMenuPosition, true);
     window.addEventListener("resize", updateOpenSelectMenuPosition);
+    window.addEventListener("keydown", onRemoteQrKeydown);
 });
 
 onBeforeUnmount(() => {
     document.removeEventListener("pointerdown", onDocumentPointerDown);
     document.removeEventListener("scroll", updateOpenSelectMenuPosition, true);
     window.removeEventListener("resize", updateOpenSelectMenuPosition);
+    window.removeEventListener("keydown", onRemoteQrKeydown);
+    closeRemoteQrDialog();
 });
 </script>
 
@@ -464,6 +569,100 @@ onBeforeUnmount(() => {
                 </button>
             </div>
         </div>
+        <section class="panel__section panel__remote-control">
+            <div class="panel__remote-shell" :class="{ 'panel__remote-shell--disabled': remoteControlStatus && !remoteControlStatus.enabled }">
+                <div class="panel__remote-header">
+                    <div class="panel__remote-heading">
+                        <span class="panel__remote-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="6.5" y="2.5" width="11" height="19" rx="2.5" />
+                                <path d="M10 5.5h4M10.5 18.5h3" />
+                            </svg>
+                        </span>
+                        <span class="panel__remote-heading-text">
+                            <span class="panel__remote-title">Remote Controller</span>
+                            <span class="panel__remote-copy">Control playback from a phone on the same local network.</span>
+                        </span>
+                    </div>
+                    <label class="panel__toggle panel__remote-toggle">
+                        <input
+                            class="panel__toggle-input"
+                            type="checkbox"
+                            :checked="remoteControlStatus?.enabled === true"
+                            :disabled="isLoadingRemoteControl || !remoteControlStatus"
+                            aria-label="Enable Remote Controller"
+                            @change="onRemoteControlToggle"
+                        />
+                        <span class="panel__toggle-track"><span class="panel__toggle-thumb"></span></span>
+                    </label>
+                </div>
+
+                <div class="panel__remote-toolbar">
+                    <div class="panel__remote-state">
+                        <span class="panel__remote-state-dot" :class="{ 'panel__remote-state-dot--online': remoteControlStatus?.enabled }"></span>
+                        <span>{{ remoteControlStatus?.enabled ? "Available on local network" : "Remote access is off" }}</span>
+                        <span v-if="remoteControlStatus?.connectedDevices" class="panel__remote-device-count">
+                            {{ remoteControlStatus.connectedDevices }} paired
+                        </span>
+                    </div>
+                    <div class="panel__remote-actions">
+                        <button
+                            v-if="remoteControlStatus?.connectedDevices"
+                            class="panel__action panel__action--ghost panel__action--compact"
+                            type="button"
+                            @click="disconnectRemoteControlDevices"
+                        >
+                            Disconnect all
+                        </button>
+                        <button
+                            class="panel__action panel__action--accent panel__remote-pair-button"
+                            type="button"
+                            :disabled="isLoadingRemoteControl || !remoteControlStatus?.enabled"
+                            @click="showRemoteControl"
+                        >
+                            {{ isLoadingRemoteControl ? "Preparing…" : "Show QR Code" }}
+                        </button>
+                    </div>
+                </div>
+
+                <p v-if="remoteControlError" class="panel__remote-error">{{ remoteControlError }}</p>
+            </div>
+        </section>
+        <Teleport to="body">
+            <Transition name="remote-qr-dialog">
+                <div
+                    v-if="isRemoteQrOpen && remoteControlInfo"
+                    class="remote-qr-dialog__backdrop"
+                    @mousedown.self="closeRemoteQrDialog"
+                >
+                    <section
+                        class="remote-qr-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="remote-qr-dialog-title"
+                    >
+                        <button
+                            class="remote-qr-dialog__close"
+                            type="button"
+                            aria-label="Close QR code"
+                            @click="closeRemoteQrDialog"
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                        </button>
+                        <div class="remote-qr-dialog__heading">
+                            <span class="remote-qr-dialog__eyebrow">Remote Controller</span>
+                            <h2 id="remote-qr-dialog-title">Scan to connect</h2>
+                            <p>Use a phone on the same local network.</p>
+                        </div>
+                        <div class="remote-qr-dialog__code" v-html="remoteControlInfo.qrSvg"></div>
+                        <div class="remote-qr-dialog__expiry">
+                            <span class="remote-qr-dialog__timer">{{ remoteQrSecondsRemaining }}</span>
+                            <span>seconds remaining</span>
+                        </div>
+                    </section>
+                </div>
+            </Transition>
+        </Teleport>
         <div v-if="isLoading" class="panel__skeleton">
             <div class="panel__skeleton-row"></div>
             <div class="panel__skeleton-row"></div>
