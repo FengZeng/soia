@@ -128,6 +128,11 @@ jobs:
       - name: Cargo check backend
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml
 
+      - name: Verify generated protocol types
+        run: |
+          cargo run --locked --manifest-path src-tauri/protocol/Cargo.toml --bin generate_protocol_types
+          git diff --exit-code -- src/core-client/generated
+
   macos-smoke-build:
     name: macOS Smoke Build (${{ matrix.runner_label }})
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/ci' && needs.changes.outputs.smoke == 'true' && contains(fromJson('["success","skipped"]'), needs.frontend-check.result) && contains(fromJson('["success","skipped"]'), needs.backend-check.result) }}

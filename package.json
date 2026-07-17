@@ -12,6 +12,8 @@
     "setup:libs:mac:intel": "MPV_TARGET_ARCH=x86_64 node ./scripts/setup_runtime_libs.mjs --platform darwin",
     "postinstall": "pnpm setup:libs",
     "build": "pnpm version:sync && tsc && vite build",
+    "protocol:generate": "cargo run --manifest-path src-tauri/protocol/Cargo.toml --bin generate_protocol_types",
+    "protocol:check": "pnpm protocol:generate && git diff --exit-code -- src/core-client/generated",
     "check:playback-navigation": "node ./scripts/check_playback_navigation.mjs",
     "preview": "vite preview",
     "tauri": "pnpm version:sync && pnpm media:sync && node ./scripts/run_tauri.mjs",
