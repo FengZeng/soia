@@ -200,9 +200,7 @@ fn publish_playback_snapshot(
         now_playing.position = sanitize_non_negative_f64(position);
         now_playing.is_playing = is_playing;
     };
-    if let Err(error) = crate::platform::apply_now_playing_status(app_handle, &state) {
-        warn!("MPV Event Loop: failed to apply now-playing status: {error}");
-    }
+    crate::platform::apply_now_playing_status_async(app_handle);
 }
 
 fn end_file_reason_label(reason: c_int) -> &'static str {

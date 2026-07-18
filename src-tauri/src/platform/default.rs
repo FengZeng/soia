@@ -23,14 +23,6 @@ impl PlatformIntegration for DefaultPlatformIntegration {
         Ok(())
     }
 
-    fn apply_now_playing_status(
-        &self,
-        _app_handle: &tauri::AppHandle,
-        _state: &tauri::State<'_, AppState>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
     fn clear_now_playing_cache(&self, _app_handle: &tauri::AppHandle) -> Result<(), String> {
         Ok(())
     }

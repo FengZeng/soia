@@ -124,6 +124,7 @@ jobs:
           touch src-tauri/libs/mpv/libmpv.2.dylib
           ln -sf libmpv.2.dylib src-tauri/libs/mpv/libmpv.dylib
           touch src-tauri/libs/mpv/libsoia_utils.dylib
+          mkdir -p dist
 
       - name: Cargo check backend
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml

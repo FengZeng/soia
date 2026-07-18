@@ -21,11 +21,6 @@ pub(crate) trait PlatformIntegration: Sync {
         app_handle: &tauri::AppHandle,
         state: &tauri::State<'_, AppState>,
     ) -> Result<(), String>;
-    fn apply_now_playing_status(
-        &self,
-        app_handle: &tauri::AppHandle,
-        state: &tauri::State<'_, AppState>,
-    ) -> Result<(), String>;
     fn clear_now_playing_cache(&self, app_handle: &tauri::AppHandle) -> Result<(), String>;
     fn clear_now_playing_info(&self, app_handle: &tauri::AppHandle) -> Result<(), String>;
     fn set_window_controls_visible(
@@ -73,14 +68,6 @@ impl PlatformIntegration for MacPlatformIntegration {
         state: &tauri::State<'_, AppState>,
     ) -> Result<(), String> {
         macos::apply_now_playing_info(app_handle, state)
-    }
-
-    fn apply_now_playing_status(
-        &self,
-        app_handle: &tauri::AppHandle,
-        state: &tauri::State<'_, AppState>,
-    ) -> Result<(), String> {
-        macos::apply_now_playing_status(app_handle, state)
     }
 
     fn clear_now_playing_cache(&self, app_handle: &tauri::AppHandle) -> Result<(), String> {
@@ -154,11 +141,14 @@ pub(crate) fn apply_now_playing_info(
     platform_integration().apply_now_playing_info(app_handle, state)
 }
 
-pub(crate) fn apply_now_playing_status(
-    app_handle: &tauri::AppHandle,
-    state: &tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    platform_integration().apply_now_playing_status(app_handle, state)
+pub(crate) fn apply_now_playing_status_async(app_handle: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    macos::apply_now_playing_status_async(app_handle);
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle;
+    }
 }
 
 pub(crate) fn clear_now_playing_cache(app_handle: &tauri::AppHandle) -> Result<(), String> {

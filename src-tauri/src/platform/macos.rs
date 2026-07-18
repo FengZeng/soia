@@ -9,8 +9,7 @@ mod imp {
     use std::ffi::c_void;
     use std::ffi::CStr;
     use std::io;
-    use std::sync::mpsc;
-    use std::sync::Mutex;
+    use std::sync::{mpsc, Mutex};
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
     use tauri::{Emitter, Manager};
     use tauri_plugin_opener::OpenerExt;
@@ -75,6 +74,17 @@ mod imp {
         app_handle: tauri::AppHandle,
     }
 
+    struct PendingNowPlayingStatusUpdate {
+        scheduled: bool,
+        dirty: bool,
+    }
+
+    static PENDING_NOW_PLAYING_STATUS_UPDATE: Mutex<PendingNowPlayingStatusUpdate> =
+        Mutex::new(PendingNowPlayingStatusUpdate {
+            scheduled: false,
+            dirty: false,
+        });
+
     extern "C" fn pip_event_on_change(ctx: *mut c_void, enabled: i32) {
         if ctx.is_null() {
             return;
@@ -127,8 +137,8 @@ mod imp {
     fn run_on_main_thread_async(
         app_handle: &tauri::AppHandle,
         task: impl FnOnce() + Send + 'static,
-    ) {
-        let _ = app_handle.clone().run_on_main_thread(task);
+    ) -> bool {
+        app_handle.clone().run_on_main_thread(task).is_ok()
     }
 
     fn run_on_main_thread_sync<T: Send + 'static>(
@@ -254,7 +264,7 @@ mod imp {
     ) {
         let main_thread_handle = app_handle.clone();
         let state_handle = main_thread_handle.clone();
-        run_on_main_thread_async(&main_thread_handle, move || {
+        let _ = run_on_main_thread_async(&main_thread_handle, move || {
             let Some(soia_utils) = soia_utils_ptr(&state_handle) else {
                 return;
             };
@@ -574,31 +584,80 @@ mod imp {
         })
     }
 
-    pub(crate) fn apply_now_playing_status(
-        app_handle: &tauri::AppHandle,
-        state: &tauri::State<'_, AppState>,
-    ) -> Result<(), String> {
-        let NowPlayingPayload {
-            title,
-            duration,
-            position,
-            is_playing,
-            ..
-        } = NowPlayingPayload::from_state(state)?;
-        with_soia_utils_on_main_thread_noop_if_missing(app_handle, move |soia_utils| unsafe {
-            let c_title = std::ffi::CString::new(title).ok();
-            let title_ptr = c_title
-                .as_ref()
-                .map(|v| v.as_ptr())
-                .unwrap_or(std::ptr::null());
-            let _ = soia_utils_apply_now_playing_status_values(
-                soia_utils,
-                title_ptr,
-                duration,
-                position,
-                if is_playing { 1 } else { 0 },
-            );
-        })
+    pub(crate) fn apply_now_playing_status_async(app_handle: &tauri::AppHandle) {
+        let should_schedule = {
+            let mut pending = PENDING_NOW_PLAYING_STATUS_UPDATE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            pending.dirty = true;
+            if pending.scheduled {
+                false
+            } else {
+                pending.scheduled = true;
+                true
+            }
+        };
+        if !should_schedule {
+            return;
+        }
+
+        let state_handle = app_handle.clone();
+        let scheduled = run_on_main_thread_async(app_handle, move || {
+            loop {
+                let should_apply = {
+                    let mut pending = PENDING_NOW_PLAYING_STATUS_UPDATE
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if pending.dirty {
+                        pending.dirty = false;
+                        true
+                    } else {
+                        pending.scheduled = false;
+                        false
+                    }
+                };
+                if !should_apply {
+                    return;
+                }
+
+                let Some(state) = state_handle.try_state::<AppState>() else {
+                    continue;
+                };
+                let Ok(NowPlayingPayload {
+                    title,
+                    duration,
+                    position,
+                    is_playing,
+                    ..
+                }) = NowPlayingPayload::from_state(&state) else {
+                    continue;
+                };
+                let Some(soia_utils) = soia_utils_ptr(&state_handle) else {
+                    continue;
+                };
+                unsafe {
+                    let c_title = std::ffi::CString::new(title).ok();
+                    let title_ptr = c_title
+                        .as_ref()
+                        .map(|value| value.as_ptr())
+                        .unwrap_or(std::ptr::null());
+                    let _ = soia_utils_apply_now_playing_status_values(
+                        soia_utils,
+                        title_ptr,
+                        duration,
+                        position,
+                        if is_playing { 1 } else { 0 },
+                    );
+                }
+            }
+        });
+        if !scheduled {
+            let mut pending = PENDING_NOW_PLAYING_STATUS_UPDATE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            pending.scheduled = false;
+            pending.dirty = false;
+        }
     }
 
     pub(crate) fn clear_now_playing_info(app_handle: &tauri::AppHandle) -> Result<(), String> {
@@ -871,7 +930,7 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub(crate) use imp::{
-    apply_now_playing_info, apply_now_playing_status, apply_window_appearance,
+    apply_now_playing_info, apply_now_playing_status_async, apply_window_appearance,
     cleanup_on_window_close, clear_now_playing_cache, clear_now_playing_info,
     is_native_pip_enabled, pick_media_paths_native, set_native_pip_enabled,
     set_window_controls_visible, set_window_vibrancy_visible, setup,
