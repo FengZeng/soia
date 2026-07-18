@@ -29,6 +29,7 @@ pub struct AppState {
     pub pending_play_history_entry: Mutex<Option<store::play_history::PlayHistoryEntry>>,
     now_playing: Mutex<NowPlayingState>,
     pub(crate) playback_state: core::state::PlaybackStatePublisher,
+    pub(crate) playback_service: core::playback_service::PlaybackService,
 }
 
 #[derive(Default)]
@@ -442,6 +443,7 @@ pub fn run() {
             commands::playback::consume_pending_open_files,
             commands::playback::cycle_pause,
             commands::playback::seek_video,
+            commands::playback::execute_playback_command,
             commands::window::set_window_controls_visible,
             commands::window::apply_window_appearance,
             commands::window::set_window_vibrancy_visible,

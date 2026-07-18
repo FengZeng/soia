@@ -1,4 +1,4 @@
-use crate::{json_value_to_string, mpv_command_checked, protocol::PlaybackSnapshotDto, AppState};
+use crate::{json_value_to_string, mpv_command_checked, protocol::{CommandEnvelopeDto, CommandResultDto, CoreErrorDto, PlaybackSnapshotDto}, AppState};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -69,9 +69,11 @@ enum CommandRequest {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum WebSocketClientMessage {
     Command {
+        envelope: CommandEnvelopeDto,
+    },
+    Navigation {
         id: Option<String>,
         action: String,
-        value: Option<f64>,
     },
     Ping {
         id: Option<String>,
@@ -96,8 +98,9 @@ enum WebSocketServerMessage {
     Hello { protocol_version: u32 },
     State { state: PlaybackSnapshotDto },
     Pong { id: Option<String> },
-    CommandResult { id: Option<String>, ok: bool },
-    Error { id: Option<String>, error: String },
+    CommandResult { result: CommandResultDto },
+    NavigationResult { id: Option<String>, ok: bool },
+    Error { id: Option<String>, error: CoreErrorDto },
 }
 
 #[derive(Serialize)]
@@ -380,18 +383,29 @@ fn handle_websocket_text(
 ) -> WebSocketServerMessage {
     match serde_json::from_str::<WebSocketClientMessage>(text) {
         Ok(WebSocketClientMessage::Ping { id }) => WebSocketServerMessage::Pong { id },
-        Ok(WebSocketClientMessage::Command { id, action, value }) => {
-            match execute_remote_action(&state.app_handle, &action, value) {
-                Ok(()) => WebSocketServerMessage::CommandResult { id, ok: true },
+        Ok(WebSocketClientMessage::Command { envelope }) => {
+            let id = Some(envelope.command_id.clone());
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            match app_state.playback_service.execute(&app_state, envelope) {
+                Ok(result) => WebSocketServerMessage::CommandResult { result },
                 Err(error) => WebSocketServerMessage::Error {
                     id,
                     error,
                 },
             }
         }
+        Ok(WebSocketClientMessage::Navigation { id, action }) => match execute_remote_navigation(&state.app_handle, &action) {
+            Ok(()) => WebSocketServerMessage::NavigationResult { id, ok: true },
+            Err(error) => WebSocketServerMessage::Error {
+                id,
+                error: CoreErrorDto::ExecutionFailed { message: error },
+            },
+        },
         Err(error) => WebSocketServerMessage::Error {
             id: None,
-            error: format!("invalid websocket message: {error}"),
+            error: CoreErrorDto::InvalidCommand {
+                message: format!("invalid websocket message: {error}"),
+            },
         },
     }
 }
@@ -429,7 +443,7 @@ fn execute_mpv_command(
     mpv_command_checked(&mpv_guard, &args_str)
 }
 
-fn execute_remote_action(app_handle: &tauri::AppHandle, action: &str, value: Option<f64>) -> Result<(), String> {
+fn execute_remote_navigation(app_handle: &tauri::AppHandle, action: &str) -> Result<(), String> {
     match action {
         "previous" => {
             app_handle
@@ -443,36 +457,8 @@ fn execute_remote_action(app_handle: &tauri::AppHandle, action: &str, value: Opt
                 .map_err(|error| error.to_string())?;
             return Ok(());
         }
-        "seek" | "seekRelative" => {
-            let position = if action == "seek" {
-                value.unwrap_or(0.0).max(0.0)
-            } else {
-                value.unwrap_or(0.0).clamp(-600.0, 600.0)
-            };
-            app_handle
-                .emit(
-                    "soia-remote-playback-seek",
-                    serde_json::json!({
-                        "relative": action == "seekRelative",
-                        "position": position,
-                    }),
-                )
-                .map_err(|error| error.to_string())?;
-            return Ok(());
-        }
-        _ => {}
+        _ => return Err("unsupported remote navigation action".to_string()),
     }
-
-    let args: Vec<String> = match action {
-        "togglePause" => vec!["cycle".into(), "pause".into()],
-        "setVolume" => vec!["set".into(), "volume".into(), value.unwrap_or(100.0).clamp(0.0, 130.0).to_string()],
-        "toggleMute" => vec!["cycle".into(), "mute".into()],
-        _ => return Err("unsupported remote action".to_string()),
-    };
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let state: tauri::State<'_, AppState> = app_handle.state();
-    let mpv_guard = state.mpv_player.lock().map_err(|error| error.to_string())?;
-    mpv_command_checked(&mpv_guard, &args_ref)
 }
 
 fn resolve_auth_token() -> Option<String> {

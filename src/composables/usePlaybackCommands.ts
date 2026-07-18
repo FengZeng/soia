@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { executePlaybackCommand } from "../core-client/tauriPlaybackClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MEDIA_FILE_EXTENSIONS } from "../constants/media";
 
@@ -7,6 +8,7 @@ type PlayerEffectState = {
     url: string;
   };
   playback: {
+    isPlaying: boolean;
     volume: number;
   };
   window: {
@@ -174,7 +176,10 @@ export const usePlaybackCommands = (
   };
 
   const togglePlayPause = async (): Promise<void> => {
-    await invoke("cycle_pause");
+    await executePlaybackCommand({
+      type: "setPaused",
+      paused: state.playback.isPlaying,
+    });
   };
 
   const toggleFullscreen = async (): Promise<void> => {
@@ -189,7 +194,7 @@ export const usePlaybackCommands = (
   };
 
   const stopPlayback = async (): Promise<void> => {
-    await runMpvCommand(["stop"]);
+    await executePlaybackCommand({ type: "stop" });
   };
 
   const syncFullscreen = async (): Promise<void> => {
@@ -201,11 +206,11 @@ export const usePlaybackCommands = (
   };
 
   const seek = async (position: number): Promise<void> => {
-    await invoke("seek_video", { position });
+    await executePlaybackCommand({ type: "seekAbsolute", position });
   };
 
   const seekRelative = async (position: number): Promise<void> => {
-    await runMpvCommand(["seek", position, "relative"]);
+    await executePlaybackCommand({ type: "seekRelative", seconds: position });
   };
 
   const setLoopFile = async (enabled: boolean): Promise<void> => {
@@ -227,10 +232,7 @@ export const usePlaybackCommands = (
       .catch(() => {})
       .then(async () => {
         if (requestId !== volumeRequestId) return;
-        await invoke("mpv_set_option_string", {
-          name: "volume",
-          value: nextVolume,
-        });
+        await executePlaybackCommand({ type: "setVolume", volume: nextVolume });
       });
     await volumeApplyQueue;
   };

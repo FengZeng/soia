@@ -8,6 +8,14 @@ use crate::{
 };
 
 #[tauri::command]
+pub(crate) fn execute_playback_command(
+    state: tauri::State<'_, AppState>,
+    envelope: crate::protocol::CommandEnvelopeDto,
+) -> Result<crate::protocol::CommandResultDto, crate::protocol::CoreErrorDto> {
+    state.playback_service.execute(&state, envelope)
+}
+
+#[tauri::command]
 pub(crate) fn mpv_run_command(
     state: tauri::State<'_, AppState>,
     args: Vec<serde_json::Value>,
@@ -50,13 +58,20 @@ pub(crate) struct LoadFileResult {
     is_live_playback: bool,
 }
 
-fn resume_playback(mpv_guard: &crate::mpv::MpvHandle) -> Result<(), String> {
-    mpv_command_checked(mpv_guard, &["set", "pause", "no"])
+fn legacy_command_envelope(command: crate::protocol::PlaybackCommandDto) -> crate::protocol::CommandEnvelopeDto {
+    crate::protocol::CommandEnvelopeDto {
+        command_id: uuid::Uuid::now_v7().to_string(),
+        client_id: "legacy-tauri".to_string(),
+        playback_session_id: None,
+        command,
+    }
 }
 
-fn restart_from_beginning_after_eof(mpv_guard: &crate::mpv::MpvHandle) -> Result<(), String> {
-    mpv_command_checked(mpv_guard, &["seek", "0", "absolute", "exact"])?;
-    resume_playback(mpv_guard)
+fn core_error_message(error: crate::protocol::CoreErrorDto) -> String {
+    match error {
+        crate::protocol::CoreErrorDto::InvalidCommand { message }
+        | crate::protocol::CoreErrorDto::ExecutionFailed { message } => message,
+    }
 }
 
 fn escape_mpv_load_option_value(value: &str) -> String {
@@ -112,28 +127,20 @@ pub(crate) async fn load_file(
 
 #[tauri::command]
 pub(crate) fn cycle_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    with_mpv(&state, |mpv_guard| {
-        if mpv_guard.eof_reached() {
-            return restart_from_beginning_after_eof(mpv_guard);
-        }
-
-        mpv_command_checked(mpv_guard, &["cycle", "pause"])
-    })?;
+    let paused = state.playback_state.current().is_playing;
+    state
+        .playback_service
+        .execute(&state, legacy_command_envelope(crate::protocol::PlaybackCommandDto::SetPaused { paused }))
+        .map_err(core_error_message)?;
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn seek_video(state: tauri::State<'_, AppState>, position: f64) -> Result<(), String> {
-    let position_str = position.to_string();
-    with_mpv(&state, |mpv_guard| {
-        mpv_command_checked(mpv_guard, &["seek", &position_str, "absolute"])?;
-
-        if mpv_guard.eof_reached() {
-            resume_playback(mpv_guard)?;
-        }
-
-        Ok(())
-    })?;
+    state
+        .playback_service
+        .execute(&state, legacy_command_envelope(crate::protocol::PlaybackCommandDto::SeekAbsolute { position }))
+        .map_err(core_error_message)?;
     Ok(())
 }
 

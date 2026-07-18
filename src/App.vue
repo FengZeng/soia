@@ -34,7 +34,6 @@ import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePer
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useRemotePlaybackNavigation } from "./composables/useRemotePlaybackNavigation";
-import { useRemotePlaybackSeek } from "./composables/useRemotePlaybackSeek";
 
 const {
     isMacOS,
@@ -265,8 +264,6 @@ const { onSeek, onSeekRelative } = usePlaybackSeekActions({
     isLoading,
     loadingUrl,
 });
-
-useRemotePlaybackSeek({ onSeek, onSeekRelative });
 
 const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
     {

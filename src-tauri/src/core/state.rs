@@ -78,4 +78,8 @@ impl PlaybackStatePublisher {
     pub(crate) fn subscribe(&self) -> watch::Receiver<PlaybackSnapshotDto> {
         self.sender.subscribe()
     }
+
+    pub(crate) fn current(&self) -> PlaybackSnapshotDto {
+        self.sender.borrow().clone()
+    }
 }
