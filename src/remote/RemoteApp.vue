@@ -11,8 +11,16 @@ const error = ref("");
 let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let commandSequence = 0;
-const clientId = crypto.randomUUID();
 const pendingSeek = ref<number | null>(null);
+
+function createClientId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+    }
+    return `remote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+const clientId = createClientId();
 
 let pairCode = new URLSearchParams(window.location.hash.slice(1)).get("pair");
 const canControl = computed(() => connectionState.value === "Connected");
