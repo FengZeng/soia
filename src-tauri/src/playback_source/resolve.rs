@@ -48,6 +48,18 @@ pub(crate) enum ResolvedPlaybackSourceResult {
     },
 }
 
+impl ResolvedPlaybackSourceResult {
+    pub(crate) fn playback_key(&self) -> &str {
+        match self {
+            Self::Local { playback_key, .. }
+            | Self::Webdav { playback_key, .. }
+            | Self::Dlna { playback_key, .. }
+            | Self::Smb { playback_key, .. }
+            | Self::DirectSmb { playback_key, .. } => playback_key,
+        }
+    }
+}
+
 fn is_smb_protocol(protocol: &str) -> bool {
     let normalized = protocol.trim().to_ascii_lowercase();
     normalized == "smb" || normalized == "samba"

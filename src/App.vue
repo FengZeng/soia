@@ -395,6 +395,12 @@ useAppRuntimeBindings({
     onPlaybackRestart,
     onProgress: onProgressWithLivePlaybackUpdate,
     onEndFile,
+    onSourceLoadState: ({ loadingKey, error }) => {
+        if (!error) return;
+        if (loadingKey && loadingKey !== player.state.media.url) return;
+        isLoading.value = false;
+        loadingUrl.value = "";
+    },
     resolveMediaTitle,
     nowPlaying,
     isInfoOpen,

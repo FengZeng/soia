@@ -18,6 +18,9 @@ pub struct PlaybackSnapshotDto {
     pub buffered_position: f64,
     pub is_playing: bool,
     pub is_buffering: bool,
+    pub source_loading: bool,
+    pub source_loading_key: Option<String>,
+    pub source_load_error: Option<String>,
     pub volume: f64,
     pub muted: bool,
     #[ts(type = "number")]

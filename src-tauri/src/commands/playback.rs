@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tauri::Emitter;
 
 use crate::{
     json_value_to_string, mpv_command_checked, mpv_set_option_string_checked, with_mpv, AppState,
@@ -60,6 +61,53 @@ pub(crate) struct LoadPlaybackSourceResult {
     superseded: bool,
 }
 
+fn superseded_load_result() -> LoadPlaybackSourceResult {
+    LoadPlaybackSourceResult {
+        title: None,
+        is_live_playback: false,
+        superseded: true,
+    }
+}
+
+fn publish_source_load_state(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    loading: bool,
+    loading_key: Option<String>,
+    error: Option<String>,
+) {
+    let snapshot = state.playback_state.update(|snapshot| {
+        snapshot.source_loading = loading;
+        snapshot.source_loading_key = loading_key;
+        snapshot.source_load_error = error;
+    });
+    if let Err(error) = app.emit("playback-snapshot", snapshot) {
+        log::warn!("failed to emit source load snapshot: {error}");
+    }
+}
+
+fn source_load_error_or_superseded(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    generation: u64,
+    source_key: &str,
+    error: String,
+) -> Result<LoadPlaybackSourceResult, String> {
+    state
+        .playback_load_coordinator
+        .execute_if_current(generation, || {
+            publish_source_load_state(
+                app,
+                state,
+                false,
+                Some(source_key.to_string()),
+                Some(error.clone()),
+            );
+            Err(error)
+        })
+        .unwrap_or_else(|| Ok(superseded_load_result()))
+}
+
 fn legacy_command_envelope(command: crate::protocol::PlaybackCommandDto) -> crate::protocol::CommandEnvelopeDto {
     crate::protocol::CommandEnvelopeDto {
         command_id: uuid::Uuid::now_v7().to_string(),
@@ -82,27 +130,45 @@ pub(crate) async fn load_playback_source(
     state: tauri::State<'_, AppState>,
     payload: LoadPlaybackSourcePayload,
 ) -> Result<LoadPlaybackSourceResult, String> {
+    let source_key = payload.source.playback_key().to_string();
     let generation = state.playback_load_coordinator.begin();
-    let load_options = crate::core::playback_loading::PlaybackLoadOptions::from_optional(
+    let _ = state
+        .playback_load_coordinator
+        .execute_if_current(generation, || {
+            publish_source_load_state(&app, &state, true, Some(source_key.clone()), None);
+        });
+    let load_options = match crate::core::playback_loading::PlaybackLoadOptions::from_optional(
         payload.resume_position,
         payload.auto_play,
         payload.playback_speed,
-    )?;
+    ) {
+        Ok(options) => options,
+        Err(error) => {
+            return source_load_error_or_superseded(
+                &app,
+                &state,
+                generation,
+                &source_key,
+                error,
+            );
+        }
+    };
     let prepared = match crate::playback_source::load::prepare(&app, payload.source).await {
         Ok(prepared) => prepared,
-        Err(_error) if !state.playback_load_coordinator.is_current(generation) => {
-            return Ok(LoadPlaybackSourceResult {
-                title: None,
-                is_live_playback: false,
-                superseded: true,
-            });
+        Err(error) => {
+            return source_load_error_or_superseded(
+                &app,
+                &state,
+                generation,
+                &source_key,
+                error,
+            );
         }
-        Err(error) => return Err(error),
     };
     let load_result = state
         .playback_load_coordinator
         .execute_if_current(generation, || {
-            with_mpv(&state, |mpv_guard| {
+            match with_mpv(&state, |mpv_guard| {
                 crate::core::playback_loading::load(
                     mpv_guard,
                     &prepared.playback_url,
@@ -110,21 +176,28 @@ pub(crate) async fn load_playback_source(
                     load_options,
                     prepared.command_mode,
                 )
-            })
+            }) {
+                Ok(()) => {
+                    publish_source_load_state(&app, &state, false, None, None);
+                    Ok(LoadPlaybackSourceResult {
+                        title: prepared.title,
+                        is_live_playback: prepared.is_live_playback,
+                        superseded: false,
+                    })
+                }
+                Err(error) => {
+                    publish_source_load_state(
+                        &app,
+                        &state,
+                        false,
+                        Some(source_key),
+                        Some(error.clone()),
+                    );
+                    Err(error)
+                }
+            }
         });
-    let Some(load_result) = load_result else {
-        return Ok(LoadPlaybackSourceResult {
-            title: None,
-            is_live_playback: false,
-            superseded: true,
-        });
-    };
-    load_result?;
-    Ok(LoadPlaybackSourceResult {
-        title: prepared.title,
-        is_live_playback: prepared.is_live_playback,
-        superseded: false,
-    })
+    load_result.unwrap_or_else(|| Ok(superseded_load_result()))
 }
 
 #[tauri::command]

@@ -5,7 +5,7 @@ import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnaps
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
 import type { CoreErrorDto } from "../core-client/generated/CoreErrorDto";
 
-const state = ref<PlaybackSnapshotDto>({ protocolVersion: 1, revision: 0, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
+const state = ref<PlaybackSnapshotDto>({ protocolVersion: 1, revision: 0, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
 const connectionState = ref("Connecting…");
 const error = ref("");
 let socket: WebSocket | null = null;
@@ -65,6 +65,11 @@ async function connect() {
                 pendingSeek.value = null;
             }
             state.value = nextState;
+            if (nextState.sourceLoadError) {
+                error.value = nextState.sourceLoadError;
+            } else if (nextState.sourceLoading) {
+                error.value = "";
+            }
         }
         if (message.type === "error") {
             pendingSeek.value = null;
@@ -131,6 +136,7 @@ onBeforeUnmount(() => { socket?.close(); if (reconnectTimer) window.clearTimeout
             />
             <div class="time"><span>{{ formatTime(displayedPosition) }}</span><span>{{ durationLabel }}</span></div>
             <p v-if="pendingSeek !== null" class="seeking">Seeking…</p>
+            <p v-else-if="state.sourceLoading" class="seeking">Preparing source…</p>
             <div class="transport">
                 <button :disabled="!canControl" aria-label="Previous item" @click="navigation('previous')">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18V6h2v12H6zm3.5-6 8.5 6V6l-8.5 6z" /></svg>

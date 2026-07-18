@@ -19,6 +19,12 @@ type EndFilePayload = {
     reason?: string;
 };
 
+type SourceLoadState = {
+    loading: boolean;
+    loadingKey: string | null;
+    error: string | null;
+};
+
 type PlayerEventApi = Pick<PlayerApi, "state" | "syncFullscreen">;
 
 type TracksApi = {
@@ -46,6 +52,7 @@ type AppEventBindingsOptions = {
     onPlaybackRestart?: () => void | Promise<void>;
     onProgress?: (payload: ProgressPayload) => void;
     onEndFile?: (payload: EndFilePayload) => void | Promise<void>;
+    onSourceLoadState?: (state: SourceLoadState) => void;
     resolveMediaTitle?: (incomingTitle: string, currentUrl: string) => string;
 };
 
@@ -66,6 +73,7 @@ export const useAppEventBindings = ({
     onPlaybackRestart,
     onProgress,
     onEndFile,
+    onSourceLoadState,
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
     // 事件监听器引用
@@ -114,6 +122,11 @@ export const useAppEventBindings = ({
                 player.state.playback.isBuffering =
                     event.payload.isBuffering === true;
                 player.state.playback.volume = event.payload.volume;
+                onSourceLoadState?.({
+                    loading: event.payload.sourceLoading,
+                    loadingKey: event.payload.sourceLoadingKey,
+                    error: event.payload.sourceLoadError,
+                });
                 if (onProgress) {
                     onProgress({
                         time_pos: event.payload.position,
