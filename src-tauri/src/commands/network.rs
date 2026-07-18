@@ -1,11 +1,7 @@
 use crate::network::types::{
-    BrowseNetworkPayload, DiscoverNetworkPayload, DiscoveredNetworkConnection,
-    LoadNetworkFilePayload, NetworkBrowseResult,
+    BrowseNetworkPayload, DiscoverNetworkPayload, DiscoveredNetworkConnection, NetworkBrowseResult,
 };
 use crate::store::network_connection_store::NetworkConnectionRecord;
-use crate::{
-    with_mpv, AppState,
-};
 
 #[tauri::command]
 pub(crate) fn list_network_connections(
@@ -67,53 +63,4 @@ pub(crate) async fn browse_network_connection(
         &payload.mode,
     );
     crate::network::service::browse_connection(&app, &connection, &path, protocol).await
-}
-
-#[tauri::command]
-pub(crate) fn load_network_file(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    payload: LoadNetworkFilePayload,
-) -> Result<(), String> {
-    let connection = crate::store::network_connection_store::find_network_connection(
-        &app,
-        &payload.connection_id,
-    )?;
-    let mut playback_url = crate::network::service::resolve_network_playback_url(
-        &connection,
-        payload.protocol.as_deref(),
-        &payload.file_path,
-    )?;
-    let protocol = payload
-        .protocol
-        .as_deref()
-        .unwrap_or(&connection.protocol)
-        .trim()
-        .to_ascii_lowercase();
-    playback_url = crate::mpv::prepare_network_stream_url(
-        &protocol,
-        &playback_url,
-        &connection.username,
-        &connection.password,
-    )?;
-    if let Some(rewritten) = crate::mpv::rewrite_network_stream_url(&protocol, &playback_url) {
-        playback_url = rewritten;
-    }
-    let load_options = crate::core::playback_loading::PlaybackLoadOptions::from_optional(
-        payload.resume_position,
-        payload.auto_play,
-        payload.playback_speed,
-    )?;
-
-    with_mpv(&state, |mpv_guard| {
-        crate::core::playback_loading::load(
-            mpv_guard,
-            &playback_url,
-            &[],
-            load_options,
-            crate::core::playback_loading::LoadCommandMode::Direct,
-        )
-    })?;
-
-    Ok(())
 }

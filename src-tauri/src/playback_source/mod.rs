@@ -1,4 +1,5 @@
 pub(crate) mod adjacency;
+pub(crate) mod load;
 mod display;
 mod key;
 pub(crate) mod resolve;

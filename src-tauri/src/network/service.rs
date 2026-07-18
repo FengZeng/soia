@@ -355,7 +355,7 @@ pub(crate) fn resolve_network_playback_url(
             crate::network::protocols::smb::build_playback_url(connection, file_path)
         }
         BrowseProtocol::Dlna => Err(format!(
-            "load_network_file does not support DLNA playback URL resolution for {}",
+            "network playback URL resolution does not support DLNA connection {}",
             connection.protocol
         )),
     }

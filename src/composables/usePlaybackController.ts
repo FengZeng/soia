@@ -6,6 +6,7 @@ import {
   type ParsedPlaylistFile,
   type ResolvedYoutubePlaylist,
 } from "./usePlaybackCommands";
+import type { ResolvedPlaybackSource } from "../utils/resolvePlaybackSource";
 import { formatTime } from "../utils/formatTime";
 
 type PlayerState = {
@@ -38,25 +39,12 @@ export type PlayerApi = {
   bufferedPercent: { value: number };
   isUrlModified: { value: boolean };
   formatTime: (seconds: number) => string;
-  loadFile: (
+  loadPlaybackSource: (
+    source: ResolvedPlaybackSource,
     resumePosition?: number,
     autoPlay?: boolean,
     playbackSpeed?: number,
   ) => Promise<LoadFileResult>;
-  loadFileAtUrl: (
-    url: string,
-    resumePosition?: number,
-    autoPlay?: boolean,
-    playbackSpeed?: number,
-  ) => Promise<LoadFileResult>;
-  loadNetworkFile: (
-    protocol: string,
-    connectionId: string,
-    filePath: string,
-    resumePosition?: number,
-    autoPlay?: boolean,
-    playbackSpeed?: number,
-  ) => Promise<void>;
   parsePlaylistFile: (path: string) => Promise<ParsedPlaylistFile>;
   parsePlaylistSource: (source: string) => Promise<ParsedPlaylistFile>;
   resolveYoutubePlaylist: (url: string) => Promise<ResolvedYoutubePlaylist>;

@@ -45,14 +45,3 @@ pub(crate) struct BrowseNetworkPayload {
     pub protocol: Option<String>,
     pub path: Option<String>,
 }
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LoadNetworkFilePayload {
-    pub connection_id: String,
-    pub protocol: Option<String>,
-    pub file_path: String,
-    pub resume_position: Option<f64>,
-    pub auto_play: Option<bool>,
-    pub playback_speed: Option<f64>,
-}

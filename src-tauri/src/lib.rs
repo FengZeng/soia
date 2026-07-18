@@ -399,7 +399,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::playback::mpv_run_command,
             commands::playback::mpv_set_option_string,
-            commands::playback::load_file,
+            commands::playback::load_playback_source,
             commands::platform::pick_media_paths_native,
             commands::platform::pick_paths_native,
             commands::playback::consume_pending_open_files,
@@ -429,7 +429,6 @@ pub fn run() {
             commands::network::delete_network_connection,
             commands::network::discover_network_connections,
             commands::network::browse_network_connection,
-            commands::network::load_network_file,
             commands::now_playing::set_now_playing_metadata,
             commands::now_playing::clear_now_playing,
             commands::now_playing::capture_now_playing_artwork,

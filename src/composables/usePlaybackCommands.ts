@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { executePlaybackCommand } from "../core-client/tauriPlaybackClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MEDIA_FILE_EXTENSIONS } from "../constants/media";
+import type { ResolvedPlaybackSource } from "../utils/resolvePlaybackSource";
 
 type PlayerEffectState = {
   media: {
@@ -83,28 +84,14 @@ export const usePlaybackCommands = (
     return normalizeSelectedPaths(selected);
   };
 
-  const loadFile = async (
+  const loadPlaybackSource = async (
+    source: ResolvedPlaybackSource,
     resumePosition?: number,
     autoPlay = true,
     playbackSpeed = 1.0,
   ): Promise<LoadFileResult> => {
-    if (state.media.url) {
-      return await invoke<LoadFileResult>("load_file", {
-        payload: { url: state.media.url, resumePosition, autoPlay, playbackSpeed },
-      });
-    }
-    return {};
-  };
-
-  const loadFileAtUrl = async (
-    url: string,
-    resumePosition?: number,
-    autoPlay = true,
-    playbackSpeed = 1.0,
-  ): Promise<LoadFileResult> => {
-    if (!url) return {};
-    return await invoke<LoadFileResult>("load_file", {
-      payload: { url, resumePosition, autoPlay, playbackSpeed },
+    return await invoke<LoadFileResult>("load_playback_source", {
+      payload: { source, resumePosition, autoPlay, playbackSpeed },
     });
   };
 
@@ -115,26 +102,6 @@ export const usePlaybackCommands = (
 
   const pickFiles = async (): Promise<string[]> => {
     return openVideoPicker();
-  };
-
-  const loadNetworkFile = async (
-    protocol: string,
-    connectionId: string,
-    filePath: string,
-    resumePosition?: number,
-    autoPlay = true,
-    playbackSpeed = 1.0,
-  ): Promise<void> => {
-    await invoke("load_network_file", {
-      payload: {
-        protocol,
-        connectionId,
-        filePath,
-        resumePosition,
-        autoPlay,
-        playbackSpeed,
-      },
-    });
   };
 
   const normalizeParsedPlaylistFile = (
@@ -250,9 +217,7 @@ export const usePlaybackCommands = (
   };
 
   return {
-    loadFile,
-    loadFileAtUrl,
-    loadNetworkFile,
+    loadPlaybackSource,
     parsePlaylistFile,
     parsePlaylistSource,
     resolveYoutubePlaylist,

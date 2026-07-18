@@ -414,10 +414,11 @@ export const usePlaybackFlow = ({
     };
 
     const playLocalPath = async (
-        path: string,
+        source: Extract<ResolvedPlaybackSource, { kind: "local" }>,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
+        const path = source.filePath;
         if (!path) return;
         await triggerPlaybackIntent();
         await finalizeCurrentPlayback();
@@ -436,7 +437,8 @@ export const usePlaybackFlow = ({
         const preferences = playbackPreferences.value;
         const resumePosition = getStartPosition(path, preferences.skipIntroSeconds);
         pendingResume.value = { url: path, position: resumePosition };
-        const result = await player.loadFile(
+        const result = await player.loadPlaybackSource(
+            source,
             resumePosition,
             preferences.autoPlay,
             currentSpeed.value,
@@ -448,12 +450,11 @@ export const usePlaybackFlow = ({
     };
 
     const playWebdav = async (
-        connectionId: string,
-        filePath: string,
-        playbackKey: string,
+        source: Extract<ResolvedPlaybackSource, { kind: "webdav" }>,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
+        const playbackKey = source.playbackKey;
         await triggerPlaybackIntent();
         await finalizeCurrentPlayback();
         hideHistory.value = true;
@@ -483,10 +484,8 @@ export const usePlaybackFlow = ({
             url: playbackKey,
             position: resumePosition,
         };
-        await player.loadNetworkFile(
-            "webdav",
-            connectionId,
-            filePath,
+        await player.loadPlaybackSource(
+            source,
             resumePosition,
             preferences.autoPlay,
             currentSpeed.value,
@@ -494,11 +493,11 @@ export const usePlaybackFlow = ({
     };
 
     const playDlna = async (
-        resourceUrl: string,
-        playbackKey: string,
+        source: Extract<ResolvedPlaybackSource, { kind: "dlna" }>,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
+        const playbackKey = source.playbackKey;
         await triggerPlaybackIntent();
         await finalizeCurrentPlayback();
         hideHistory.value = true;
@@ -528,8 +527,8 @@ export const usePlaybackFlow = ({
             url: playbackKey,
             position: resumePosition,
         };
-        const result = await player.loadFileAtUrl(
-            resourceUrl,
+        const result = await player.loadPlaybackSource(
+            source,
             resumePosition,
             preferences.autoPlay,
             currentSpeed.value,
@@ -541,10 +540,11 @@ export const usePlaybackFlow = ({
     };
 
     const playSmb = async (
-        url: string,
+        source: Extract<ResolvedPlaybackSource, { kind: "directSmb" }>,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
+        const url = source.resourceUrl;
         await triggerPlaybackIntent();
         await finalizeCurrentPlayback();
         hideHistory.value = true;
@@ -568,8 +568,8 @@ export const usePlaybackFlow = ({
             url,
             position: resumePosition,
         };
-        const result = await player.loadFileAtUrl(
-            url,
+        const result = await player.loadPlaybackSource(
+            source,
             resumePosition,
             preferences.autoPlay,
             currentSpeed.value,
@@ -581,12 +581,11 @@ export const usePlaybackFlow = ({
     };
 
     const playSmbNetwork = async (
-        connectionId: string,
-        filePath: string,
-        playbackKey: string,
+        source: Extract<ResolvedPlaybackSource, { kind: "smb" }>,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
+        const playbackKey = source.playbackKey;
         await triggerPlaybackIntent();
         await finalizeCurrentPlayback();
         hideHistory.value = true;
@@ -616,10 +615,8 @@ export const usePlaybackFlow = ({
             url: playbackKey,
             position: resumePosition,
         };
-        await player.loadNetworkFile(
-            "smb",
-            connectionId,
-            filePath,
+        await player.loadPlaybackSource(
+            source,
             resumePosition,
             preferences.autoPlay,
             currentSpeed.value,
@@ -632,39 +629,22 @@ export const usePlaybackFlow = ({
         options?: PlaybackRequestOptions,
     ) => {
         if (source.kind === "webdav") {
-            await playWebdav(
-                source.connectionId,
-                source.filePath,
-                source.playbackKey,
-                preferredTitle,
-                options,
-            );
+            await playWebdav(source, preferredTitle, options);
             return;
         }
         if (source.kind === "dlna") {
-            await playDlna(
-                source.resourceUrl,
-                source.playbackKey,
-                preferredTitle,
-                options,
-            );
+            await playDlna(source, preferredTitle, options);
             return;
         }
         if (source.kind === "smb") {
-            await playSmbNetwork(
-                source.connectionId,
-                source.filePath,
-                source.playbackKey,
-                preferredTitle,
-                options,
-            );
+            await playSmbNetwork(source, preferredTitle, options);
             return;
         }
         if (source.kind === "directSmb") {
-            await playSmb(source.resourceUrl, preferredTitle, options);
+            await playSmb(source, preferredTitle, options);
             return;
         }
-        await playLocalPath(source.filePath, preferredTitle, options);
+        await playLocalPath(source, preferredTitle, options);
     };
 
     const playPath = async (

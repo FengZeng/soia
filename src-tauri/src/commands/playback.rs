@@ -45,8 +45,8 @@ pub(crate) fn mpv_set_option_string(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LoadFilePayload {
-    url: String,
+pub(crate) struct LoadPlaybackSourcePayload {
+    source: crate::playback_source::resolve::ResolvedPlaybackSourceResult,
     resume_position: Option<f64>,
     auto_play: Option<bool>,
     playback_speed: Option<f64>,
@@ -54,7 +54,7 @@ pub(crate) struct LoadFilePayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LoadFileResult {
+pub(crate) struct LoadPlaybackSourceResult {
     title: Option<String>,
     is_live_playback: bool,
 }
@@ -75,55 +75,30 @@ fn core_error_message(error: crate::protocol::CoreErrorDto) -> String {
     }
 }
 
-fn escape_mpv_load_option_value(value: &str) -> String {
-    value.replace('\\', "\\\\").replace(',', "\\,")
-}
-
 #[tauri::command]
-pub(crate) async fn load_file(
+pub(crate) async fn load_playback_source(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    payload: LoadFilePayload,
-) -> Result<LoadFileResult, String> {
+    payload: LoadPlaybackSourcePayload,
+) -> Result<LoadPlaybackSourceResult, String> {
     let load_options = crate::core::playback_loading::PlaybackLoadOptions::from_optional(
         payload.resume_position,
         payload.auto_play,
         payload.playback_speed,
     )?;
-    let resolved_media = crate::mpv::try_resolve_with_ytdlp(&app, &payload.url).await;
-    let playback_url = resolved_media
-        .as_ref()
-        .map(|resolved| resolved.url.as_str())
-        .unwrap_or(&payload.url);
-    let mut mpv_load_options = vec![];
-    if let Some(title) = resolved_media
-        .as_ref()
-        .and_then(|resolved| resolved.title.as_deref())
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-    {
-        mpv_load_options.push(format!(
-            "force-media-title={}",
-            escape_mpv_load_option_value(title)
-        ));
-    }
+    let prepared = crate::playback_source::load::prepare(&app, payload.source).await?;
     with_mpv(&state, |mpv_guard| {
         crate::core::playback_loading::load(
             mpv_guard,
-            playback_url,
-            &mpv_load_options,
+            &prepared.playback_url,
+            &prepared.mpv_load_options,
             load_options,
-            crate::core::playback_loading::LoadCommandMode::Normal,
+            prepared.command_mode,
         )
     })?;
-    Ok(LoadFileResult {
-        title: resolved_media
-            .as_ref()
-            .and_then(|resolved| resolved.title.clone()),
-        is_live_playback: resolved_media
-            .as_ref()
-            .map(|resolved| resolved.is_live_playback)
-            .unwrap_or(false),
+    Ok(LoadPlaybackSourceResult {
+        title: prepared.title,
+        is_live_playback: prepared.is_live_playback,
     })
 }
 

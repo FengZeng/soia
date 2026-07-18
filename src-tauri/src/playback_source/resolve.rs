@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::display::{display_path_for_smb, display_path_for_webdav};
 use super::key::{
@@ -14,7 +14,7 @@ struct SmbPlaybackSourceResult {
     playback_key: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum ResolvedPlaybackSourceResult {
     Local {
