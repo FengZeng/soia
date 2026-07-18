@@ -54,4 +54,5 @@ pub(crate) struct LoadNetworkFilePayload {
     pub file_path: String,
     pub resume_position: Option<f64>,
     pub auto_play: Option<bool>,
+    pub playback_speed: Option<f64>,
 }

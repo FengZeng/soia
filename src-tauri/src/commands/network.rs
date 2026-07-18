@@ -4,7 +4,6 @@ use crate::network::types::{
 };
 use crate::store::network_connection_store::NetworkConnectionRecord;
 use crate::{
-    build_load_file_command_args_with_options, mpv_command_checked, mpv_command_direct_checked,
     with_mpv, AppState,
 };
 
@@ -85,7 +84,6 @@ pub(crate) fn load_network_file(
         payload.protocol.as_deref(),
         &payload.file_path,
     )?;
-    let load_options: Vec<String> = Vec::new();
     let protocol = payload
         .protocol
         .as_deref()
@@ -101,19 +99,20 @@ pub(crate) fn load_network_file(
     if let Some(rewritten) = crate::mpv::rewrite_network_stream_url(&protocol, &playback_url) {
         playback_url = rewritten;
     }
-    let resume_position = payload.resume_position.unwrap_or(0.0);
-    let auto_play = payload.auto_play.unwrap_or(true);
-    let command_args =
-        build_load_file_command_args_with_options(&playback_url, resume_position, &load_options);
-    let command_refs: Vec<&str> = command_args.iter().map(String::as_str).collect();
+    let load_options = crate::core::playback_loading::PlaybackLoadOptions::from_optional(
+        payload.resume_position,
+        payload.auto_play,
+        payload.playback_speed,
+    )?;
 
     with_mpv(&state, |mpv_guard| {
-        mpv_command_direct_checked(mpv_guard, &command_refs)?;
-        mpv_command_checked(
+        crate::core::playback_loading::load(
             mpv_guard,
-            &["set", "pause", if auto_play { "no" } else { "yes" }],
-        )?;
-        Ok(())
+            &playback_url,
+            &[],
+            load_options,
+            crate::core::playback_loading::LoadCommandMode::Direct,
+        )
     })?;
 
     Ok(())

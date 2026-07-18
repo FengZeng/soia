@@ -38,11 +38,16 @@ export type PlayerApi = {
   bufferedPercent: { value: number };
   isUrlModified: { value: boolean };
   formatTime: (seconds: number) => string;
-  loadFile: (resumePosition?: number, autoPlay?: boolean) => Promise<LoadFileResult>;
+  loadFile: (
+    resumePosition?: number,
+    autoPlay?: boolean,
+    playbackSpeed?: number,
+  ) => Promise<LoadFileResult>;
   loadFileAtUrl: (
     url: string,
     resumePosition?: number,
     autoPlay?: boolean,
+    playbackSpeed?: number,
   ) => Promise<LoadFileResult>;
   loadNetworkFile: (
     protocol: string,
@@ -50,6 +55,7 @@ export type PlayerApi = {
     filePath: string,
     resumePosition?: number,
     autoPlay?: boolean,
+    playbackSpeed?: number,
   ) => Promise<void>;
   parsePlaylistFile: (path: string) => Promise<ParsedPlaylistFile>;
   parsePlaylistSource: (source: string) => Promise<ParsedPlaylistFile>;

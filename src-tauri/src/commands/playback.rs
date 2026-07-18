@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::{
-    build_load_file_command_args_with_options, json_value_to_string, mpv_command_checked,
-    mpv_set_option_string_checked, with_mpv, AppState, OpenFileState,
+    json_value_to_string, mpv_command_checked, mpv_set_option_string_checked, with_mpv, AppState,
+    OpenFileState,
 };
 
 #[tauri::command]
@@ -49,6 +49,7 @@ pub(crate) struct LoadFilePayload {
     url: String,
     resume_position: Option<f64>,
     auto_play: Option<bool>,
+    playback_speed: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -84,35 +85,36 @@ pub(crate) async fn load_file(
     state: tauri::State<'_, AppState>,
     payload: LoadFilePayload,
 ) -> Result<LoadFileResult, String> {
-    let resume_position = payload.resume_position.unwrap_or(0.0);
-    let auto_play = payload.auto_play.unwrap_or(true);
+    let load_options = crate::core::playback_loading::PlaybackLoadOptions::from_optional(
+        payload.resume_position,
+        payload.auto_play,
+        payload.playback_speed,
+    )?;
     let resolved_media = crate::mpv::try_resolve_with_ytdlp(&app, &payload.url).await;
     let playback_url = resolved_media
         .as_ref()
         .map(|resolved| resolved.url.as_str())
         .unwrap_or(&payload.url);
-    let mut load_options = vec![];
+    let mut mpv_load_options = vec![];
     if let Some(title) = resolved_media
         .as_ref()
         .and_then(|resolved| resolved.title.as_deref())
         .map(str::trim)
         .filter(|title| !title.is_empty())
     {
-        load_options.push(format!(
+        mpv_load_options.push(format!(
             "force-media-title={}",
             escape_mpv_load_option_value(title)
         ));
     }
-    let command_args =
-        build_load_file_command_args_with_options(&playback_url, resume_position, &load_options);
-    let command_refs: Vec<&str> = command_args.iter().map(String::as_str).collect();
     with_mpv(&state, |mpv_guard| {
-        mpv_command_checked(mpv_guard, &command_refs)?;
-        mpv_command_checked(
+        crate::core::playback_loading::load(
             mpv_guard,
-            &["set", "pause", if auto_play { "no" } else { "yes" }],
-        )?;
-        Ok(())
+            playback_url,
+            &mpv_load_options,
+            load_options,
+            crate::core::playback_loading::LoadCommandMode::Normal,
+        )
     })?;
     Ok(LoadFileResult {
         title: resolved_media

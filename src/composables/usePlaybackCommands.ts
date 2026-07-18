@@ -86,10 +86,11 @@ export const usePlaybackCommands = (
   const loadFile = async (
     resumePosition?: number,
     autoPlay = true,
+    playbackSpeed = 1.0,
   ): Promise<LoadFileResult> => {
     if (state.media.url) {
       return await invoke<LoadFileResult>("load_file", {
-        payload: { url: state.media.url, resumePosition, autoPlay },
+        payload: { url: state.media.url, resumePosition, autoPlay, playbackSpeed },
       });
     }
     return {};
@@ -99,10 +100,11 @@ export const usePlaybackCommands = (
     url: string,
     resumePosition?: number,
     autoPlay = true,
+    playbackSpeed = 1.0,
   ): Promise<LoadFileResult> => {
     if (!url) return {};
     return await invoke<LoadFileResult>("load_file", {
-      payload: { url, resumePosition, autoPlay },
+      payload: { url, resumePosition, autoPlay, playbackSpeed },
     });
   };
 
@@ -121,6 +123,7 @@ export const usePlaybackCommands = (
     filePath: string,
     resumePosition?: number,
     autoPlay = true,
+    playbackSpeed = 1.0,
   ): Promise<void> => {
     await invoke("load_network_file", {
       payload: {
@@ -129,6 +132,7 @@ export const usePlaybackCommands = (
         filePath,
         resumePosition,
         autoPlay,
+        playbackSpeed,
       },
     });
   };

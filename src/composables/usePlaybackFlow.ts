@@ -434,10 +434,13 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        await player.setPlaybackSpeed(currentSpeed.value);
         const resumePosition = getStartPosition(path, preferences.skipIntroSeconds);
         pendingResume.value = { url: path, position: resumePosition };
-        const result = await player.loadFile(resumePosition, preferences.autoPlay);
+        const result = await player.loadFile(
+            resumePosition,
+            preferences.autoPlay,
+            currentSpeed.value,
+        );
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
         }
@@ -472,7 +475,6 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        await player.setPlaybackSpeed(currentSpeed.value);
         const resumePosition = getStartPosition(
             playbackKey,
             preferences.skipIntroSeconds,
@@ -487,6 +489,7 @@ export const usePlaybackFlow = ({
             filePath,
             resumePosition,
             preferences.autoPlay,
+            currentSpeed.value,
         );
     };
 
@@ -517,7 +520,6 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        await player.setPlaybackSpeed(currentSpeed.value);
         const resumePosition = getStartPosition(
             playbackKey,
             preferences.skipIntroSeconds,
@@ -530,6 +532,7 @@ export const usePlaybackFlow = ({
             resourceUrl,
             resumePosition,
             preferences.autoPlay,
+            currentSpeed.value,
         );
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
@@ -557,7 +560,6 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        await player.setPlaybackSpeed(currentSpeed.value);
         const resumePosition = getStartPosition(
             url,
             preferences.skipIntroSeconds,
@@ -570,6 +572,7 @@ export const usePlaybackFlow = ({
             url,
             resumePosition,
             preferences.autoPlay,
+            currentSpeed.value,
         );
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
@@ -605,7 +608,6 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        await player.setPlaybackSpeed(currentSpeed.value);
         const resumePosition = getStartPosition(
             playbackKey,
             preferences.skipIntroSeconds,
@@ -620,6 +622,7 @@ export const usePlaybackFlow = ({
             filePath,
             resumePosition,
             preferences.autoPlay,
+            currentSpeed.value,
         );
     };
 
