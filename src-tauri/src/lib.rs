@@ -30,6 +30,7 @@ pub struct AppState {
     now_playing: Mutex<NowPlayingState>,
     pub(crate) playback_state: core::state::PlaybackStatePublisher,
     pub(crate) playback_service: core::playback_service::PlaybackService,
+    pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
 }
 
 #[derive(Default)]

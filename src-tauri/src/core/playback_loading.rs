@@ -1,4 +1,49 @@
 use crate::{mpv_command_checked, mpv_command_direct_checked, mpv_set_option_string_checked};
+use std::sync::Mutex;
+
+pub(crate) struct PlaybackLoadCoordinator {
+    generation: Mutex<u64>,
+}
+
+impl PlaybackLoadCoordinator {
+    pub(crate) fn new() -> Self {
+        Self {
+            generation: Mutex::new(0),
+        }
+    }
+
+    pub(crate) fn begin(&self) -> u64 {
+        let mut generation = self
+            .generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *generation = generation.saturating_add(1);
+        *generation
+    }
+
+    pub(crate) fn is_current(&self, generation: u64) -> bool {
+        *self
+            .generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == generation
+    }
+
+    pub(crate) fn execute_if_current<T>(
+        &self,
+        generation: u64,
+        execute: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let current = self
+            .generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *current != generation {
+            return None;
+        }
+        Some(execute())
+    }
+}
 
 fn build_load_file_command_args(
     url: &str,
@@ -84,7 +129,7 @@ pub(crate) fn load(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_load_file_command_args, PlaybackLoadOptions};
+    use super::{build_load_file_command_args, PlaybackLoadCoordinator, PlaybackLoadOptions};
 
     #[test]
     fn load_options_apply_defaults() {
@@ -121,5 +166,16 @@ mod tests {
                 "start=42.5,force-media-title=Example",
             ],
         );
+    }
+
+    #[test]
+    fn newer_load_generation_supersedes_older_work() {
+        let coordinator = PlaybackLoadCoordinator::new();
+        let first = coordinator.begin();
+        let second = coordinator.begin();
+
+        assert!(!coordinator.is_current(first));
+        assert!(coordinator.execute_if_current(first, || true).is_none());
+        assert_eq!(coordinator.execute_if_current(second, || 42), Some(42));
     }
 }

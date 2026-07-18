@@ -57,6 +57,7 @@ pub(crate) struct LoadPlaybackSourcePayload {
 pub(crate) struct LoadPlaybackSourceResult {
     title: Option<String>,
     is_live_playback: bool,
+    superseded: bool,
 }
 
 fn legacy_command_envelope(command: crate::protocol::PlaybackCommandDto) -> crate::protocol::CommandEnvelopeDto {
@@ -81,24 +82,48 @@ pub(crate) async fn load_playback_source(
     state: tauri::State<'_, AppState>,
     payload: LoadPlaybackSourcePayload,
 ) -> Result<LoadPlaybackSourceResult, String> {
+    let generation = state.playback_load_coordinator.begin();
     let load_options = crate::core::playback_loading::PlaybackLoadOptions::from_optional(
         payload.resume_position,
         payload.auto_play,
         payload.playback_speed,
     )?;
-    let prepared = crate::playback_source::load::prepare(&app, payload.source).await?;
-    with_mpv(&state, |mpv_guard| {
-        crate::core::playback_loading::load(
-            mpv_guard,
-            &prepared.playback_url,
-            &prepared.mpv_load_options,
-            load_options,
-            prepared.command_mode,
-        )
-    })?;
+    let prepared = match crate::playback_source::load::prepare(&app, payload.source).await {
+        Ok(prepared) => prepared,
+        Err(_error) if !state.playback_load_coordinator.is_current(generation) => {
+            return Ok(LoadPlaybackSourceResult {
+                title: None,
+                is_live_playback: false,
+                superseded: true,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let load_result = state
+        .playback_load_coordinator
+        .execute_if_current(generation, || {
+            with_mpv(&state, |mpv_guard| {
+                crate::core::playback_loading::load(
+                    mpv_guard,
+                    &prepared.playback_url,
+                    &prepared.mpv_load_options,
+                    load_options,
+                    prepared.command_mode,
+                )
+            })
+        });
+    let Some(load_result) = load_result else {
+        return Ok(LoadPlaybackSourceResult {
+            title: None,
+            is_live_playback: false,
+            superseded: true,
+        });
+    };
+    load_result?;
     Ok(LoadPlaybackSourceResult {
         title: prepared.title,
         is_live_playback: prepared.is_live_playback,
+        superseded: false,
     })
 }
 

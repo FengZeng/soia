@@ -443,6 +443,7 @@ export const usePlaybackFlow = ({
             preferences.autoPlay,
             currentSpeed.value,
         );
+        if (result.superseded) return;
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
         }
@@ -533,6 +534,7 @@ export const usePlaybackFlow = ({
             preferences.autoPlay,
             currentSpeed.value,
         );
+        if (result.superseded) return;
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
         }
@@ -574,6 +576,7 @@ export const usePlaybackFlow = ({
             preferences.autoPlay,
             currentSpeed.value,
         );
+        if (result.superseded) return;
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
         }

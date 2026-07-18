@@ -86,6 +86,7 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
     let mpv_player = Arc::new(Mutex::new(mpv_player_handle));
     AppState {
         playback_service: crate::core::playback_service::PlaybackService::new(mpv_player.clone()),
+        playback_load_coordinator: crate::core::playback_loading::PlaybackLoadCoordinator::new(),
         mpv_player,
         pending_play_history_entry: Mutex::new(None),
         now_playing: Mutex::new(Default::default()),

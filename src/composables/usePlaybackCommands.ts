@@ -43,6 +43,7 @@ export type ParsedPlaylistFile = {
 export type LoadFileResult = {
   title?: string | null;
   isLivePlayback?: boolean;
+  superseded?: boolean;
 };
 
 export type ResolvedYoutubePlaylistEntry = {
