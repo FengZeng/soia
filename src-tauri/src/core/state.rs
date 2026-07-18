@@ -1,5 +1,6 @@
 use crate::protocol::{PlaybackSnapshotDto, PROTOCOL_VERSION};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// Internal Core state. It intentionally remains separate from the protocol DTO so
@@ -56,6 +57,7 @@ impl PlaybackSnapshot {
 
 pub(crate) struct PlaybackStatePublisher {
     state: Mutex<(u64, PlaybackSnapshot)>,
+    changed: Condvar,
     sender: watch::Sender<PlaybackSnapshotDto>,
 }
 
@@ -63,7 +65,11 @@ impl PlaybackStatePublisher {
     pub(crate) fn new() -> Self {
         let initial = PlaybackSnapshot::default().to_dto(0);
         let (sender, _) = watch::channel(initial);
-        Self { state: Mutex::new((0, PlaybackSnapshot::default())), sender }
+        Self {
+            state: Mutex::new((0, PlaybackSnapshot::default())),
+            changed: Condvar::new(),
+            sender,
+        }
     }
 
     pub(crate) fn update(&self, update: impl FnOnce(&mut PlaybackSnapshot)) -> PlaybackSnapshotDto {
@@ -72,6 +78,7 @@ impl PlaybackStatePublisher {
         state.0 = state.0.saturating_add(1);
         let snapshot = state.1.to_dto(state.0);
         self.sender.send_replace(snapshot.clone());
+        self.changed.notify_all();
         snapshot
     }
 
@@ -81,5 +88,29 @@ impl PlaybackStatePublisher {
 
     pub(crate) fn current(&self) -> PlaybackSnapshotDto {
         self.sender.borrow().clone()
+    }
+
+    pub(crate) fn wait_for_revision_after(
+        &self,
+        revision: u64,
+        timeout: Duration,
+    ) -> Option<PlaybackSnapshotDto> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.0 <= revision {
+            let remaining = deadline.checked_duration_since(Instant::now())?;
+            let (next_state, result) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if result.timed_out() && state.0 <= revision {
+                return None;
+            }
+        }
+        Some(state.1.to_dto(state.0))
     }
 }

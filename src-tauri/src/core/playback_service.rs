@@ -1,14 +1,27 @@
 use crate::protocol::{CommandEnvelopeDto, CommandResultDto, CoreErrorDto, PlaybackCommandDto};
 use crate::{mpv_command_checked, AppState};
+use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
+const COMMAND_RESULT_CACHE_CAPACITY: usize = 256;
+const SNAPSHOT_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct PlaybackService {
     sender: mpsc::Sender<QueuedCommand>,
+    admission_lock: Mutex<()>,
+    recent_results: Mutex<VecDeque<CachedCommandResult>>,
 }
 
 struct QueuedCommand {
     command: PlaybackCommandDto,
     response: mpsc::SyncSender<Result<(), CoreErrorDto>>,
+}
+
+struct CachedCommandResult {
+    client_id: String,
+    command_id: String,
+    result: Result<CommandResultDto, CoreErrorDto>,
 }
 
 impl PlaybackService {
@@ -26,7 +39,11 @@ impl PlaybackService {
                 }
             })
             .expect("failed to start playback command queue");
-        Self { sender }
+        Self {
+            sender,
+            admission_lock: Mutex::new(()),
+            recent_results: Mutex::new(VecDeque::with_capacity(COMMAND_RESULT_CACHE_CAPACITY)),
+        }
     }
 
     pub(crate) fn execute(
@@ -37,17 +54,83 @@ impl PlaybackService {
         if envelope.command_id.trim().is_empty() || envelope.client_id.trim().is_empty() {
             return Err(CoreErrorDto::InvalidCommand { message: "commandId and clientId are required".into() });
         }
+        let _admission_lock = self
+            .admission_lock
+            .lock()
+            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?;
+        if let Some(result) = self.cached_result(&envelope.client_id, &envelope.command_id) {
+            return result;
+        }
+
+        let command = envelope.command.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
         self.sender
             .send(QueuedCommand { command: envelope.command, response: response_sender })
             .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?;
-        response_receiver
+        let result = response_receiver
             .recv()
-            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })??;
-        Ok(CommandResultDto {
-            command_id: envelope.command_id,
-            applied_snapshot_revision: state.playback_state.current().revision,
-        })
+            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?
+            .and_then(|()| {
+                let observed_snapshot = state.playback_state.current();
+                if command_is_already_reflected(&command, &observed_snapshot) {
+                    return Ok(CommandResultDto {
+                        command_id: envelope.command_id.clone(),
+                        applied_snapshot_revision: observed_snapshot.revision,
+                    });
+                }
+                let snapshot = state
+                    .playback_state
+                    .wait_for_revision_after(observed_snapshot.revision, SNAPSHOT_UPDATE_TIMEOUT)
+                    .ok_or_else(|| CoreErrorDto::ExecutionFailed {
+                        message: "timed out waiting for mpv playback state update".into(),
+                    })?;
+                Ok(CommandResultDto {
+                    command_id: envelope.command_id.clone(),
+                    applied_snapshot_revision: snapshot.revision,
+                })
+            });
+        self.cache_result(&envelope.client_id, &envelope.command_id, result.clone());
+        result
+    }
+
+    fn cached_result(&self, client_id: &str, command_id: &str) -> Option<Result<CommandResultDto, CoreErrorDto>> {
+        self.recent_results
+            .lock()
+            .ok()?
+            .iter()
+            .find(|entry| entry.client_id == client_id && entry.command_id == command_id)
+            .map(|entry| entry.result.clone())
+    }
+
+    fn cache_result(
+        &self,
+        client_id: &str,
+        command_id: &str,
+        result: Result<CommandResultDto, CoreErrorDto>,
+    ) {
+        let Ok(mut cache) = self.recent_results.lock() else {
+            return;
+        };
+        if cache.len() == COMMAND_RESULT_CACHE_CAPACITY {
+            cache.pop_front();
+        }
+        cache.push_back(CachedCommandResult {
+            client_id: client_id.to_string(),
+            command_id: command_id.to_string(),
+            result,
+        });
+    }
+}
+
+fn command_is_already_reflected(command: &PlaybackCommandDto, snapshot: &crate::protocol::PlaybackSnapshotDto) -> bool {
+    match command {
+        PlaybackCommandDto::SetPaused { paused } => snapshot.is_playing == !paused,
+        PlaybackCommandDto::SeekAbsolute { position } => {
+            (snapshot.position - position).abs() < 0.25
+        }
+        PlaybackCommandDto::SetVolume { volume } => (snapshot.volume - volume.clamp(0.0, 130.0)).abs() < 0.25,
+        PlaybackCommandDto::SetMuted { muted } => snapshot.muted == *muted,
+        PlaybackCommandDto::SeekRelative { .. } | PlaybackCommandDto::Stop => false,
     }
 }
 
