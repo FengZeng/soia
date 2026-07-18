@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use ts_rs::TS;
 
@@ -26,11 +26,50 @@ pub struct PlaybackSnapshotDto {
     pub playlist_count: i64,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolVersionDto {
     pub version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PlaybackCommandDto {
+    SetPaused { paused: bool },
+    SeekAbsolute { position: f64 },
+    SeekRelative { seconds: f64 },
+    SetVolume { volume: f64 },
+    SetMuted { muted: bool },
+    Stop,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandEnvelopeDto {
+    pub command_id: String,
+    pub client_id: String,
+    pub playback_session_id: Option<String>,
+    pub command: PlaybackCommandDto,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandResultDto {
+    pub command_id: String,
+    #[ts(type = "number")]
+    pub applied_snapshot_revision: u64,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CoreErrorDto {
+    InvalidCommand { message: String },
+    ExecutionFailed { message: String },
 }
 
 pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
@@ -38,5 +77,9 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(|error| error.to_string())?;
     PlaybackSnapshotDto::export_all_to(path).map_err(|error| error.to_string())?;
     ProtocolVersionDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PlaybackCommandDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CommandEnvelopeDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CommandResultDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CoreErrorDto::export_all_to(path).map_err(|error| error.to_string())?;
     Ok(())
 }
