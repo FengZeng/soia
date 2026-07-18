@@ -1,19 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import SeekBar from "../components/player-controls/SeekBar.vue";
+import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 
-type RemoteState = {
-    title: string | null;
-    duration: number;
-    position: number;
-    isPlaying: boolean;
-    volume: number;
-    muted: boolean;
-    playlistPosition: number;
-    playlistCount: number;
-};
-
-const state = ref<RemoteState>({ title: null, duration: 0, position: 0, isPlaying: false, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
+const state = ref<PlaybackSnapshotDto>({ protocolVersion: 1, revision: 0, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
 const connectionState = ref("Connecting…");
 const error = ref("");
 let socket: WebSocket | null = null;
@@ -56,9 +46,10 @@ async function connect() {
     socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
     socket.onopen = () => { connectionState.value = "Connected"; error.value = ""; };
     socket.onmessage = (event) => {
-        const message = JSON.parse(event.data) as { type: string; state?: RemoteState; error?: string };
+        const message = JSON.parse(event.data) as { type: string; state?: PlaybackSnapshotDto; error?: string };
         if (message.type === "state" && message.state) {
             const nextState = message.state;
+            if (nextState.revision < state.value.revision) return;
             if (pendingSeek.value !== null && Math.abs(nextState.position - pendingSeek.value) < 2) {
                 pendingSeek.value = null;
             }

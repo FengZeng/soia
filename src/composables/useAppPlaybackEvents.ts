@@ -51,8 +51,6 @@ type HistoryApi = {
 
 type NowPlayingApi = {
     updateNowPlayingMetadata: () => void;
-    updateNowPlayingStatus: (position?: number) => void;
-    maybeUpdateNowPlayingStatus: (position?: number) => void;
     captureNowPlayingArtwork: () => Promise<void>;
 };
 
@@ -128,7 +126,6 @@ export const useAppPlaybackEvents = ({
         isLoading.value = false;
         loadingUrl.value = "";
         nowPlaying.updateNowPlayingMetadata();
-        nowPlaying.updateNowPlayingStatus(resumePosition);
         void nowPlaying.captureNowPlayingArtwork();
         void tracks.applyExternalTracksForUrl(
             player.state.media.url,
@@ -149,7 +146,6 @@ export const useAppPlaybackEvents = ({
             player.state.media.title,
             player.state.media.isLivePlayback,
         );
-        nowPlaying.maybeUpdateNowPlayingStatus(payload.time_pos);
     };
 
     const onEndFile = ({ reason }: EndFilePayload) => {

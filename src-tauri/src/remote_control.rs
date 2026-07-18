@@ -1,4 +1,4 @@
-use crate::{json_value_to_string, mpv_command_checked, AppState};
+use crate::{json_value_to_string, mpv_command_checked, protocol::PlaybackSnapshotDto, AppState};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -91,23 +91,10 @@ struct CommandResponse {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RemotePlaybackState {
-    title: Option<String>,
-    duration: f64,
-    position: f64,
-    is_playing: bool,
-    volume: f64,
-    muted: bool,
-    playlist_position: i64,
-    playlist_count: i64,
-}
-
-#[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum WebSocketServerMessage {
     Hello { protocol_version: u32 },
-    State { state: RemotePlaybackState },
+    State { state: PlaybackSnapshotDto },
     Pong { id: Option<String> },
     CommandResult { id: Option<String>, ok: bool },
     Error { id: Option<String>, error: String },
@@ -337,16 +324,22 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session:
         return;
     }
 
-    if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: remote_playback_state(&state.app_handle) }).await.is_err() {
+    let mut playback_state = {
+        let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+        app_state.playback_state.subscribe()
+    };
+    let initial_state = playback_state.borrow().clone();
+    if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: initial_state }).await.is_err() {
         return;
     }
-    let mut state_interval = tokio::time::interval(std::time::Duration::from_millis(750));
 
     loop {
         tokio::select! {
-            _ = state_interval.tick() => {
-                if !is_enabled(&state) || session.as_ref().is_some_and(|session| !is_active_session(&state, session)) { return; }
-                if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: remote_playback_state(&state.app_handle) }).await.is_err() { return; }
+            changed = playback_state.changed() => {
+                if changed.is_err() { return; }
+                if !is_connection_active(&state, session.as_deref()) { return; }
+                let next_state = playback_state.borrow().clone();
+                if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: next_state }).await.is_err() { return; }
             }
             message = receiver.next() => {
         let Some(message) = message else { return; };
@@ -360,6 +353,9 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session:
 
         match message {
             Message::Text(text) => {
+                if !is_connection_active(&state, session.as_deref()) {
+                    return;
+                }
                 let response = handle_websocket_text(&state, &text);
                 if send_ws_json(&mut sender, &response).await.is_err() {
                     return;
@@ -479,36 +475,6 @@ fn execute_remote_action(app_handle: &tauri::AppHandle, action: &str, value: Opt
     mpv_command_checked(&mpv_guard, &args_ref)
 }
 
-fn remote_playback_state(app_handle: &tauri::AppHandle) -> RemotePlaybackState {
-    let state: tauri::State<'_, AppState> = app_handle.state();
-    let player = state.mpv_player.lock().ok().map(|mpv| RemotePlayerProperties {
-        volume: mpv.get_property_string("volume").ok().and_then(|value| value.parse().ok()).unwrap_or(100.0),
-        muted: mpv.get_property_string("mute").ok().is_some_and(|value| value == "yes" || value == "true"),
-        playlist_position: mpv.get_property_string("playlist-pos").ok().and_then(|value| value.parse().ok()).unwrap_or(-1),
-        playlist_count: mpv.get_property_string("playlist-count").ok().and_then(|value| value.parse().ok()).unwrap_or(0),
-    }).unwrap_or_default();
-    let snapshot = match state.now_playing.lock() {
-        Ok(now_playing) => RemotePlaybackState {
-            title: now_playing.title.clone(),
-            duration: now_playing.duration.unwrap_or(0.0),
-            position: now_playing.position,
-            is_playing: now_playing.is_playing,
-            volume: player.volume,
-            muted: player.muted,
-            playlist_position: player.playlist_position,
-            playlist_count: player.playlist_count,
-        },
-        Err(error) => {
-            warn!("remote control: failed to read playback state: {error}");
-            RemotePlaybackState { title: None, duration: 0.0, position: 0.0, is_playing: false, volume: player.volume, muted: player.muted, playlist_position: player.playlist_position, playlist_count: player.playlist_count }
-        }
-    };
-    snapshot
-}
-
-#[derive(Default)]
-struct RemotePlayerProperties { volume: f64, muted: bool, playlist_position: i64, playlist_count: i64 }
-
 fn resolve_auth_token() -> Option<String> {
     std::env::var(TOKEN_ENV_VAR)
         .ok()
@@ -578,6 +544,10 @@ fn is_enabled(state: &RemoteControlState) -> bool {
 
 fn is_active_session(state: &RemoteControlState, session: &str) -> bool {
     state.runtime.lock().map(|runtime| runtime.sessions.contains(session)).unwrap_or(false)
+}
+
+fn is_connection_active(state: &RemoteControlState, session: Option<&str>) -> bool {
+    is_enabled(state) && session.is_none_or(|session| is_active_session(state, session))
 }
 
 fn local_network_ip() -> Result<String, String> {

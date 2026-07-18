@@ -24,22 +24,6 @@ pub(crate) fn set_now_playing_metadata(
 }
 
 #[tauri::command]
-pub(crate) fn set_now_playing_status(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    is_playing: bool,
-    position: Option<f64>,
-) -> Result<(), String> {
-    with_now_playing_mut(&state, |now_playing| {
-        now_playing.is_playing = is_playing;
-        if let Some(value) = position {
-            now_playing.position = value;
-        }
-    })?;
-    crate::platform::apply_now_playing_status(&app, &state)
-}
-
-#[tauri::command]
 pub(crate) fn clear_now_playing(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,

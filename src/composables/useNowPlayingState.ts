@@ -10,7 +10,6 @@ type UseNowPlayingStateOptions = {
     duration: () => number;
 };
 
-const NOW_PLAYING_UPDATE_MS = 1500;
 const STATUS_OVERLAY_MS = 1000;
 
 export const useNowPlayingState = ({
@@ -23,7 +22,6 @@ export const useNowPlayingState = ({
     const nowPlayingArtworkPath = ref("");
     const showStatusOverlay = ref(false);
     const statusOverlayMode = ref<"play" | "pause">("play");
-    const lastNowPlayingUpdate = ref(0);
     let statusOverlayTimer: number | null = null;
 
     const clearArtwork = () => {
@@ -65,22 +63,7 @@ export const useNowPlayingState = ({
         });
     };
 
-    const updateNowPlayingStatus = (position?: number) => {
-        void invoke("set_now_playing_status", {
-            isPlaying: isPlaying(),
-            position: typeof position === "number" ? position : null,
-        });
-    };
-
-    const maybeUpdateNowPlayingStatus = (position?: number) => {
-        const now = performance.now();
-        if (now - lastNowPlayingUpdate.value < NOW_PLAYING_UPDATE_MS) return;
-        lastNowPlayingUpdate.value = now;
-        updateNowPlayingStatus(position);
-    };
-
     const clearNowPlaying = () => {
-        lastNowPlayingUpdate.value = 0;
         clearArtwork();
         void invoke("clear_now_playing");
     };
@@ -107,8 +90,6 @@ export const useNowPlayingState = ({
         clearStatusOverlay,
         triggerStatusOverlayFromPlayback,
         updateNowPlayingMetadata,
-        updateNowPlayingStatus,
-        maybeUpdateNowPlayingStatus,
         clearNowPlaying,
         captureNowPlayingArtwork,
     };

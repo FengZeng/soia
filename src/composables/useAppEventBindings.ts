@@ -8,6 +8,7 @@ import {
     primaryMonitor,
 } from "@tauri-apps/api/window";
 import type { ProgressPayload, MediaTrack } from "../types/media";
+import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlayerApi } from "./usePlaybackController";
 
 type TracksUpdatePayload = {
@@ -68,7 +69,7 @@ export const useAppEventBindings = ({
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
     // 事件监听器引用
-    let unlistenProgress: UnlistenFn | null = null;
+    let unlistenPlaybackSnapshot: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
     let unlistenPlaybackRestart: UnlistenFn | null = null;
     let unlistenResize: UnlistenFn | null = null;
@@ -98,34 +99,31 @@ export const useAppEventBindings = ({
             onFullscreenTransition();
         });
 
-        // 监听播放进度
-        unlistenProgress = await listen<ProgressPayload>(
-            "mpv-progress-update",
+        // Rust Core publishes the same snapshot that WebSocket clients receive.
+        unlistenPlaybackSnapshot = await listen<PlaybackSnapshotDto>(
+            "playback-snapshot",
             (event) => {
-                player.state.playback.currentTime = event.payload.time_pos;
+                player.state.playback.currentTime = event.payload.position;
                 player.state.playback.duration = event.payload.duration;
                 player.state.playback.bufferedTime =
-                    typeof event.payload.buffered_pos === "number" &&
-                    Number.isFinite(event.payload.buffered_pos)
-                        ? event.payload.buffered_pos
-                        : event.payload.time_pos;
-                player.state.playback.isPlaying = event.payload.is_playing;
+                    typeof event.payload.bufferedPosition === "number" &&
+                    Number.isFinite(event.payload.bufferedPosition)
+                        ? event.payload.bufferedPosition
+                        : event.payload.position;
+                player.state.playback.isPlaying = event.payload.isPlaying;
                 player.state.playback.isBuffering =
-                    event.payload.is_buffering === true;
-                player.state.playback.downloadSpeedBps =
-                    typeof event.payload.download_speed_bps === "number" &&
-                    Number.isFinite(event.payload.download_speed_bps) &&
-                    event.payload.download_speed_bps > 0
-                        ? event.payload.download_speed_bps
-                        : 0;
-                player.state.playback.videoBitrate =
-                    typeof event.payload.video_bitrate === "number" &&
-                    Number.isFinite(event.payload.video_bitrate) &&
-                    event.payload.video_bitrate > 0
-                        ? event.payload.video_bitrate
-                        : 0;
+                    event.payload.isBuffering === true;
+                player.state.playback.volume = event.payload.volume;
                 if (onProgress) {
-                    onProgress(event.payload);
+                    onProgress({
+                        time_pos: event.payload.position,
+                        duration: event.payload.duration,
+                        buffered_pos: event.payload.bufferedPosition,
+                        is_playing: event.payload.isPlaying,
+                        video_bitrate: player.state.playback.videoBitrate,
+                        is_buffering: event.payload.isBuffering,
+                        download_speed_bps: player.state.playback.downloadSpeedBps,
+                    });
                 }
             },
         );
@@ -297,7 +295,7 @@ export const useAppEventBindings = ({
     });
 
     onUnmounted(() => {
-        unlistenProgress?.();
+        unlistenPlaybackSnapshot?.();
         unlistenFileLoaded?.();
         unlistenPlaybackRestart?.();
         unlistenResize?.();

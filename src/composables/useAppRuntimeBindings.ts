@@ -10,7 +10,6 @@ type RuntimeUiApi = UseAppEventBindingsOptions["ui"] & {
 type NowPlayingApi = {
     clearNowPlaying: () => void;
     clearStatusOverlay: () => void;
-    updateNowPlayingStatus: (position?: number) => void;
     triggerStatusOverlayFromPlayback: () => void;
     updateNowPlayingMetadata: () => void;
 };
@@ -111,7 +110,6 @@ export const useAppRuntimeBindings = ({
         () => player.state.playback.isPlaying,
         () => {
             if (!player.state.media.isFileLoaded) return;
-            nowPlaying.updateNowPlayingStatus(player.state.playback.currentTime);
             nowPlaying.triggerStatusOverlayFromPlayback();
         },
     );
