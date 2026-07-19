@@ -6,7 +6,6 @@ import {
   type ParsedPlaylistFile,
   type ResolvedYoutubePlaylist,
 } from "./usePlaybackCommands";
-import type { ResolvedPlaybackSource } from "../utils/resolvePlaybackSource";
 import { formatTime } from "../utils/formatTime";
 
 type PlayerState = {
@@ -40,7 +39,7 @@ export type PlayerApi = {
   isUrlModified: { value: boolean };
   formatTime: (seconds: number) => string;
   loadPlaybackSource: (
-    source: ResolvedPlaybackSource,
+    keyOrUrl: string,
     skipIntroSeconds?: number,
     autoPlay?: boolean,
     playbackSpeed?: number,

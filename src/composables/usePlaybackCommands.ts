@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { executePlaybackCommand } from "../core-client/tauriPlaybackClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MEDIA_FILE_EXTENSIONS } from "../constants/media";
-import type { ResolvedPlaybackSource } from "../utils/resolvePlaybackSource";
 
 type PlayerEffectState = {
   media: {
@@ -86,13 +85,13 @@ export const usePlaybackCommands = (
   };
 
   const loadPlaybackSource = async (
-    source: ResolvedPlaybackSource,
+    keyOrUrl: string,
     skipIntroSeconds = 0,
     autoPlay = true,
     playbackSpeed = 1.0,
   ): Promise<LoadFileResult> => {
     return await invoke<LoadFileResult>("load_playback_source", {
-      payload: { source, skipIntroSeconds, autoPlay, playbackSpeed },
+      payload: { keyOrUrl, skipIntroSeconds, autoPlay, playbackSpeed },
     });
   };
 

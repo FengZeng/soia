@@ -421,7 +421,7 @@ export const usePlaybackFlow = ({
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
         const result = await player.loadPlaybackSource(
-            source,
+            playbackKey,
             preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::display::{display_path_for_smb, display_path_for_webdav};
 use super::key::{
@@ -14,7 +14,7 @@ struct SmbPlaybackSourceResult {
     playback_key: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum ResolvedPlaybackSourceResult {
     Local {
@@ -148,12 +148,11 @@ async fn resolve_matching_smb_playback_source(
     }))
 }
 
-#[tauri::command]
-pub(crate) async fn resolve_playback_source(
-    app: tauri::AppHandle,
-    key_or_url: String,
+pub(crate) async fn resolve(
+    app: &tauri::AppHandle,
+    key_or_url: &str,
 ) -> Result<ResolvedPlaybackSourceResult, String> {
-    let raw = key_or_url.as_str();
+    let raw = key_or_url;
     let trimmed = raw.trim();
     match parse_playback_source(raw) {
         PlaybackSource::Local { path } => {
@@ -204,7 +203,7 @@ pub(crate) async fn resolve_playback_source(
             })
         }
         PlaybackSource::DirectSmbUrl => {
-            if let Some(source) = resolve_matching_smb_playback_source(&app, trimmed).await? {
+            if let Some(source) = resolve_matching_smb_playback_source(app, trimmed).await? {
                 return Ok(ResolvedPlaybackSourceResult::Smb {
                     playback_key: source.playback_key,
                     display_path: display_path_for_smb(
@@ -223,4 +222,12 @@ pub(crate) async fn resolve_playback_source(
         }
         PlaybackSource::Smb { .. } => Err("Invalid SMB playback source".to_string()),
     }
+}
+
+#[tauri::command]
+pub(crate) async fn resolve_playback_source(
+    app: tauri::AppHandle,
+    key_or_url: String,
+) -> Result<ResolvedPlaybackSourceResult, String> {
+    resolve(&app, &key_or_url).await
 }

@@ -47,7 +47,7 @@ pub(crate) fn mpv_set_option_string(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoadPlaybackSourcePayload {
-    source: crate::playback_source::resolve::ResolvedPlaybackSourceResult,
+    key_or_url: String,
     skip_intro_seconds: Option<f64>,
     auto_play: Option<bool>,
     playback_speed: Option<f64>,
@@ -137,15 +137,40 @@ pub(crate) async fn load_playback_source(
     state: tauri::State<'_, AppState>,
     payload: LoadPlaybackSourcePayload,
 ) -> Result<LoadPlaybackSourceResult, String> {
-    let source_key = payload.source.playback_key().to_string();
+    let request_key = payload.key_or_url.trim().to_string();
+    if request_key.is_empty() {
+        return Err("playback source cannot be empty".to_string());
+    }
     let generation = state.playback_load_coordinator.begin();
     let _ = state
         .playback_load_coordinator
         .execute_if_current(generation, || {
-            publish_source_load_state(&app, &state, true, Some(source_key.clone()), None);
+            publish_source_load_state(&app, &state, true, Some(request_key.clone()), None);
         });
     if let Err(error) = crate::flush_pending_play_history_entry(&app) {
         log::warn!("failed to flush playback history before loading source: {error}");
+    }
+    let source = match crate::playback_source::resolve::resolve(&app, &request_key).await {
+        Ok(source) => source,
+        Err(error) => {
+            return source_load_error_or_superseded(
+                &app,
+                &state,
+                generation,
+                &request_key,
+                error,
+            );
+        }
+    };
+    let source_key = source.playback_key().to_string();
+    if state
+        .playback_load_coordinator
+        .execute_if_current(generation, || {
+            publish_source_load_state(&app, &state, true, Some(source_key.clone()), None);
+        })
+        .is_none()
+    {
+        return Ok(superseded_load_result());
     }
     let skip_intro_seconds = payload.skip_intro_seconds.unwrap_or(0.0);
     let resume_position = match crate::store::play_history::resolve_resume_position(
@@ -179,7 +204,7 @@ pub(crate) async fn load_playback_source(
             );
         }
     };
-    let prepared = match crate::playback_source::load::prepare(&app, payload.source).await {
+    let prepared = match crate::playback_source::load::prepare(&app, source).await {
         Ok(prepared) => prepared,
         Err(error) => {
             return source_load_error_or_superseded(
