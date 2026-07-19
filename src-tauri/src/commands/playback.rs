@@ -56,6 +56,7 @@ pub(crate) struct LoadPlaybackSourcePayload {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoadPlaybackSourceResult {
+    playback_key: Option<String>,
     title: Option<String>,
     is_live_playback: bool,
     superseded: bool,
@@ -70,6 +71,7 @@ struct PlaybackLoadPreparedPayload {
 
 fn superseded_load_result() -> LoadPlaybackSourceResult {
     LoadPlaybackSourceResult {
+        playback_key: None,
         title: None,
         is_live_playback: false,
         superseded: true,
@@ -247,6 +249,7 @@ pub(crate) async fn load_playback_source(
                     }
                     publish_source_load_state(&app, &state, false, None, None);
                     Ok(LoadPlaybackSourceResult {
+                        playback_key: Some(source_key.clone()),
                         title: prepared.title,
                         is_live_playback: prepared.is_live_playback,
                         superseded: false,

@@ -3,10 +3,6 @@ import type { HistoryEntry } from "../types/history";
 import type { NetworkPlayRequest } from "../types/network";
 import type { PlayerApi } from "./usePlaybackController";
 import { loadUiState } from "./useUiStateStore";
-import {
-    resolvePlaybackSource,
-    type ResolvedPlaybackSource,
-} from "../utils/resolvePlaybackSource";
 import { isLikelyLivePlaybackSource } from "../utils/livePlayback";
 import type {
     ParsedPlaylistEntry,
@@ -243,6 +239,7 @@ export const usePlaybackFlow = ({
     const livePlaybackPlaylistEntryCounts = new Map<string, number>();
     let loadPlaybackPreferencesPromise: Promise<void> | null = null;
     let hasInitializedSpeed = false;
+    let playbackRequestSequence = 0;
 
     const updatePlaybackPreferences = (groups?: StoredSettingGroup[]) => {
         playbackPreferences.value = parsePlaybackPreferences(groups);
@@ -392,41 +389,53 @@ export const usePlaybackFlow = ({
         history.updateTitle(url, player.state.media.title);
     };
 
-    const playResolvedSource = async (
-        source: ResolvedPlaybackSource,
+    const playSource = async (
+        keyOrUrl: string,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
-        const playbackKey = source.playbackKey;
-        if (!playbackKey) return;
+        const requestedKey = keyOrUrl.trim();
+        if (!requestedKey) return;
+        const requestSequence = ++playbackRequestSequence;
         await triggerPlaybackIntent();
         resetPlaybackTimeline();
         hideHistory.value = true;
         nowPlaying.clearArtwork();
         tracks.resetTracks();
-        player.state.media.url = playbackKey;
+        player.state.media.url = requestedKey;
         player.state.media.isLivePlayback = shouldTreatAsLivePlayback(
-            playbackKey,
+            requestedKey,
             options,
         );
         player.state.media.title = rememberPreferredTitle(
-            playbackKey,
+            requestedKey,
             preferredTitle,
         );
         player.state.playback.isBuffering = false;
         player.state.playback.downloadSpeedBps = 0;
         player.state.playback.hwdecCurrent = "";
-        loadingUrl.value = playbackKey;
+        loadingUrl.value = requestedKey;
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
         const result = await player.loadPlaybackSource(
-            playbackKey,
+            requestedKey,
             preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,
         );
-        if (result.superseded) return;
+        if (result.superseded || requestSequence !== playbackRequestSequence) return;
+        const playbackKey = result.playbackKey?.trim() || requestedKey;
+        player.state.media.url = playbackKey;
+        if (isLoading.value) {
+            loadingUrl.value = playbackKey;
+        }
+        if (preferredTitle?.trim()) {
+            player.state.media.title = rememberPreferredTitle(
+                playbackKey,
+                preferredTitle,
+            );
+        }
         if (result.isLivePlayback) {
             player.state.media.isLivePlayback = true;
         }
@@ -439,11 +448,7 @@ export const usePlaybackFlow = ({
         options?: PlaybackRequestOptions,
     ) => {
         if (!path) return;
-        await playResolvedSource(
-            await resolvePlaybackSource(path),
-            preferredTitle,
-            options,
-        );
+        await playSource(path, preferredTitle, options);
     };
 
     const getPlaylistNameFromSource = (source: string, fallback?: string) => {
@@ -743,10 +748,7 @@ export const usePlaybackFlow = ({
 
     const onPlayNetwork = async (payload: NetworkPlayRequest) => {
         const displayName = payload.displayName?.trim() || "";
-        await playResolvedSource(
-            await resolvePlaybackSource(payload.playbackKey),
-            displayName,
-        );
+        await playSource(payload.playbackKey, displayName);
     };
 
     const onUpdateUrl = (value: string) => {

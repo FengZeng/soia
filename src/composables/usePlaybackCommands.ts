@@ -40,6 +40,7 @@ export type ParsedPlaylistFile = {
 };
 
 export type LoadFileResult = {
+  playbackKey?: string | null;
   title?: string | null;
   isLivePlayback?: boolean;
   superseded?: boolean;
