@@ -48,6 +48,13 @@ pub enum PlaybackCommandDto {
     SetMuted { muted: bool },
     SetSpeed { speed: f64 },
     Stop,
+    Previous,
+    Next,
+    PlaySource {
+        key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -75,6 +82,7 @@ pub struct CommandResultDto {
 pub enum CoreErrorDto {
     InvalidCommand { message: String },
     ExecutionFailed { message: String },
+    NavigationFailed { message: String },
 }
 
 pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {

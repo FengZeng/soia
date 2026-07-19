@@ -46,6 +46,15 @@ impl PlaybackService {
         }
     }
 
+    pub(crate) fn is_navigation_command(command: &PlaybackCommandDto) -> bool {
+        matches!(
+            command,
+            PlaybackCommandDto::Previous
+                | PlaybackCommandDto::Next
+                | PlaybackCommandDto::PlaySource { .. }
+        )
+    }
+
     pub(crate) fn execute(
         &self,
         state: &AppState,
@@ -53,6 +62,11 @@ impl PlaybackService {
     ) -> Result<CommandResultDto, CoreErrorDto> {
         if envelope.command_id.trim().is_empty() || envelope.client_id.trim().is_empty() {
             return Err(CoreErrorDto::InvalidCommand { message: "commandId and clientId are required".into() });
+        }
+        if Self::is_navigation_command(&envelope.command) {
+            return Err(CoreErrorDto::InvalidCommand {
+                message: "navigation commands must be dispatched through the navigation service".into(),
+            });
         }
         let _admission_lock = self
             .admission_lock
@@ -131,7 +145,11 @@ fn command_is_already_reflected(command: &PlaybackCommandDto, snapshot: &crate::
         PlaybackCommandDto::SetVolume { volume } => (snapshot.volume - volume.clamp(0.0, 130.0)).abs() < 0.25,
         PlaybackCommandDto::SetMuted { muted } => snapshot.muted == *muted,
         PlaybackCommandDto::SetSpeed { speed } => (snapshot.speed - speed).abs() < 0.001,
-        PlaybackCommandDto::SeekRelative { .. } | PlaybackCommandDto::Stop => false,
+        PlaybackCommandDto::SeekRelative { .. }
+        | PlaybackCommandDto::Stop
+        | PlaybackCommandDto::Previous
+        | PlaybackCommandDto::Next
+        | PlaybackCommandDto::PlaySource { .. } => false,
     }
 }
 
@@ -183,5 +201,10 @@ fn execute_command(
             mpv_command_checked(mpv, &["set", "speed", &speed]).map_err(command_error)
         }
         PlaybackCommandDto::Stop => mpv_command_checked(mpv, &["stop"]).map_err(command_error),
+        PlaybackCommandDto::Previous | PlaybackCommandDto::Next | PlaybackCommandDto::PlaySource { .. } => {
+            Err(CoreErrorDto::InvalidCommand {
+                message: "navigation commands must be handled by the navigation service".into(),
+            })
+        }
     }
 }

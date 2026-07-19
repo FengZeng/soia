@@ -126,7 +126,8 @@ fn legacy_command_envelope(command: crate::protocol::PlaybackCommandDto) -> crat
 fn core_error_message(error: crate::protocol::CoreErrorDto) -> String {
     match error {
         crate::protocol::CoreErrorDto::InvalidCommand { message }
-        | crate::protocol::CoreErrorDto::ExecutionFailed { message } => message,
+        | crate::protocol::CoreErrorDto::ExecutionFailed { message }
+        | crate::protocol::CoreErrorDto::NavigationFailed { message } => message,
     }
 }
 
