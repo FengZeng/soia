@@ -21,6 +21,7 @@ pub struct PlaybackSnapshotDto {
     pub source_loading: bool,
     pub source_loading_key: Option<String>,
     pub source_load_error: Option<String>,
+    pub speed: f64,
     pub volume: f64,
     pub muted: bool,
     #[ts(type = "number")]
@@ -45,6 +46,7 @@ pub enum PlaybackCommandDto {
     SeekRelative { seconds: f64 },
     SetVolume { volume: f64 },
     SetMuted { muted: bool },
+    SetSpeed { speed: f64 },
     Stop,
 }
 

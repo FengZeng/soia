@@ -5,13 +5,14 @@ import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnaps
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
 import type { CoreErrorDto } from "../core-client/generated/CoreErrorDto";
 
-const state = ref<PlaybackSnapshotDto>({ protocolVersion: 1, revision: 0, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
+const state = ref<PlaybackSnapshotDto>({ protocolVersion: 1, revision: 0, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
 const connectionState = ref("Connecting…");
 const error = ref("");
 let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let commandSequence = 0;
 const pendingSeek = ref<number | null>(null);
+const playbackRates = [2, 1.75, 1.5, 1.25, 1, 0.75, 0.5, 0.25];
 
 function createClientId() {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -112,6 +113,10 @@ function setVolume(event: Event) {
     command({ type: "setVolume", volume: Number((event.target as HTMLInputElement).value) });
 }
 
+function setSpeed(event: Event) {
+    command({ type: "setSpeed", speed: Number((event.target as HTMLSelectElement).value) });
+}
+
 onMounted(connect);
 onBeforeUnmount(() => { socket?.close(); if (reconnectTimer) window.clearTimeout(reconnectTimer); });
 </script>
@@ -160,6 +165,12 @@ onBeforeUnmount(() => { socket?.close(); if (reconnectTimer) window.clearTimeout
                 <input type="range" min="0" max="130" :value="state.volume" :disabled="!canControl" @change="setVolume" />
                 <span>{{ Math.round(state.volume) }}%</span>
             </div>
+            <label class="speed-control">
+                <span>Playback speed</span>
+                <select :value="state.speed" :disabled="!canControl" @change="setSpeed">
+                    <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}×</option>
+                </select>
+            </label>
         </section>
         <p v-if="error" class="error">{{ error }}</p>
     </main>

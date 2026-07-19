@@ -558,6 +558,7 @@ pub(super) fn mpv_event_loop(
     const MUTE_ID: u64 = 15;
     const PLAYLIST_POSITION_ID: u64 = 16;
     const PLAYLIST_COUNT_ID: u64 = 17;
+    const SPEED_ID: u64 = 18;
 
     let mut last_time_pos: f64 = 0.0;
     let mut last_duration: f64 = 0.0;
@@ -676,6 +677,7 @@ pub(super) fn mpv_event_loop(
         observe_property(event_client, MUTE_ID, "mute", mpv_format::MPV_FORMAT_FLAG);
         observe_property(event_client, PLAYLIST_POSITION_ID, "playlist-pos", mpv_format::MPV_FORMAT_INT64);
         observe_property(event_client, PLAYLIST_COUNT_ID, "playlist-count", mpv_format::MPV_FORMAT_INT64);
+        observe_property(event_client, SPEED_ID, "speed", mpv_format::MPV_FORMAT_DOUBLE);
 
         debug!("MPV Event Loop: Started observing properties.");
 
@@ -1134,6 +1136,14 @@ pub(super) fn mpv_event_loop(
                             PLAYLIST_COUNT_ID => {
                                 if (*prop_event).format == mpv_format::MPV_FORMAT_INT64 && !value_ptr.is_null() {
                                     update_snapshot(&app_handle, |snapshot| snapshot.playlist_count = *(value_ptr as *mut i64));
+                                }
+                            }
+                            SPEED_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_DOUBLE && !value_ptr.is_null() {
+                                    let speed = *(value_ptr as *mut f64);
+                                    if speed.is_finite() && speed > 0.0 {
+                                        update_snapshot(&app_handle, |snapshot| snapshot.speed = speed);
+                                    }
                                 }
                             }
                             WIDTH_ID => {

@@ -190,7 +190,7 @@ export const usePlaybackCommands = (
   };
 
   const setPlaybackSpeed = async (rate: number): Promise<void> => {
-    await invoke("mpv_set_option_string", { name: "speed", value: rate });
+    await executePlaybackCommand({ type: "setSpeed", speed: rate });
   };
 
   const setVolume = async (volume: number): Promise<void> => {

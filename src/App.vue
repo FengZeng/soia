@@ -407,6 +407,9 @@ useAppRuntimeBindings({
             position: resumePosition,
         };
     },
+    onPlaybackSpeedChange: (playbackSpeed) => {
+        speed.currentSpeed.value = playbackSpeed;
+    },
     resolveMediaTitle,
     nowPlaying,
     isInfoOpen,

@@ -3,4 +3,4 @@
 /**
  * Stable, transport-safe playback state sent to Tauri and WebSocket clients.
  */
-export type PlaybackSnapshotDto = { protocolVersion: number, revision: number, title: string | null, duration: number, position: number, bufferedPosition: number, isPlaying: boolean, isBuffering: boolean, sourceLoading: boolean, sourceLoadingKey: string | null, sourceLoadError: string | null, volume: number, muted: boolean, playlistPosition: number, playlistCount: number, };
+export type PlaybackSnapshotDto = { protocolVersion: number, revision: number, title: string | null, duration: number, position: number, bufferedPosition: number, isPlaying: boolean, isBuffering: boolean, sourceLoading: boolean, sourceLoadingKey: string | null, sourceLoadError: string | null, speed: number, volume: number, muted: boolean, playlistPosition: number, playlistCount: number, };

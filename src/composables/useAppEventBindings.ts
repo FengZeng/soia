@@ -59,6 +59,7 @@ type AppEventBindingsOptions = {
     onEndFile?: (payload: EndFilePayload) => void | Promise<void>;
     onSourceLoadState?: (state: SourceLoadState) => void;
     onPlaybackLoadPrepared?: (payload: PlaybackLoadPreparedPayload) => void;
+    onPlaybackSpeedChange?: (speed: number) => void;
     resolveMediaTitle?: (incomingTitle: string, currentUrl: string) => string;
 };
 
@@ -81,6 +82,7 @@ export const useAppEventBindings = ({
     onEndFile,
     onSourceLoadState,
     onPlaybackLoadPrepared,
+    onPlaybackSpeedChange,
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
     // 事件监听器引用
@@ -130,6 +132,7 @@ export const useAppEventBindings = ({
                 player.state.playback.isBuffering =
                     event.payload.isBuffering === true;
                 player.state.playback.volume = event.payload.volume;
+                onPlaybackSpeedChange?.(event.payload.speed);
                 onSourceLoadState?.({
                     loading: event.payload.sourceLoading,
                     loadingKey: event.payload.sourceLoadingKey,

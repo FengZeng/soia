@@ -258,6 +258,7 @@ export const usePlaybackFlow = ({
         if (!hasInitializedSpeed) {
             hasInitializedSpeed = true;
             currentSpeed.value = playbackPreferences.value.defaultSpeed;
+            await player.setPlaybackSpeed(currentSpeed.value);
         }
     };
 

@@ -130,6 +130,7 @@ fn command_is_already_reflected(command: &PlaybackCommandDto, snapshot: &crate::
         }
         PlaybackCommandDto::SetVolume { volume } => (snapshot.volume - volume.clamp(0.0, 130.0)).abs() < 0.25,
         PlaybackCommandDto::SetMuted { muted } => snapshot.muted == *muted,
+        PlaybackCommandDto::SetSpeed { speed } => (snapshot.speed - speed).abs() < 0.001,
         PlaybackCommandDto::SeekRelative { .. } | PlaybackCommandDto::Stop => false,
     }
 }
@@ -173,6 +174,13 @@ fn execute_command(
         }
         PlaybackCommandDto::SetMuted { muted } => {
             mpv_command_checked(mpv, &["set", "mute", if muted { "yes" } else { "no" }]).map_err(command_error)
+        }
+        PlaybackCommandDto::SetSpeed { speed } => {
+            if !speed.is_finite() || !(0.01..=100.0).contains(&speed) {
+                return Err(CoreErrorDto::InvalidCommand { message: "playback speed must be finite and between 0.01 and 100".into() });
+            }
+            let speed = speed.to_string();
+            mpv_command_checked(mpv, &["set", "speed", &speed]).map_err(command_error)
         }
         PlaybackCommandDto::Stop => mpv_command_checked(mpv, &["stop"]).map_err(command_error),
     }
