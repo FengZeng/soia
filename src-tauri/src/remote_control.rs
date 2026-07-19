@@ -15,7 +15,7 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::net::TcpListener;
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:17668";
@@ -359,7 +359,7 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session:
                 if !is_connection_active(&state, session.as_deref()) {
                     return;
                 }
-                let response = handle_websocket_text(&state, &text);
+                let response = handle_websocket_text(&state, &text).await;
                 if send_ws_json(&mut sender, &response).await.is_err() {
                     return;
                 }
@@ -377,7 +377,7 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session:
     }
 }
 
-fn handle_websocket_text(
+async fn handle_websocket_text(
     state: &RemoteControlState,
     text: &str,
 ) -> WebSocketServerMessage {
@@ -394,13 +394,15 @@ fn handle_websocket_text(
                 },
             }
         }
-        Ok(WebSocketClientMessage::Navigation { id, action }) => match execute_remote_navigation(&state.app_handle, &action) {
-            Ok(()) => WebSocketServerMessage::NavigationResult { id, ok: true },
-            Err(error) => WebSocketServerMessage::Error {
-                id,
-                error: CoreErrorDto::ExecutionFailed { message: error },
-            },
-        },
+        Ok(WebSocketClientMessage::Navigation { id, action }) => {
+            match execute_core_navigation_action(&state.app_handle, &action).await {
+                Ok(()) => WebSocketServerMessage::NavigationResult { id, ok: true },
+                Err(error) => WebSocketServerMessage::Error {
+                    id,
+                    error: CoreErrorDto::NavigationFailed { message: error },
+                },
+            }
+        }
         Err(error) => WebSocketServerMessage::Error {
             id: None,
             error: CoreErrorDto::InvalidCommand {
@@ -443,22 +445,13 @@ fn execute_mpv_command(
     mpv_command_checked(&mpv_guard, &args_str)
 }
 
-fn execute_remote_navigation(app_handle: &tauri::AppHandle, action: &str) -> Result<(), String> {
-    match action {
-        "previous" => {
-            app_handle
-                .emit("soia-remote-playback-navigation", -1)
-                .map_err(|error| error.to_string())?;
-            return Ok(());
-        }
-        "next" => {
-            app_handle
-                .emit("soia-remote-playback-navigation", 1)
-                .map_err(|error| error.to_string())?;
-            return Ok(());
-        }
+async fn execute_core_navigation_action(app_handle: &tauri::AppHandle, action: &str) -> Result<(), String> {
+    let direction = match action {
+        "previous" => -1,
+        "next" => 1,
         _ => return Err("unsupported remote navigation action".to_string()),
-    }
+    };
+    crate::commands::navigation::execute_core_navigation(app_handle, direction).await
 }
 
 fn resolve_auth_token() -> Option<String> {

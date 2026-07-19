@@ -8,6 +8,14 @@ use crate::{
     OpenFileState,
 };
 
+fn with_mpv_state<R>(
+    state: &AppState,
+    f: impl FnOnce(&crate::mpv::MpvHandle) -> Result<R, String>,
+) -> Result<R, String> {
+    let mpv_guard = state.mpv_player.lock().map_err(|e| e.to_string())?;
+    f(&mpv_guard)
+}
+
 #[tauri::command]
 pub(crate) fn execute_playback_command(
     state: tauri::State<'_, AppState>,
@@ -48,6 +56,18 @@ pub(crate) fn mpv_set_option_string(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoadPlaybackSourcePayload {
     key_or_url: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    preferred_title: Option<String>,
+}
+
+impl LoadPlaybackSourcePayload {
+    pub(crate) fn new(key_or_url: String, preferred_title: Option<String>) -> Self {
+        Self {
+            key_or_url,
+            preferred_title,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -159,6 +179,15 @@ pub(crate) async fn load_playback_source(
     state: tauri::State<'_, AppState>,
     payload: LoadPlaybackSourcePayload,
 ) -> Result<LoadPlaybackSourceResult, String> {
+    load_source(&app, &state, payload).await
+}
+
+/// Core loading logic usable from both the Tauri command and internal navigation.
+pub(crate) async fn load_source(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    payload: LoadPlaybackSourcePayload,
+) -> Result<LoadPlaybackSourceResult, String> {
     let request_key = payload.key_or_url.trim().to_string();
     if request_key.is_empty() {
         return Err("playback source cannot be empty".to_string());
@@ -251,7 +280,7 @@ pub(crate) async fn load_playback_source(
             ) {
                 log::warn!("failed to emit prepared playback load: {error}");
             }
-            match with_mpv(&state, |mpv_guard| {
+            match with_mpv_state(state, |mpv_guard| {
                 crate::core::playback_loading::load(
                     mpv_guard,
                     &prepared.playback_url,

@@ -191,3 +191,79 @@ pub(crate) async fn resolve_adjacent_playback_source(
         playback_key,
     }))
 }
+
+/// Resolve the adjacent playback source key in the same directory.
+/// Returns the playback key of the adjacent media file, or `None` if there is
+/// no adjacent file in the given direction.
+pub(crate) async fn resolve_adjacent_key(
+    app: &tauri::AppHandle,
+    current_key: &str,
+    direction: i32,
+) -> Result<Option<String>, String> {
+    let direction = match direction {
+        value if value < 0 => -1,
+        value if value > 0 => 1,
+        _ => return Ok(None),
+    };
+
+    let playback_key = match parse_playback_source(current_key) {
+        PlaybackSource::Local { path } => resolve_adjacent_local(&path, direction),
+        PlaybackSource::Webdav {
+            connection_id,
+            file_path,
+        } => {
+            let Some(parent_path) = path_parent(&file_path) else {
+                return Ok(None);
+            };
+            resolve_adjacent_network(
+                app,
+                &connection_id,
+                crate::network::service::BrowseProtocol::Webdav,
+                &file_path,
+                &parent_path,
+                direction,
+            )
+            .await?
+        }
+        PlaybackSource::Dlna {
+            connection_id,
+            resource_url,
+            parent_path,
+        } => {
+            let Some(parent_path) = parent_path else {
+                return Ok(None);
+            };
+            let parent_path = normalize_dlna_object_id(&parent_path);
+            resolve_adjacent_network(
+                app,
+                &connection_id,
+                crate::network::service::BrowseProtocol::Dlna,
+                &resource_url,
+                &parent_path,
+                direction,
+            )
+            .await?
+        }
+        PlaybackSource::Smb {
+            connection_id: Some(connection_id),
+            file_path: Some(file_path),
+            ..
+        } => {
+            let Some(parent_path) = path_parent(&file_path) else {
+                return Ok(None);
+            };
+            resolve_adjacent_network(
+                app,
+                &connection_id,
+                crate::network::service::BrowseProtocol::Smb,
+                &file_path,
+                &parent_path,
+                direction,
+            )
+            .await?
+        }
+        PlaybackSource::Smb { .. } | PlaybackSource::DirectSmbUrl => None,
+    };
+
+    Ok(playback_key)
+}
