@@ -48,6 +48,7 @@ qrcode = "0.14"
 get_if_addrs = "0.5"
 base64 = "0.22"
 flate2 = "1"
+rand = "0.9"
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 
 # For getting raw window handles (optional, but can be helpful)

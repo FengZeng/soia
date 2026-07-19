@@ -4410,6 +4410,7 @@ dependencies = [
  "objc2-quartz-core 0.3.1",
  "percent-encoding",
  "qrcode",
+ "rand 0.9.1",
  "raw-window-handle",
  "reqwest 0.12.28",
  "roxmltree",

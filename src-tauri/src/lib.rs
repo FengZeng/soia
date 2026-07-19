@@ -32,6 +32,7 @@ pub struct AppState {
     pub(crate) playback_state: core::state::PlaybackStatePublisher,
     pub(crate) playback_service: core::playback_service::PlaybackService,
     pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
+    pub(crate) navigation_service: core::navigation::NavigationService,
 }
 
 #[derive(Default)]
@@ -519,6 +520,7 @@ pub fn run() {
             remote_control::get_remote_control_status,
             remote_control::set_remote_control_enabled,
             remote_control::disconnect_remote_control_devices,
+            commands::navigation::sync_navigation_state,
             commands::persistence::load_play_history,
             commands::persistence::save_play_history,
             commands::persistence::save_play_history_entry,
