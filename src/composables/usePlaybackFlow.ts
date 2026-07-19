@@ -405,82 +405,13 @@ export const usePlaybackFlow = ({
         history.updateTitle(url, player.state.media.title);
     };
 
-    const playLocalPath = async (
-        source: Extract<ResolvedPlaybackSource, { kind: "local" }>,
-        preferredTitle?: string,
-        options?: PlaybackRequestOptions,
-    ) => {
-        const path = source.filePath;
-        if (!path) return;
-        await triggerPlaybackIntent();
-        await finalizeCurrentPlayback();
-        hideHistory.value = true;
-        nowPlaying.clearArtwork();
-        tracks.resetTracks();
-        player.state.media.url = path;
-        player.state.media.isLivePlayback = shouldTreatAsLivePlayback(path, options);
-        player.state.media.title = rememberPreferredTitle(path, preferredTitle);
-        player.state.playback.isBuffering = false;
-        player.state.playback.downloadSpeedBps = 0;
-        player.state.playback.hwdecCurrent = "";
-        loadingUrl.value = path;
-        isLoading.value = true;
-        await ensurePlaybackPreferencesLoaded();
-        const preferences = playbackPreferences.value;
-        const result = await player.loadPlaybackSource(
-            source,
-            preferences.skipIntroSeconds,
-            preferences.autoPlay,
-            currentSpeed.value,
-        );
-        if (result.superseded) return;
-        if (result.isLivePlayback) {
-            player.state.media.isLivePlayback = true;
-        }
-        applyResolvedMediaTitle(path, result.title);
-    };
-
-    const playWebdav = async (
-        source: Extract<ResolvedPlaybackSource, { kind: "webdav" }>,
+    const playResolvedSource = async (
+        source: ResolvedPlaybackSource,
         preferredTitle?: string,
         options?: PlaybackRequestOptions,
     ) => {
         const playbackKey = source.playbackKey;
-        await triggerPlaybackIntent();
-        await finalizeCurrentPlayback();
-        hideHistory.value = true;
-        nowPlaying.clearArtwork();
-        tracks.resetTracks();
-        player.state.media.url = playbackKey;
-        player.state.media.isLivePlayback = shouldTreatAsLivePlayback(
-            playbackKey,
-            options,
-        );
-        player.state.media.title = rememberPreferredTitle(
-            playbackKey,
-            preferredTitle,
-        );
-        player.state.playback.isBuffering = false;
-        player.state.playback.downloadSpeedBps = 0;
-        player.state.playback.hwdecCurrent = "";
-        loadingUrl.value = playbackKey;
-        isLoading.value = true;
-        await ensurePlaybackPreferencesLoaded();
-        const preferences = playbackPreferences.value;
-        await player.loadPlaybackSource(
-            source,
-            preferences.skipIntroSeconds,
-            preferences.autoPlay,
-            currentSpeed.value,
-        );
-    };
-
-    const playDlna = async (
-        source: Extract<ResolvedPlaybackSource, { kind: "dlna" }>,
-        preferredTitle?: string,
-        options?: PlaybackRequestOptions,
-    ) => {
-        const playbackKey = source.playbackKey;
+        if (!playbackKey) return;
         await triggerPlaybackIntent();
         await finalizeCurrentPlayback();
         hideHistory.value = true;
@@ -513,99 +444,6 @@ export const usePlaybackFlow = ({
             player.state.media.isLivePlayback = true;
         }
         applyResolvedMediaTitle(playbackKey, result.title);
-    };
-
-    const playSmb = async (
-        source: Extract<ResolvedPlaybackSource, { kind: "directSmb" }>,
-        preferredTitle?: string,
-        options?: PlaybackRequestOptions,
-    ) => {
-        const url = source.resourceUrl;
-        await triggerPlaybackIntent();
-        await finalizeCurrentPlayback();
-        hideHistory.value = true;
-        nowPlaying.clearArtwork();
-        tracks.resetTracks();
-        player.state.media.url = url;
-        player.state.media.isLivePlayback = shouldTreatAsLivePlayback(url, options);
-        player.state.media.title = rememberPreferredTitle(url, preferredTitle);
-        player.state.playback.isBuffering = false;
-        player.state.playback.downloadSpeedBps = 0;
-        player.state.playback.hwdecCurrent = "";
-        loadingUrl.value = url;
-        isLoading.value = true;
-        await ensurePlaybackPreferencesLoaded();
-        const preferences = playbackPreferences.value;
-        const result = await player.loadPlaybackSource(
-            source,
-            preferences.skipIntroSeconds,
-            preferences.autoPlay,
-            currentSpeed.value,
-        );
-        if (result.superseded) return;
-        if (result.isLivePlayback) {
-            player.state.media.isLivePlayback = true;
-        }
-        applyResolvedMediaTitle(url, result.title);
-    };
-
-    const playSmbNetwork = async (
-        source: Extract<ResolvedPlaybackSource, { kind: "smb" }>,
-        preferredTitle?: string,
-        options?: PlaybackRequestOptions,
-    ) => {
-        const playbackKey = source.playbackKey;
-        await triggerPlaybackIntent();
-        await finalizeCurrentPlayback();
-        hideHistory.value = true;
-        nowPlaying.clearArtwork();
-        tracks.resetTracks();
-        player.state.media.url = playbackKey;
-        player.state.media.isLivePlayback = shouldTreatAsLivePlayback(
-            playbackKey,
-            options,
-        );
-        player.state.media.title = rememberPreferredTitle(
-            playbackKey,
-            preferredTitle,
-        );
-        player.state.playback.isBuffering = false;
-        player.state.playback.downloadSpeedBps = 0;
-        player.state.playback.hwdecCurrent = "";
-        loadingUrl.value = playbackKey;
-        isLoading.value = true;
-        await ensurePlaybackPreferencesLoaded();
-        const preferences = playbackPreferences.value;
-        await player.loadPlaybackSource(
-            source,
-            preferences.skipIntroSeconds,
-            preferences.autoPlay,
-            currentSpeed.value,
-        );
-    };
-
-    const playResolvedSource = async (
-        source: ResolvedPlaybackSource,
-        preferredTitle?: string,
-        options?: PlaybackRequestOptions,
-    ) => {
-        if (source.kind === "webdav") {
-            await playWebdav(source, preferredTitle, options);
-            return;
-        }
-        if (source.kind === "dlna") {
-            await playDlna(source, preferredTitle, options);
-            return;
-        }
-        if (source.kind === "smb") {
-            await playSmbNetwork(source, preferredTitle, options);
-            return;
-        }
-        if (source.kind === "directSmb") {
-            await playSmb(source, preferredTitle, options);
-            return;
-        }
-        await playLocalPath(source, preferredTitle, options);
     };
 
     const playPath = async (
