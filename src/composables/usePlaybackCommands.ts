@@ -85,14 +85,9 @@ export const usePlaybackCommands = (
     return normalizeSelectedPaths(selected);
   };
 
-  const loadPlaybackSource = async (
-    keyOrUrl: string,
-    skipIntroSeconds = 0,
-    autoPlay = true,
-    playbackSpeed = 1.0,
-  ): Promise<LoadFileResult> => {
+  const loadPlaybackSource = async (keyOrUrl: string): Promise<LoadFileResult> => {
     return await invoke<LoadFileResult>("load_playback_source", {
-      payload: { keyOrUrl, skipIntroSeconds, autoPlay, playbackSpeed },
+      payload: { keyOrUrl },
     });
   };
 
@@ -189,10 +184,6 @@ export const usePlaybackCommands = (
     await runMpvCommand(["set", "loop-file", enabled ? "inf" : "no"]);
   };
 
-  const setPlaybackSpeed = async (rate: number): Promise<void> => {
-    await executePlaybackCommand({ type: "setSpeed", speed: rate });
-  };
-
   const setVolume = async (volume: number): Promise<void> => {
     const nextVolume = Math.max(0, Math.min(100, Math.round(volume)));
     const requestId = ++volumeRequestId;
@@ -232,7 +223,6 @@ export const usePlaybackCommands = (
     seek,
     seekRelative,
     setLoopFile,
-    setPlaybackSpeed,
     setVolume,
     toggleMuted,
   };

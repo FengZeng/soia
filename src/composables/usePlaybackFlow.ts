@@ -12,12 +12,10 @@ import type {
 } from "./usePlaybackCommands";
 import {
     ALLOW_URL_INPUT_DURING_PLAYBACK_SETTING_LABEL,
-    DEFAULT_SPEED_SETTING_LABEL,
     DISABLE_SUBTITLES_SETTING_LABEL,
     ENABLE_COMPACT_MODE_SETTING_LABEL,
     PLAYBACK_TITLE_SETTING_LABEL,
     SETTINGS_UPDATED_EVENT,
-    SKIP_INTRO_SECONDS_SETTING_LABEL,
     WALLPAPER_MODE_SETTING_LABEL,
     type PlaybackTitleMode,
 } from "../mock/settings";
@@ -84,7 +82,6 @@ type UsePlaybackFlowOptions = {
     nowPlaying: NowPlayingApi;
     hideAllMenus: () => void;
     isInfoOpen: Ref<boolean>;
-    currentSpeed: Ref<number>;
     loadingState?: {
         isLoading: Ref<boolean>;
         loadingUrl: Ref<string>;
@@ -104,9 +101,6 @@ type StoredSettingGroup = {
 };
 
 type PlaybackPreferences = {
-    skipIntroSeconds: number;
-    defaultSpeed: number;
-    autoPlay: boolean;
     playbackTitleMode: PlaybackTitleMode;
     compactModeEnabled: boolean;
     wallpaperModeEnabled: boolean;
@@ -114,9 +108,6 @@ type PlaybackPreferences = {
 };
 
 const DEFAULT_PLAYBACK_PREFERENCES: PlaybackPreferences = {
-    skipIntroSeconds: 0,
-    defaultSpeed: 1.0,
-    autoPlay: true,
     playbackTitleMode: "Show",
     compactModeEnabled: false,
     wallpaperModeEnabled: false,
@@ -144,16 +135,6 @@ const parsePlaybackPreferences = (
     const getValue = (label: string) =>
         items.find((item) => item.label === label)?.value;
 
-    const skipIntroParsed = Number.parseFloat(
-        getValue(SKIP_INTRO_SECONDS_SETTING_LABEL) ?? "",
-    );
-    const skipIntroSeconds =
-        Number.isFinite(skipIntroParsed) && skipIntroParsed > 0
-            ? Math.max(0, skipIntroParsed)
-            : 0;
-
-    const defaultSpeedRaw = getValue(DEFAULT_SPEED_SETTING_LABEL) ?? "1.0x";
-    const defaultSpeed = Number.parseFloat(defaultSpeedRaw.replace(/x$/i, "").trim());
     const playbackTitleModeValue = normalizePlaybackTitleMode(
         getValue(PLAYBACK_TITLE_SETTING_LABEL) ??
             getValue(ALLOW_URL_INPUT_DURING_PLAYBACK_SETTING_LABEL),
@@ -164,10 +145,6 @@ const parsePlaybackPreferences = (
         getValue(DISABLE_SUBTITLES_SETTING_LABEL) ?? "Off";
 
     return {
-        skipIntroSeconds,
-        defaultSpeed:
-            Number.isFinite(defaultSpeed) && defaultSpeed > 0 ? defaultSpeed : 1.0,
-        autoPlay: true,
         playbackTitleMode: playbackTitleModeValue,
         compactModeEnabled: compactModeValue === "On",
         wallpaperModeEnabled: wallpaperModeValue === "Enable",
@@ -217,7 +194,6 @@ export const usePlaybackFlow = ({
     nowPlaying,
     hideAllMenus,
     isInfoOpen,
-    currentSpeed,
     loadingState,
     onPlaybackIntent,
     requestPlaylistCreation,
@@ -237,9 +213,6 @@ export const usePlaybackFlow = ({
     const livePlaybackKeys = new Set<string>();
     const nonLivePlaybackKeys = new Set<string>();
     const livePlaybackPlaylistEntryCounts = new Map<string, number>();
-    let loadPlaybackPreferencesPromise: Promise<void> | null = null;
-    let hasInitializedSpeed = false;
-    let playbackRequestSequence = 0;
 
     const updatePlaybackPreferences = (groups?: StoredSettingGroup[]) => {
         playbackPreferences.value = parsePlaybackPreferences(groups);
@@ -252,20 +225,6 @@ export const usePlaybackFlow = ({
             };
         }>();
         updatePlaybackPreferences(stored?.settings?.groups);
-        if (!hasInitializedSpeed) {
-            hasInitializedSpeed = true;
-            currentSpeed.value = playbackPreferences.value.defaultSpeed;
-            await player.setPlaybackSpeed(currentSpeed.value);
-        }
-    };
-
-    const ensurePlaybackPreferencesLoaded = async () => {
-        if (!loadPlaybackPreferencesPromise) {
-            loadPlaybackPreferencesPromise = loadPlaybackPreferences().finally(() => {
-                loadPlaybackPreferencesPromise = null;
-            });
-        }
-        await loadPlaybackPreferencesPromise;
     };
 
     const onSettingsUpdated = (event: Event) => {
@@ -396,7 +355,6 @@ export const usePlaybackFlow = ({
     ) => {
         const requestedKey = keyOrUrl.trim();
         if (!requestedKey) return;
-        const requestSequence = ++playbackRequestSequence;
         await triggerPlaybackIntent();
         resetPlaybackTimeline();
         hideHistory.value = true;
@@ -416,15 +374,8 @@ export const usePlaybackFlow = ({
         player.state.playback.hwdecCurrent = "";
         loadingUrl.value = requestedKey;
         isLoading.value = true;
-        await ensurePlaybackPreferencesLoaded();
-        const preferences = playbackPreferences.value;
-        const result = await player.loadPlaybackSource(
-            requestedKey,
-            preferences.skipIntroSeconds,
-            preferences.autoPlay,
-            currentSpeed.value,
-        );
-        if (result.superseded || requestSequence !== playbackRequestSequence) return;
+        const result = await player.loadPlaybackSource(requestedKey);
+        if (result.superseded) return;
         const playbackKey = result.playbackKey?.trim() || requestedKey;
         player.state.media.url = playbackKey;
         if (isLoading.value) {
@@ -709,7 +660,7 @@ export const usePlaybackFlow = ({
     };
 
     onMounted(() => {
-        void ensurePlaybackPreferencesLoaded();
+        void loadPlaybackPreferences();
         if (typeof window === "undefined") return;
         window.addEventListener(SETTINGS_UPDATED_EVENT, onSettingsUpdated);
     });

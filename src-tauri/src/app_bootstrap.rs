@@ -18,6 +18,7 @@ use tokio::time::{interval, Duration};
 const LOG_LEVEL_SETTING_LABEL: &str = "SOIA_LOG_LEVEL";
 const YTDL_PATH_SETTING_LABEL: &str = "SOIA_YTDL_PATH";
 const NETWORK_PARALLEL_DOWNLOAD_SETTING_LABEL: &str = "NETWORK_PARALLEL_DOWNLOAD";
+const DEFAULT_SPEED_SETTING_LABEL: &str = "Default Speed";
 const DEFAULT_LOG_LEVEL: &str = "Info";
 const UPDATE_POLL_INTERVAL_SECS: u64 = 60 * 60;
 
@@ -296,6 +297,14 @@ fn configure_mpv_startup(app: &tauri::App) -> Result<(), Box<dyn Error>> {
 
     mpv_guard.set_option_string("hwdec", "auto");
 
+    let default_speed = resolve_default_playback_speed(&app.handle());
+    if let Err(error) = crate::mpv_command_checked(
+        &mpv_guard,
+        &["set", "speed", &default_speed.to_string()],
+    ) {
+        warn!("Failed to apply default playback speed: {error}");
+    }
+
     if let Ok(data_dir) = app.path().app_local_data_dir() {
         let screenshot_dir = data_dir.join("screenshots");
         let _ = fs::create_dir_all(&screenshot_dir);
@@ -309,6 +318,43 @@ fn load_setting_value(app: &tauri::AppHandle, label: &str) -> Option<String> {
     ui_state_store::load_setting_value(app, label)
         .ok()
         .flatten()
+}
+
+fn parse_default_playback_speed(value: Option<String>) -> f64 {
+    value
+        .and_then(|value| {
+            value
+                .trim()
+                .trim_end_matches(['x', 'X'])
+                .trim()
+                .parse::<f64>()
+                .ok()
+        })
+        .filter(|value| value.is_finite() && (0.01..=100.0).contains(value))
+        .unwrap_or(1.0)
+}
+
+fn resolve_default_playback_speed(app: &tauri::AppHandle) -> f64 {
+    parse_default_playback_speed(load_setting_value(app, DEFAULT_SPEED_SETTING_LABEL))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_default_playback_speed;
+
+    #[test]
+    fn parses_default_playback_speed_setting() {
+        assert_eq!(parse_default_playback_speed(Some("1.25x".to_string())), 1.25);
+        assert_eq!(parse_default_playback_speed(Some(" 0.75X ".to_string())), 0.75);
+    }
+
+    #[test]
+    fn defaults_invalid_playback_speed_setting() {
+        assert_eq!(parse_default_playback_speed(None), 1.0);
+        assert_eq!(parse_default_playback_speed(Some("invalid".to_string())), 1.0);
+        assert_eq!(parse_default_playback_speed(Some("0x".to_string())), 1.0);
+        assert_eq!(parse_default_playback_speed(Some("NaNx".to_string())), 1.0);
+    }
 }
 
 fn resolve_log_file_path(app: &tauri::App) -> Option<PathBuf> {

@@ -48,9 +48,6 @@ pub(crate) fn mpv_set_option_string(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoadPlaybackSourcePayload {
     key_or_url: String,
-    skip_intro_seconds: Option<f64>,
-    auto_play: Option<bool>,
-    playback_speed: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -133,6 +130,28 @@ fn core_error_message(error: crate::protocol::CoreErrorDto) -> String {
     }
 }
 
+const SKIP_INTRO_SECONDS_SETTING_LABEL: &str = "SKIP_INTRO_SECONDS";
+
+fn parse_skip_intro_seconds(value: Option<String>) -> f64 {
+    value
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0)
+}
+
+fn load_skip_intro_seconds(app: &tauri::AppHandle) -> f64 {
+    match crate::store::ui_state_store::load_setting_value(
+        app,
+        SKIP_INTRO_SECONDS_SETTING_LABEL,
+    ) {
+        Ok(value) => parse_skip_intro_seconds(value),
+        Err(error) => {
+            log::warn!("failed to load skip-intro setting: {error}");
+            0.0
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn load_playback_source(
     app: tauri::AppHandle,
@@ -174,7 +193,7 @@ pub(crate) async fn load_playback_source(
     {
         return Ok(superseded_load_result());
     }
-    let skip_intro_seconds = payload.skip_intro_seconds.unwrap_or(0.0);
+    let skip_intro_seconds = load_skip_intro_seconds(&app);
     let resume_position = match crate::store::play_history::resolve_resume_position(
         &app,
         &source_key,
@@ -190,10 +209,11 @@ pub(crate) async fn load_playback_source(
             }
         }
     };
+    let playback_speed = state.playback_state.current().speed;
     let load_options = match crate::core::playback_loading::PlaybackLoadOptions::from_optional(
         Some(resume_position),
-        payload.auto_play,
-        payload.playback_speed,
+        None,
+        Some(playback_speed),
     ) {
         Ok(options) => options,
         Err(error) => {
@@ -268,6 +288,25 @@ pub(crate) async fn load_playback_source(
             }
         });
     load_result.unwrap_or_else(|| Ok(superseded_load_result()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_skip_intro_seconds;
+
+    #[test]
+    fn parses_positive_skip_intro_seconds() {
+        assert_eq!(parse_skip_intro_seconds(Some("15.5".to_string())), 15.5);
+    }
+
+    #[test]
+    fn defaults_invalid_skip_intro_seconds_to_zero() {
+        assert_eq!(parse_skip_intro_seconds(None), 0.0);
+        assert_eq!(parse_skip_intro_seconds(Some("".to_string())), 0.0);
+        assert_eq!(parse_skip_intro_seconds(Some("invalid".to_string())), 0.0);
+        assert_eq!(parse_skip_intro_seconds(Some("-5".to_string())), 0.0);
+        assert_eq!(parse_skip_intro_seconds(Some("NaN".to_string())), 0.0);
+    }
 }
 
 #[tauri::command]

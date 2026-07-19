@@ -38,12 +38,7 @@ export type PlayerApi = {
   bufferedPercent: { value: number };
   isUrlModified: { value: boolean };
   formatTime: (seconds: number) => string;
-  loadPlaybackSource: (
-    keyOrUrl: string,
-    skipIntroSeconds?: number,
-    autoPlay?: boolean,
-    playbackSpeed?: number,
-  ) => Promise<LoadFileResult>;
+  loadPlaybackSource: (keyOrUrl: string) => Promise<LoadFileResult>;
   parsePlaylistFile: (path: string) => Promise<ParsedPlaylistFile>;
   parsePlaylistSource: (source: string) => Promise<ParsedPlaylistFile>;
   resolveYoutubePlaylist: (url: string) => Promise<ResolvedYoutubePlaylist>;
@@ -57,7 +52,6 @@ export type PlayerApi = {
   seek: (position: number) => Promise<void>;
   seekRelative: (position: number) => Promise<void>;
   setLoopFile: (enabled: boolean) => Promise<void>;
-  setPlaybackSpeed: (rate: number) => Promise<void>;
   setVolume: (volume: number) => Promise<void>;
   toggleMuted: () => Promise<void>;
 };
