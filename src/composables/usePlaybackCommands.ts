@@ -87,12 +87,12 @@ export const usePlaybackCommands = (
 
   const loadPlaybackSource = async (
     source: ResolvedPlaybackSource,
-    resumePosition?: number,
+    skipIntroSeconds = 0,
     autoPlay = true,
     playbackSpeed = 1.0,
   ): Promise<LoadFileResult> => {
     return await invoke<LoadFileResult>("load_playback_source", {
-      payload: { source, resumePosition, autoPlay, playbackSpeed },
+      payload: { source, skipIntroSeconds, autoPlay, playbackSpeed },
     });
   };
 

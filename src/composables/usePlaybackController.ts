@@ -41,7 +41,7 @@ export type PlayerApi = {
   formatTime: (seconds: number) => string;
   loadPlaybackSource: (
     source: ResolvedPlaybackSource,
-    resumePosition?: number,
+    skipIntroSeconds?: number,
     autoPlay?: boolean,
     playbackSpeed?: number,
   ) => Promise<LoadFileResult>;

@@ -401,6 +401,12 @@ useAppRuntimeBindings({
         isLoading.value = false;
         loadingUrl.value = "";
     },
+    onPlaybackLoadPrepared: ({ playbackKey, resumePosition }) => {
+        pendingResume.value = {
+            url: playbackKey,
+            position: resumePosition,
+        };
+    },
     resolveMediaTitle,
     nowPlaying,
     isInfoOpen,

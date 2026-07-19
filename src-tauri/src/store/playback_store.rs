@@ -1,7 +1,39 @@
 use crate::store::media_db;
 use crate::store::play_history::PlayHistoryEntry;
-use rusqlite::{params, params_from_iter, Transaction};
+use rusqlite::{params, params_from_iter, OptionalExtension, Transaction};
 use std::collections::HashMap;
+
+const RESUME_FROM_START_THRESHOLD: f64 = 0.99;
+
+fn resolve_resume_position_from_history(
+    history: Option<(f64, f64)>,
+    skip_intro_seconds: f64,
+) -> f64 {
+    let skip_intro_seconds = if skip_intro_seconds.is_finite() {
+        skip_intro_seconds.max(0.0)
+    } else {
+        0.0
+    };
+    let resume_position = match history {
+        Some((last_position, duration)) => {
+            let last_position = if last_position.is_finite() {
+                last_position.max(0.0)
+            } else {
+                0.0
+            };
+            if duration.is_finite()
+                && duration > 0.0
+                && last_position / duration > RESUME_FROM_START_THRESHOLD
+            {
+                0.0
+            } else {
+                last_position
+            }
+        }
+        None => 0.0,
+    };
+    resume_position.max(skip_intro_seconds)
+}
 
 const PLAY_HISTORY_UPSERT_SQL: &str = "INSERT INTO play_history (
          id,
@@ -570,6 +602,64 @@ pub fn load_play_history(app: &tauri::AppHandle) -> Result<Vec<PlayHistoryEntry>
         })
         .map_err(|e| e.to_string())?;
     collect_rows(rows)
+}
+
+pub fn resolve_resume_position(
+    app: &tauri::AppHandle,
+    path: &str,
+    skip_intro_seconds: f64,
+) -> Result<f64, String> {
+    let conn = media_db::open_db(app)?;
+    let history = conn
+        .query_row(
+            "SELECT last_position, duration FROM play_history WHERE path = ?1",
+            [path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(resolve_resume_position_from_history(
+        history,
+        skip_intro_seconds,
+    ))
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::resolve_resume_position_from_history;
+
+    #[test]
+    fn applies_skip_intro_with_or_without_history() {
+        assert_eq!(resolve_resume_position_from_history(None, 12.0), 12.0);
+        assert_eq!(
+            resolve_resume_position_from_history(Some((0.0, 120.0)), 12.0),
+            12.0,
+        );
+        assert_eq!(
+            resolve_resume_position_from_history(Some((5.0, 120.0)), 12.0),
+            12.0,
+        );
+        assert_eq!(
+            resolve_resume_position_from_history(Some((30.0, 120.0)), 12.0),
+            30.0,
+        );
+    }
+
+    #[test]
+    fn restarts_nearly_completed_media() {
+        assert_eq!(
+            resolve_resume_position_from_history(Some((99.5, 100.0)), 0.0),
+            0.0,
+        );
+        assert_eq!(
+            resolve_resume_position_from_history(Some((99.0, 100.0)), 0.0),
+            99.0,
+        );
+        assert_eq!(
+            resolve_resume_position_from_history(Some((99.5, 100.0)), 12.0),
+            12.0,
+        );
+    }
 }
 
 pub fn save_play_history(

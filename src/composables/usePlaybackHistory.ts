@@ -5,7 +5,6 @@ import { normalizePlaybackKey } from "../utils/playbackDisplay";
 
 const MAX_HISTORY = 100;
 const SAVE_DEBOUNCE_MS = 800;
-const RESUME_FROM_START_THRESHOLD = 0.99;
 
 const normalizeTrackList = (value: unknown): string[] => {
     if (!Array.isArray(value)) return [];
@@ -201,24 +200,6 @@ export const usePlaybackHistory = () => {
         isLivePlayback: boolean,
     ) => isLivePlayback || existing?.isLivePlayback === true;
 
-    const getResumePosition = (path: string): number => {
-        const normalizedPath = normalizePlaybackKey(path);
-        const entry = findEntry(normalizedPath);
-        if (!entry) return 0;
-        if (
-            entry.duration > 0 &&
-            entry.lastPosition / entry.duration > RESUME_FROM_START_THRESHOLD
-        ) {
-            return 0;
-        }
-        return entry.lastPosition;
-    };
-
-    const hasEntry = (path: string): boolean => {
-        const normalizedPath = normalizePlaybackKey(path);
-        return history.value.some((item) => item.path === normalizedPath);
-    };
-
     const queueProgressForSave = (entry: HistoryEntry) => {
         pendingProgressEntry = entry;
     };
@@ -411,8 +392,6 @@ export const usePlaybackHistory = () => {
         history,
         isReady,
         loadHistory,
-        getResumePosition,
-        hasEntry,
         markPlaybackStarted,
         recordProgress,
         recordStop,

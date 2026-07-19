@@ -48,7 +48,7 @@ pub(crate) fn mpv_set_option_string(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoadPlaybackSourcePayload {
     source: crate::playback_source::resolve::ResolvedPlaybackSourceResult,
-    resume_position: Option<f64>,
+    skip_intro_seconds: Option<f64>,
     auto_play: Option<bool>,
     playback_speed: Option<f64>,
 }
@@ -59,6 +59,13 @@ pub(crate) struct LoadPlaybackSourceResult {
     title: Option<String>,
     is_live_playback: bool,
     superseded: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaybackLoadPreparedPayload {
+    playback_key: String,
+    resume_position: f64,
 }
 
 fn superseded_load_result() -> LoadPlaybackSourceResult {
@@ -137,8 +144,27 @@ pub(crate) async fn load_playback_source(
         .execute_if_current(generation, || {
             publish_source_load_state(&app, &state, true, Some(source_key.clone()), None);
         });
+    if let Err(error) = crate::flush_pending_play_history_entry(&app) {
+        log::warn!("failed to flush playback history before loading source: {error}");
+    }
+    let skip_intro_seconds = payload.skip_intro_seconds.unwrap_or(0.0);
+    let resume_position = match crate::store::play_history::resolve_resume_position(
+        &app,
+        &source_key,
+        skip_intro_seconds,
+    ) {
+        Ok(position) => position,
+        Err(error) => {
+            log::warn!("failed to resolve playback resume position: {error}");
+            if skip_intro_seconds.is_finite() {
+                skip_intro_seconds.max(0.0)
+            } else {
+                0.0
+            }
+        }
+    };
     let load_options = match crate::core::playback_loading::PlaybackLoadOptions::from_optional(
-        payload.resume_position,
+        Some(resume_position),
         payload.auto_play,
         payload.playback_speed,
     ) {
@@ -168,6 +194,15 @@ pub(crate) async fn load_playback_source(
     let load_result = state
         .playback_load_coordinator
         .execute_if_current(generation, || {
+            if let Err(error) = app.emit(
+                "playback-load-prepared",
+                PlaybackLoadPreparedPayload {
+                    playback_key: source_key.clone(),
+                    resume_position,
+                },
+            ) {
+                log::warn!("failed to emit prepared playback load: {error}");
+            }
             match with_mpv(&state, |mpv_guard| {
                 crate::core::playback_loading::load(
                     mpv_guard,

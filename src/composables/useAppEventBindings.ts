@@ -25,6 +25,11 @@ type SourceLoadState = {
     error: string | null;
 };
 
+type PlaybackLoadPreparedPayload = {
+    playbackKey: string;
+    resumePosition: number;
+};
+
 type PlayerEventApi = Pick<PlayerApi, "state" | "syncFullscreen">;
 
 type TracksApi = {
@@ -53,6 +58,7 @@ type AppEventBindingsOptions = {
     onProgress?: (payload: ProgressPayload) => void;
     onEndFile?: (payload: EndFilePayload) => void | Promise<void>;
     onSourceLoadState?: (state: SourceLoadState) => void;
+    onPlaybackLoadPrepared?: (payload: PlaybackLoadPreparedPayload) => void;
     resolveMediaTitle?: (incomingTitle: string, currentUrl: string) => string;
 };
 
@@ -74,10 +80,12 @@ export const useAppEventBindings = ({
     onProgress,
     onEndFile,
     onSourceLoadState,
+    onPlaybackLoadPrepared,
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
     // 事件监听器引用
     let unlistenPlaybackSnapshot: UnlistenFn | null = null;
+    let unlistenPlaybackLoadPrepared: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
     let unlistenPlaybackRestart: UnlistenFn | null = null;
     let unlistenResize: UnlistenFn | null = null;
@@ -139,6 +147,11 @@ export const useAppEventBindings = ({
                     });
                 }
             },
+        );
+
+        unlistenPlaybackLoadPrepared = await listen<PlaybackLoadPreparedPayload>(
+            "playback-load-prepared",
+            (event) => onPlaybackLoadPrepared?.(event.payload),
         );
 
         // 监听文件加载完成
@@ -309,6 +322,7 @@ export const useAppEventBindings = ({
 
     onUnmounted(() => {
         unlistenPlaybackSnapshot?.();
+        unlistenPlaybackLoadPrepared?.();
         unlistenFileLoaded?.();
         unlistenPlaybackRestart?.();
         unlistenResize?.();

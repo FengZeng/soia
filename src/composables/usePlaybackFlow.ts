@@ -31,8 +31,6 @@ type TracksApi = {
 };
 
 type HistoryApi = {
-    hasEntry: (path: string) => boolean;
-    getResumePosition: (path: string) => number;
     recordStop: (
         path: string,
         position: number,
@@ -277,13 +275,6 @@ export const usePlaybackFlow = ({
         updatePlaybackPreferences(customEvent.detail?.groups);
     };
 
-    const getStartPosition = (path: string, skipIntroSeconds: number) => {
-        const hasHistoryEntry = history.hasEntry(path);
-        const resumePosition = history.getResumePosition(path);
-        if (hasHistoryEntry) return resumePosition;
-        return skipIntroSeconds > 0 ? skipIntroSeconds : resumePosition;
-    };
-
     const triggerPlaybackIntent = async () => {
         await onPlaybackIntent?.();
     };
@@ -435,11 +426,9 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        const resumePosition = getStartPosition(path, preferences.skipIntroSeconds);
-        pendingResume.value = { url: path, position: resumePosition };
         const result = await player.loadPlaybackSource(
             source,
-            resumePosition,
+            preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,
         );
@@ -477,17 +466,9 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        const resumePosition = getStartPosition(
-            playbackKey,
-            preferences.skipIntroSeconds,
-        );
-        pendingResume.value = {
-            url: playbackKey,
-            position: resumePosition,
-        };
         await player.loadPlaybackSource(
             source,
-            resumePosition,
+            preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,
         );
@@ -520,17 +501,9 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        const resumePosition = getStartPosition(
-            playbackKey,
-            preferences.skipIntroSeconds,
-        );
-        pendingResume.value = {
-            url: playbackKey,
-            position: resumePosition,
-        };
         const result = await player.loadPlaybackSource(
             source,
-            resumePosition,
+            preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,
         );
@@ -562,17 +535,9 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        const resumePosition = getStartPosition(
-            url,
-            preferences.skipIntroSeconds,
-        );
-        pendingResume.value = {
-            url,
-            position: resumePosition,
-        };
         const result = await player.loadPlaybackSource(
             source,
-            resumePosition,
+            preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,
         );
@@ -610,17 +575,9 @@ export const usePlaybackFlow = ({
         isLoading.value = true;
         await ensurePlaybackPreferencesLoaded();
         const preferences = playbackPreferences.value;
-        const resumePosition = getStartPosition(
-            playbackKey,
-            preferences.skipIntroSeconds,
-        );
-        pendingResume.value = {
-            url: playbackKey,
-            position: resumePosition,
-        };
         await player.loadPlaybackSource(
             source,
-            resumePosition,
+            preferences.skipIntroSeconds,
             preferences.autoPlay,
             currentSpeed.value,
         );

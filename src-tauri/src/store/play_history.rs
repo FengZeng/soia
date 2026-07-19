@@ -27,6 +27,14 @@ pub fn load_play_history(app: &tauri::AppHandle) -> Result<Vec<PlayHistoryEntry>
     playback_store::load_play_history(app)
 }
 
+pub fn resolve_resume_position(
+    app: &tauri::AppHandle,
+    path: &str,
+    skip_intro_seconds: f64,
+) -> Result<f64, String> {
+    playback_store::resolve_resume_position(app, path, skip_intro_seconds)
+}
+
 pub fn save_play_history(
     app: &tauri::AppHandle,
     entries: Vec<PlayHistoryEntry>,
