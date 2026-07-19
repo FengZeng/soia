@@ -27,6 +27,7 @@ const STARTUP_WINDOW_SHOW_FALLBACK_MS: u64 = 3000;
 pub struct AppState {
     pub mpv_player: Arc<Mutex<MpvHandle>>,
     pub pending_play_history_entry: Mutex<Option<store::play_history::PlayHistoryEntry>>,
+    pub current_playback_key: Mutex<Option<String>>,
     now_playing: Mutex<NowPlayingState>,
     pub(crate) playback_state: core::state::PlaybackStatePublisher,
     pub(crate) playback_service: core::playback_service::PlaybackService,
@@ -124,15 +125,42 @@ pub(crate) fn clear_pending_play_history_entry(
     Ok(())
 }
 
+fn refresh_pending_play_history_entry(
+    entry: &mut store::play_history::PlayHistoryEntry,
+    current_playback_key: Option<&str>,
+    snapshot: protocol::PlaybackSnapshotDto,
+) {
+    if current_playback_key != Some(entry.path.as_str()) {
+        return;
+    }
+    if snapshot.position.is_finite() && snapshot.position > 0.0 {
+        entry.last_position = snapshot.position;
+    }
+    if snapshot.duration.is_finite() && snapshot.duration > 0.0 {
+        entry.duration = snapshot.duration;
+    }
+    if entry.title.trim().is_empty() {
+        if let Some(title) = snapshot.title.filter(|title| !title.trim().is_empty()) {
+            entry.title = title;
+        }
+    }
+}
+
 pub(crate) fn flush_pending_play_history_entry(app_handle: &tauri::AppHandle) -> AppResult<()> {
     let state: tauri::State<'_, AppState> = app_handle.state::<AppState>();
     let entry = {
         let mut pending = lock_mutex(&state.pending_play_history_entry)?;
         pending.take()
     };
-    let Some(entry) = entry else {
+    let Some(mut entry) = entry else {
         return Ok(());
     };
+    let current_playback_key = lock_mutex(&state.current_playback_key)?.clone();
+    refresh_pending_play_history_entry(
+        &mut entry,
+        current_playback_key.as_deref(),
+        state.playback_state.current(),
+    );
 
     if let Err(error) =
         store::play_history::save_play_history_progress_entry(app_handle, entry.clone())
@@ -145,6 +173,60 @@ pub(crate) fn flush_pending_play_history_entry(app_handle: &tauri::AppHandle) ->
         return Err(error);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pending_play_history_tests {
+    use super::refresh_pending_play_history_entry;
+    use crate::protocol::PlaybackSnapshotDto;
+    use crate::store::play_history::PlayHistoryEntry;
+
+    fn history_entry(path: &str) -> PlayHistoryEntry {
+        PlayHistoryEntry {
+            id: String::new(),
+            path: path.to_string(),
+            title: String::new(),
+            last_position: 10.0,
+            duration: 100.0,
+            last_played_at: 0,
+            is_pinned: false,
+            is_live_playback: false,
+            external_audio_tracks: Vec::new(),
+            external_sub_tracks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn refreshes_matching_pending_history_from_core_snapshot() {
+        let mut entry = history_entry("media-key");
+        let snapshot = PlaybackSnapshotDto {
+            title: Some("Core title".to_string()),
+            position: 42.0,
+            duration: 120.0,
+            ..PlaybackSnapshotDto::default()
+        };
+
+        refresh_pending_play_history_entry(&mut entry, Some("media-key"), snapshot);
+
+        assert_eq!(entry.last_position, 42.0);
+        assert_eq!(entry.duration, 120.0);
+        assert_eq!(entry.title, "Core title");
+    }
+
+    #[test]
+    fn leaves_mismatched_pending_history_unchanged() {
+        let mut entry = history_entry("older-media");
+        let snapshot = PlaybackSnapshotDto {
+            position: 42.0,
+            duration: 120.0,
+            ..PlaybackSnapshotDto::default()
+        };
+
+        refresh_pending_play_history_entry(&mut entry, Some("current-media"), snapshot);
+
+        assert_eq!(entry.last_position, 10.0);
+        assert_eq!(entry.duration, 100.0);
+    }
 }
 
 fn with_now_playing_mut<R>(

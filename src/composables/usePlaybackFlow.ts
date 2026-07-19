@@ -287,19 +287,6 @@ export const usePlaybackFlow = ({
         player.state.playback.bufferedTime = 0;
     };
 
-    const finalizeCurrentPlayback = async () => {
-        const currentUrl = player.state.media.url;
-        if (!currentUrl) return;
-        await history.recordStop(
-            currentUrl,
-            player.state.playback.currentTime,
-            player.state.playback.duration,
-            player.state.media.title,
-            player.state.media.isLivePlayback,
-        );
-        resetPlaybackTimeline();
-    };
-
     const rememberLivePlaybackEntries = (entries: ParsedPlaylistEntry[]) => {
         const paths = entries
             .map((entry) => entry.path?.trim() ?? "")
@@ -413,7 +400,7 @@ export const usePlaybackFlow = ({
         const playbackKey = source.playbackKey;
         if (!playbackKey) return;
         await triggerPlaybackIntent();
-        await finalizeCurrentPlayback();
+        resetPlaybackTimeline();
         hideHistory.value = true;
         nowPlaying.clearArtwork();
         tracks.resetTracks();

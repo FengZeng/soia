@@ -213,6 +213,13 @@ pub(crate) async fn load_playback_source(
                 )
             }) {
                 Ok(()) => {
+                    {
+                        let mut current_playback_key = state
+                            .current_playback_key
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        *current_playback_key = Some(source_key.clone());
+                    }
                     publish_source_load_state(&app, &state, false, None, None);
                     Ok(LoadPlaybackSourceResult {
                         title: prepared.title,
