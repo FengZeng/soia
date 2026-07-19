@@ -33,7 +33,7 @@ import { usePlaybackNavigation } from "./composables/usePlaybackNavigation";
 import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePersistence";
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
-import { useRemotePlaybackNavigation } from "./composables/useRemotePlaybackNavigation";
+import { useNavigationStateSync } from "./composables/useNavigationStateSync";
 
 const {
     isMacOS,
@@ -145,9 +145,12 @@ const playbackNavigation = usePlaybackNavigation({
     playPath,
 });
 
-useRemotePlaybackNavigation({
-    playPreviousTrack: playbackNavigation.playPreviousTrack,
-    playNextTrack: playbackNavigation.playNextTrack,
+useNavigationStateSync({
+    playlists,
+    activePlaylistId,
+    loopMode,
+    sortMode,
+    isLoopOne,
 });
 
 const isWindowsPlatform =
