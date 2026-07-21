@@ -11,6 +11,7 @@ const clamp = (value: number, min: number, max: number) =>
     Math.min(max, Math.max(min, value));
 
 type ColorAdjustmentKey =
+    | "luminance"
     | "brightness"
     | "contrast"
     | "saturation"
@@ -25,6 +26,7 @@ type PersistedPlaybackAdjustmentsState = {
 };
 
 const COLOR_ADJUSTMENT_KEYS: ColorAdjustmentKey[] = [
+    "luminance",
     "brightness",
     "contrast",
     "saturation",
@@ -33,6 +35,7 @@ const COLOR_ADJUSTMENT_KEYS: ColorAdjustmentKey[] = [
 ];
 
 const DEFAULT_COLOR_ADJUSTMENTS: ColorAdjustmentsState = {
+    luminance: 0,
     brightness: 0,
     contrast: 0,
     saturation: 0,
@@ -83,6 +86,7 @@ export const usePlaybackAdjustments = () => {
             : localColorAdjustments.value,
     );
 
+    const luminance = computed(() => activeColorAdjustments.value.luminance);
     const brightness = computed(() => activeColorAdjustments.value.brightness);
     const contrast = computed(() => activeColorAdjustments.value.contrast);
     const saturation = computed(() => activeColorAdjustments.value.saturation);
@@ -109,6 +113,10 @@ export const usePlaybackAdjustments = () => {
         option: ColorAdjustmentKey,
         next: number,
     ) => {
+        if (option === "luminance") {
+            await invoke<number>("set_luminance_adjustment", { value: next });
+            return;
+        }
         await invoke("mpv_set_option_string", {
             name: option,
             value: next,
@@ -215,6 +223,10 @@ export const usePlaybackAdjustments = () => {
         await setColorAdjustment("brightness", value);
     };
 
+    const setLuminance = async (value: number) => {
+        await setColorAdjustment("luminance", value);
+    };
+
     const setContrast = async (value: number) => {
         await setColorAdjustment("contrast", value);
     };
@@ -258,6 +270,7 @@ export const usePlaybackAdjustments = () => {
         audioDelay,
         subDelay,
         secondarySubDelay,
+        luminance,
         brightness,
         contrast,
         saturation,
@@ -268,6 +281,7 @@ export const usePlaybackAdjustments = () => {
         setSubDelay,
         setSecondarySubDelay,
         setSubDelayForTarget,
+        setLuminance,
         setBrightness,
         setContrast,
         setSaturation,

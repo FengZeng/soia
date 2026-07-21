@@ -25,6 +25,8 @@ const props = defineProps<{
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
+    luminance: number;
+    showLuminance: boolean;
     brightness: number;
     contrast: number;
     saturation: number;
@@ -71,6 +73,7 @@ const emit = defineEmits<{
     (e: "set-sub-font-color", payload: { target: SubtitleTarget; value: string }): void;
     (e: "set-sub-position", payload: { target: SubtitleTarget; value: number }): void;
     (e: "reset-sub-appearance", target?: SubtitleTarget): void;
+    (e: "set-luminance", value: number): void;
     (e: "set-brightness", value: number): void;
     (e: "set-contrast", value: number): void;
     (e: "set-saturation", value: number): void;
@@ -253,6 +256,8 @@ onUnmounted(() => {
                         :audio-delay="audioDelay"
                         :sub-delay="subDelay"
                         :secondary-sub-delay="secondarySubDelay"
+                        :luminance="luminance"
+                        :show-luminance="showLuminance"
                         :brightness="brightness"
                         :contrast="contrast"
                         :saturation="saturation"
@@ -293,6 +298,7 @@ onUnmounted(() => {
                         @set-sub-font-color="emit('set-sub-font-color', $event)"
                         @set-sub-position="emit('set-sub-position', $event)"
                         @reset-sub-appearance="emit('reset-sub-appearance', $event)"
+                        @set-luminance="emit('set-luminance', $event)"
                         @set-brightness="emit('set-brightness', $event)"
                         @set-contrast="emit('set-contrast', $event)"
                         @set-saturation="emit('set-saturation', $event)"

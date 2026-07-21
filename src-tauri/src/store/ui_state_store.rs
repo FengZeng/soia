@@ -131,6 +131,8 @@ pub struct PlaybackState {
 #[serde(rename_all = "camelCase")]
 pub struct ColorAdjustmentsState {
     #[serde(default)]
+    pub luminance: Option<f64>,
+    #[serde(default)]
     pub brightness: Option<f64>,
     #[serde(default)]
     pub contrast: Option<f64>,

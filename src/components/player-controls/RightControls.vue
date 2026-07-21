@@ -22,6 +22,8 @@ const props = defineProps<{
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
+    luminance: number;
+    showLuminance: boolean;
     brightness: number;
     contrast: number;
     saturation: number;
@@ -61,6 +63,7 @@ const emit = defineEmits<{
     (e: "set-sub-font-color", payload: { target: SubtitleTarget; value: string }): void;
     (e: "set-sub-position", payload: { target: SubtitleTarget; value: number }): void;
     (e: "reset-sub-appearance", target?: SubtitleTarget): void;
+    (e: "set-luminance", value: number): void;
     (e: "set-brightness", value: number): void;
     (e: "set-contrast", value: number): void;
     (e: "set-saturation", value: number): void;
@@ -861,6 +864,19 @@ watch(
                         </div>
                     </div>
                     <div class="track-menu__list track-menu__list--settings">
+                        <ControlSlider
+                            v-if="showLuminance"
+                            label="Luminance"
+                            :value="luminance"
+                            :min="-100"
+                            :max="100"
+                            :step="1"
+                            unit="%"
+                            :show-sign="true"
+                            :precision="0"
+                            @change="emit('set-luminance', $event)"
+                            @reset="emit('set-luminance', 0)"
+                        />
                         <ControlSlider
                             label="Brightness"
                             :value="brightness"

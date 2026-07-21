@@ -14,6 +14,7 @@ type PlayerState = {
     lastLoadedUrl: string;
     isFileLoaded: boolean;
     isLivePlayback: boolean;
+    isHdrContent: boolean;
     title: string;
   };
   playback: {
@@ -67,6 +68,7 @@ export const usePlaybackController = (): PlayerApi => {
       lastLoadedUrl: "",
       isFileLoaded: false,
       isLivePlayback: false,
+      isHdrContent: false,
       title: "",
     },
     playback: {

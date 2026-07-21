@@ -97,6 +97,7 @@ export const useAppEventBindings = ({
     let unlistenEndFile: UnlistenFn | null = null;
     let unlistenMediaTitle: UnlistenFn | null = null;
     let unlistenHwdecCurrent: UnlistenFn | null = null;
+    let unlistenVideoHdrChanged: UnlistenFn | null = null;
 
     const windowEventHandlers: Array<[keyof WindowEventMap, EventListener]> = [
         ["mousemove", () => ui.onUserInteraction()],
@@ -196,6 +197,13 @@ export const useAppEventBindings = ({
                         ? event.payload.trim()
                         : "";
                 player.state.playback.hwdecCurrent = hwdec;
+            },
+        );
+
+        unlistenVideoHdrChanged = await listen<boolean>(
+            "mpv-video-hdr-changed",
+            (event) => {
+                player.state.media.isHdrContent = event.payload === true;
             },
         );
 
@@ -335,6 +343,7 @@ export const useAppEventBindings = ({
         unlistenEndFile?.();
         unlistenMediaTitle?.();
         unlistenHwdecCurrent?.();
+        unlistenVideoHdrChanged?.();
         ui.cleanup();
         windowEventHandlers.forEach(([eventName, handler]) => {
             window.removeEventListener(eventName, handler);
