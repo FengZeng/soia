@@ -649,7 +649,7 @@ pub(crate) fn apply_rendering_settings(
 }
 
 #[tauri::command]
-pub(crate) fn set_luminance_adjustment(
+pub(crate) fn set_brightness_adjustment(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
     value: f64,
@@ -657,10 +657,10 @@ pub(crate) fn set_luminance_adjustment(
     let result = with_mpv(&state, |mpv_guard| {
         state
             .shader_pipeline
-            .set_luminance_adjustment(&app, mpv_guard, value)
+            .set_brightness_adjustment(&app, mpv_guard, value)
     });
     if let Err(error) = &result {
-        log::error!("Failed to apply luminance adjustment: {error}");
+        log::error!("Failed to apply brightness adjustment: {error}");
     }
     result
 }

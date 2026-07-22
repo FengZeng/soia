@@ -541,7 +541,7 @@ pub fn run() {
             commands::persistence::apply_proxy_settings,
             commands::persistence::apply_stream_proxy_settings,
             commands::persistence::apply_rendering_settings,
-            commands::persistence::set_luminance_adjustment,
+            commands::persistence::set_brightness_adjustment,
             commands::persistence::resolve_shader_candidates,
             commands::persistence::resolve_existing_shader_files,
             commands::persistence::get_media_association_status,

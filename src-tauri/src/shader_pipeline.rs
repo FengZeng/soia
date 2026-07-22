@@ -1,6 +1,6 @@
 use crate::mpv::MpvHandle;
-use crate::mpv_command_checked;
 use crate::store::storage_paths;
+use crate::{mpv_command_checked, mpv_set_option_string_checked};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -16,7 +16,7 @@ const LUMINANCE_MAX_ADJUSTMENT: f64 = 100.0;
 #[derive(Default)]
 struct ShaderPipelineRuntime {
     active_user_shaders: Vec<String>,
-    luminance_adjustment: f64,
+    brightness_adjustment: f64,
     is_hdr_content: bool,
     initialized: bool,
 }
@@ -31,11 +31,12 @@ fn luminance_scale_from_adjustment(value: f64) -> f64 {
     LUMINANCE_MAX_SCALE.powf(adjustment / LUMINANCE_MAX_ADJUSTMENT)
 }
 
-fn effective_luminance_scale(value: f64, is_hdr_content: bool) -> f64 {
+fn brightness_outputs(value: f64, is_hdr_content: bool) -> (f64, f64) {
+    let adjustment = value.clamp(LUMINANCE_MIN_ADJUSTMENT, LUMINANCE_MAX_ADJUSTMENT);
     if is_hdr_content {
-        luminance_scale_from_adjustment(value)
+        (luminance_scale_from_adjustment(adjustment), 0.0)
     } else {
-        1.0
+        (1.0, adjustment)
     }
 }
 
@@ -71,8 +72,17 @@ fn apply_shader_stack(
     Ok(())
 }
 
+fn set_luminance_shader_scale(mpv: &MpvHandle, shader_option: &str) -> Result<(), String> {
+    // glsl-shader-opts is a key/value list. Appending replaces this named key
+    // while preserving parameters owned by user shaders.
+    mpv_command_checked(
+        mpv,
+        &["change-list", "glsl-shader-opts", "append", shader_option],
+    )
+}
+
 impl ShaderPipeline {
-    fn apply_luminance_scale(
+    fn apply_brightness_adjustment(
         runtime: &mut ShaderPipelineRuntime,
         app: &AppHandle,
         mpv: &MpvHandle,
@@ -84,14 +94,19 @@ impl ShaderPipeline {
             runtime.initialized = true;
         }
 
-        let scale = effective_luminance_scale(runtime.luminance_adjustment, runtime.is_hdr_content);
+        let (scale, mpv_brightness) =
+            brightness_outputs(runtime.brightness_adjustment, runtime.is_hdr_content);
         let shader_option = format!("soia-luminance/soia_luminance_scale={scale:.6}");
-        // glsl-shader-opts is a key/value list. Appending replaces this named
-        // key while preserving parameters owned by user shaders.
-        mpv_command_checked(
-            mpv,
-            &["change-list", "glsl-shader-opts", "append", &shader_option],
-        )?;
+
+        if runtime.is_hdr_content {
+            // Remove any SDR black-level offset before enabling HDR luminance scaling.
+            mpv_set_option_string_checked(mpv, "brightness", "0")?;
+            set_luminance_shader_scale(mpv, &shader_option)?;
+        } else {
+            // Disable HDR scaling before restoring the SDR brightness control.
+            set_luminance_shader_scale(mpv, &shader_option)?;
+            mpv_set_option_string_checked(mpv, "brightness", &mpv_brightness.to_string())?;
+        }
         Ok(scale)
     }
 
@@ -110,20 +125,20 @@ impl ShaderPipeline {
         Ok(())
     }
 
-    pub(crate) fn set_luminance_adjustment(
+    pub(crate) fn set_brightness_adjustment(
         &self,
         app: &AppHandle,
         mpv: &MpvHandle,
         value: f64,
     ) -> Result<f64, String> {
         if !value.is_finite() {
-            return Err("Luminance adjustment must be finite".to_string());
+            return Err("Brightness adjustment must be finite".to_string());
         }
 
         let mut runtime = self.runtime.lock().map_err(|error| error.to_string())?;
-        runtime.luminance_adjustment =
+        runtime.brightness_adjustment =
             value.clamp(LUMINANCE_MIN_ADJUSTMENT, LUMINANCE_MAX_ADJUSTMENT);
-        Self::apply_luminance_scale(&mut runtime, app, mpv)
+        Self::apply_brightness_adjustment(&mut runtime, app, mpv)
     }
 
     pub(crate) fn set_hdr_content(
@@ -134,13 +149,13 @@ impl ShaderPipeline {
     ) -> Result<f64, String> {
         let mut runtime = self.runtime.lock().map_err(|error| error.to_string())?;
         runtime.is_hdr_content = is_hdr_content;
-        Self::apply_luminance_scale(&mut runtime, app, mpv)
+        Self::apply_brightness_adjustment(&mut runtime, app, mpv)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compose_shader_stack, effective_luminance_scale, luminance_scale_from_adjustment};
+    use super::{brightness_outputs, compose_shader_stack, luminance_scale_from_adjustment};
 
     #[test]
     fn luminance_adjustment_is_symmetric_around_zero() {
@@ -161,9 +176,17 @@ mod tests {
     }
 
     #[test]
-    fn luminance_adjustment_is_disabled_for_sdr_content() {
-        assert!((effective_luminance_scale(100.0, false) - 1.0).abs() < f64::EPSILON);
-        assert!((effective_luminance_scale(100.0, true) - 8.0).abs() < f64::EPSILON);
+    fn brightness_uses_mpv_equalizer_for_sdr_content() {
+        let (scale, mpv_brightness) = brightness_outputs(75.0, false);
+        assert!((scale - 1.0).abs() < f64::EPSILON);
+        assert!((mpv_brightness - 75.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn brightness_uses_luminance_scale_for_hdr_content() {
+        let (scale, mpv_brightness) = brightness_outputs(100.0, true);
+        assert!((scale - 8.0).abs() < f64::EPSILON);
+        assert!(mpv_brightness.abs() < f64::EPSILON);
     }
 
     #[test]

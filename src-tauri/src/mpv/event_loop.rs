@@ -167,9 +167,8 @@ fn update_hdr_content_state(
             .map(|_| ())
     });
     if let Err(error) = result {
-        error!("Failed to update HDR luminance state: {error}");
+        error!("Failed to update HDR brightness routing: {error}");
     }
-    emit_event(app_handle, "mpv-video-hdr-changed", is_hdr_content);
 }
 
 fn emit_progress(
