@@ -133,12 +133,41 @@ struct TracksPayload {
     tracks: Vec<MediaTrack>,
 }
 
+fn is_hdr_transfer(transfer: &str) -> bool {
+    matches!(
+        transfer.trim().to_ascii_lowercase().as_str(),
+        "pq" | "hlg" | "bt.2100-pq" | "bt.2100-hlg"
+    )
+}
+
 fn emit_event<T: Serialize + Clone>(app_handle: &AppHandle, name: &str, payload: T) -> bool {
     if let Err(e) = app_handle.emit(name, payload) {
         error!("MPV Event Loop: Failed to emit {}: {:?}", name, e);
         false
     } else {
         true
+    }
+}
+
+fn update_hdr_content_state(
+    app_handle: &AppHandle,
+    last_is_hdr_content: &mut bool,
+    is_hdr_content: bool,
+) {
+    if *last_is_hdr_content == is_hdr_content {
+        return;
+    }
+
+    *last_is_hdr_content = is_hdr_content;
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    let result = crate::with_mpv(&state, |mpv_guard| {
+        state
+            .shader_pipeline
+            .set_hdr_content(app_handle, mpv_guard, is_hdr_content)
+            .map(|_| ())
+    });
+    if let Err(error) = result {
+        error!("Failed to update HDR brightness routing: {error}");
     }
 }
 
@@ -559,6 +588,7 @@ pub(super) fn mpv_event_loop(
     const PLAYLIST_POSITION_ID: u64 = 16;
     const PLAYLIST_COUNT_ID: u64 = 17;
     const SPEED_ID: u64 = 18;
+    const VIDEO_TRANSFER_ID: u64 = 19;
 
     let mut last_time_pos: f64 = 0.0;
     let mut last_duration: f64 = 0.0;
@@ -581,6 +611,7 @@ pub(super) fn mpv_event_loop(
     let mut last_pip_paused: bool = false;
     let mut last_media_title: Option<String> = None;
     let mut last_hwdec_current: Option<String> = None;
+    let mut last_is_hdr_content = false;
     let mut end_file_emitted_for_current_item: bool = false;
     let mut ignore_next_cache_update_after_seek: bool = false;
     let mut freeze_buffered_pos_until_cache_refresh: bool = false;
@@ -591,6 +622,8 @@ pub(super) fn mpv_event_loop(
     let media_title_name = CString::new("media-title").expect("Property name contains null byte");
     let hwdec_current_name =
         CString::new("hwdec-current").expect("Property name contains null byte");
+    let video_transfer_name =
+        CString::new("video-params/gamma").expect("Property name contains null byte");
 
     let mut series_matcher = SeriesMatcher::new();
     let mut last_selected_sid: i64 = 0;
@@ -678,6 +711,12 @@ pub(super) fn mpv_event_loop(
         observe_property(event_client, PLAYLIST_POSITION_ID, "playlist-pos", mpv_format::MPV_FORMAT_INT64);
         observe_property(event_client, PLAYLIST_COUNT_ID, "playlist-count", mpv_format::MPV_FORMAT_INT64);
         observe_property(event_client, SPEED_ID, "speed", mpv_format::MPV_FORMAT_DOUBLE);
+        observe_property(
+            event_client,
+            VIDEO_TRANSFER_ID,
+            "video-params/gamma",
+            mpv_format::MPV_FORMAT_STRING,
+        );
 
         debug!("MPV Event Loop: Started observing properties.");
 
@@ -706,6 +745,7 @@ pub(super) fn mpv_event_loop(
                     carried_aid = last_selected_aid;
                     is_current_file_loaded = false;
                     last_media_title = None;
+                    update_hdr_content_state(&app_handle, &mut last_is_hdr_content, false);
                     publish_playback_snapshot(
                         &app_handle,
                         last_time_pos,
@@ -1146,6 +1186,31 @@ pub(super) fn mpv_event_loop(
                                     }
                                 }
                             }
+                            VIDEO_TRANSFER_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_NONE {
+                                    update_hdr_content_state(
+                                        &app_handle,
+                                        &mut last_is_hdr_content,
+                                        false,
+                                    );
+                                } else {
+                                    let transfer_ptr = mpv_get_property_string(
+                                        event_client,
+                                        video_transfer_name.as_ptr(),
+                                    );
+                                    if !transfer_ptr.is_null() {
+                                        let transfer = CStr::from_ptr(transfer_ptr)
+                                            .to_string_lossy()
+                                            .into_owned();
+                                        update_hdr_content_state(
+                                            &app_handle,
+                                            &mut last_is_hdr_content,
+                                            is_hdr_transfer(&transfer),
+                                        );
+                                        mpv_free(transfer_ptr as *mut c_void);
+                                    }
+                                }
+                            }
                             WIDTH_ID => {
                                 if (*prop_event).format == mpv_format::MPV_FORMAT_INT64
                                     && !value_ptr.is_null()
@@ -1326,6 +1391,7 @@ pub(super) fn mpv_event_loop(
                     set_render_target_visible(&app_handle, false);
                     last_is_buffering = false;
                     last_download_speed_bps = 0.0;
+                    update_hdr_content_state(&app_handle, &mut last_is_hdr_content, false);
                     let reason = if !(*event).data.is_null() {
                         let end_file = &*((*event).data as *const MpvEventEndFile);
                         end_file.reason
@@ -1383,4 +1449,18 @@ pub(super) fn mpv_event_loop(
     }
     eof_reached.store(false, Ordering::SeqCst);
     info!("MPV Event Loop: Thread exited cleanly.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_hdr_transfer;
+
+    #[test]
+    fn identifies_hdr_transfer_functions() {
+        assert!(is_hdr_transfer("pq"));
+        assert!(is_hdr_transfer("HLG"));
+        assert!(is_hdr_transfer("bt.2100-pq"));
+        assert!(!is_hdr_transfer("bt.1886"));
+        assert!(!is_hdr_transfer("srgb"));
+    }
 }

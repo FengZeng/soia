@@ -1,7 +1,7 @@
 use crate::store::installation_store::{DailyActionResult, InstallationState};
 use crate::store::play_history::PlayHistoryEntry;
 use crate::store::ui_state_store::UiState;
-use crate::{mpv_command_checked, mpv_set_option_string_checked, with_mpv, AppState};
+use crate::{mpv_set_option_string_checked, with_mpv, AppState};
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
@@ -538,20 +538,6 @@ fn filter_existing_shader_files(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn apply_runtime_glsl_shaders(
-    mpv_guard: &crate::mpv::MpvHandle,
-    shaders: &[String],
-) -> Result<(), String> {
-    mpv_command_checked(mpv_guard, &["change-list", "glsl-shaders", "clr", ""])?;
-    for shader in shaders {
-        mpv_command_checked(
-            mpv_guard,
-            &["change-list", "glsl-shaders", "append", shader],
-        )?;
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub(crate) fn open_log_directory(app: tauri::AppHandle) -> Result<(), String> {
     let log_path = resolve_current_log_path(&app)
@@ -637,6 +623,7 @@ pub(crate) fn apply_stream_proxy_settings(
 #[tauri::command]
 pub(crate) fn apply_rendering_settings(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     selected_shader_files: Vec<String>,
     active_shader_files: Vec<String>,
 ) -> Result<RenderingSettingsState, String> {
@@ -644,15 +631,38 @@ pub(crate) fn apply_rendering_settings(
     let existing_selected = filter_existing_shader_files(&selected);
     let active = align_active_shaders(&existing_selected, active_shader_files);
 
-    with_mpv(&state, |mpv_guard| {
-        apply_runtime_glsl_shaders(mpv_guard, &active)?;
+    let apply_result = with_mpv(&state, |mpv_guard| {
+        state
+            .shader_pipeline
+            .apply_user_shaders(&app, mpv_guard, &active)?;
         Ok(())
-    })?;
+    });
+    if let Err(error) = &apply_result {
+        log::error!("Failed to apply shader pipeline: {error}");
+    }
+    apply_result?;
 
     Ok(RenderingSettingsState {
         selected_shader_files: selected,
         active_shader_files: active,
     })
+}
+
+#[tauri::command]
+pub(crate) fn set_brightness_adjustment(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    value: f64,
+) -> Result<f64, String> {
+    let result = with_mpv(&state, |mpv_guard| {
+        state
+            .shader_pipeline
+            .set_brightness_adjustment(&app, mpv_guard, value)
+    });
+    if let Err(error) = &result {
+        log::error!("Failed to apply brightness adjustment: {error}");
+    }
+    result
 }
 
 #[tauri::command]

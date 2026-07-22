@@ -15,6 +15,7 @@ mod online_subtitles;
 mod platform;
 mod playback_source;
 mod remote_control;
+mod shader_pipeline;
 mod subtitles;
 use mpv::MpvHandle;
 use tauri::{Emitter, Listener, Manager};
@@ -33,6 +34,7 @@ pub struct AppState {
     pub(crate) playback_service: core::playback_service::PlaybackService,
     pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
     pub(crate) navigation_service: core::navigation::NavigationService,
+    pub(crate) shader_pipeline: shader_pipeline::ShaderPipeline,
 }
 
 #[derive(Default)]
@@ -539,6 +541,7 @@ pub fn run() {
             commands::persistence::apply_proxy_settings,
             commands::persistence::apply_stream_proxy_settings,
             commands::persistence::apply_rendering_settings,
+            commands::persistence::set_brightness_adjustment,
             commands::persistence::resolve_shader_candidates,
             commands::persistence::resolve_existing_shader_files,
             commands::persistence::get_media_association_status,

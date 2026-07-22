@@ -109,6 +109,10 @@ export const usePlaybackAdjustments = () => {
         option: ColorAdjustmentKey,
         next: number,
     ) => {
+        if (option === "brightness") {
+            await invoke<number>("set_brightness_adjustment", { value: next });
+            return;
+        }
         await invoke("mpv_set_option_string", {
             name: option,
             value: next,

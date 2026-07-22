@@ -94,6 +94,7 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
         current_playback_key: Mutex::new(None),
         now_playing: Mutex::new(Default::default()),
         playback_state: crate::core::state::PlaybackStatePublisher::new(),
+        shader_pipeline: crate::shader_pipeline::ShaderPipeline::default(),
     }
 }
 
