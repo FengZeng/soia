@@ -133,10 +133,18 @@ struct TracksPayload {
     tracks: Vec<MediaTrack>,
 }
 
+/// Classifies decoded video using mpv's canonical transfer names.
+///
+/// mpv defines these strings in `pl_csp_trc_names` (`video/csputils.c`),
+/// where `pq` and `hlg` map to libplacebo's `PL_COLOR_TRC_PQ` and
+/// `PL_COLOR_TRC_HLG`. They are the two HDR transfer functions defined by
+/// ITU-R BT.2100. libmpv exposes `video-params/gamma` as a string and has no
+/// equivalent HDR boolean, so transfer is more reliable than optional peak or
+/// mastering metadata.
 fn is_hdr_transfer(transfer: &str) -> bool {
     matches!(
         transfer.trim().to_ascii_lowercase().as_str(),
-        "pq" | "hlg" | "bt.2100-pq" | "bt.2100-hlg"
+        "pq" | "hlg"
     )
 }
 
@@ -1456,10 +1464,11 @@ mod tests {
     use super::is_hdr_transfer;
 
     #[test]
-    fn identifies_hdr_transfer_functions() {
+    fn identifies_canonical_hdr_transfer_functions() {
         assert!(is_hdr_transfer("pq"));
         assert!(is_hdr_transfer("HLG"));
-        assert!(is_hdr_transfer("bt.2100-pq"));
+        assert!(!is_hdr_transfer("bt.2100-pq"));
+        assert!(!is_hdr_transfer("bt.2100-hlg"));
         assert!(!is_hdr_transfer("bt.1886"));
         assert!(!is_hdr_transfer("srgb"));
     }
