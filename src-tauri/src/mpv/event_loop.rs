@@ -399,6 +399,14 @@ fn emit_end_file_and_progress(
         false,
         0.0,
     );
+
+    // Trigger Core auto-play-next on natural EOF
+    if reason == 0 {
+        let handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::commands::navigation::handle_end_of_file(&handle).await;
+        });
+    }
 }
 
 fn set_render_target_visible(app_handle: &AppHandle, visible: bool) {

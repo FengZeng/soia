@@ -1,16 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PlayerApi } from "./usePlaybackController";
-import { resolveAdjacentPathInSameDirectory } from "./usePlaybackAdjacency";
-import {
-    resolvePlaybackNavigationPath,
-    type PlaybackDirection,
-} from "../utils/playbackNavigation";
 import type { CommandEnvelopeDto } from "../core-client/generated/CommandEnvelopeDto";
 import type { CommandResultDto } from "../core-client/generated/CommandResultDto";
+import type { PlaybackDirection } from "../utils/playbackNavigation";
 
 type PlaylistApi = {
     getPathForEnd: (currentPath: string) => string | null;
     getTitleForPath: (path: string) => string | undefined;
+};
+
+type PlayerApi = {
+    state: { media: { url: string } };
 };
 
 type UsePlaybackNavigationOptions = {
@@ -30,11 +29,7 @@ const createNavigationEnvelope = (
     command,
 });
 
-export const usePlaybackNavigation = ({
-    player,
-    playlistState,
-    playPath,
-}: UsePlaybackNavigationOptions) => {
+export const usePlaybackNavigation = (_options: UsePlaybackNavigationOptions) => {
     const playTrack = async (direction: PlaybackDirection) => {
         const envelope = createNavigationEnvelope(
             direction === 1 ? { type: "next" } : { type: "previous" },
@@ -46,16 +41,11 @@ export const usePlaybackNavigation = ({
         );
     };
 
+    // EOF auto-play is now handled by Core (mpv event loop → handle_end_of_file).
+    // This is a no-op retained for interface compatibility.
     const playNextAfterEnd = async () => {
-        const currentPath = player.state.media.url;
-        const nextPath = await resolvePlaybackNavigationPath({
-            currentPath,
-            direction: 1,
-            resolvePlaylistPath: () => playlistState.getPathForEnd(currentPath),
-            resolveDirectoryPath: resolveAdjacentPathInSameDirectory,
-        });
-        if (!nextPath) return;
-        await playPath(nextPath, playlistState.getTitleForPath(nextPath));
+        // Core handles EOF auto-play directly in the Rust event loop.
+        // No frontend action needed.
     };
 
     return {

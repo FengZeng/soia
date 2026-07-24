@@ -3,6 +3,7 @@ use crate::protocol::{CommandEnvelopeDto, CommandResultDto, CoreErrorDto, Playba
 use crate::AppState;
 use std::collections::VecDeque;
 use std::sync::Mutex as StdMutex;
+use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
 
 const NAVIGATION_RESULT_CACHE_CAPACITY: usize = 64;
@@ -200,4 +201,67 @@ async fn load_and_get_revision(
         .await
         .map(|_| state.playback_state.current().revision)
         .map_err(|e| CoreErrorDto::NavigationFailed { message: e })
+}
+
+const AUTO_PLAY_NEXT_SETTING_LABEL: &str = "AUTO_PLAY_NEXT_IN_PLAYLIST";
+
+/// Called by the mpv event loop when a track ends naturally (EOF).
+/// Resolves the next track using playlist end-of-track logic (respects loop-one,
+/// shuffle, wrap-around) and loads it. Runs serialized through the navigation lock.
+pub(crate) async fn handle_end_of_file(app: &tauri::AppHandle) {
+    let state: tauri::State<'_, AppState> = app.state();
+
+    // Check auto-play setting
+    if !is_auto_play_enabled(app) {
+        return;
+    }
+
+    // Acquire navigation lock to serialize with other navigation commands
+    let _lock = navigation_lock().lock().await;
+
+    let current_key = match state.current_playback_key.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return,
+    };
+    let Some(current_key) = current_key else { return };
+    if current_key.trim().is_empty() {
+        return;
+    }
+
+    // Try playlist resolution for end-of-track (respects loop-one)
+    let playlist_result = state.navigation_service.resolve_path_for_end(&current_key);
+
+    let (target_key, title) = if let Some(nav_result) = playlist_result {
+        (nav_result.path, nav_result.title)
+    } else {
+        // Fallback: directory adjacency (forward only)
+        let adjacent_key = crate::playback_source::adjacency::resolve_adjacent_key(
+            app,
+            &current_key,
+            1,
+        )
+        .await
+        .unwrap_or(None);
+        match adjacent_key {
+            Some(key) => {
+                let title = state.navigation_service.get_title_for_path(&key);
+                (key, title)
+            }
+            None => return, // No next track — playback ends
+        }
+    };
+
+    // Load the next track
+    let payload = crate::commands::playback::LoadPlaybackSourcePayload::new(target_key, title);
+    if let Err(error) = crate::commands::playback::load_source(app, &state, payload).await {
+        log::warn!("auto-play next after EOF failed: {error}");
+    }
+}
+
+fn is_auto_play_enabled(app: &tauri::AppHandle) -> bool {
+    match crate::store::ui_state_store::load_setting_value(app, AUTO_PLAY_NEXT_SETTING_LABEL) {
+        Ok(Some(value)) => value != "Off",
+        Ok(None) => true, // Default is enabled
+        Err(_) => true,
+    }
 }

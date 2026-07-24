@@ -97,6 +97,7 @@ impl NavigationService {
     }
 
     /// Update only the playback playlist ID (set when navigation resolves a playlist).
+    #[allow(dead_code)]
     pub(crate) fn set_playback_playlist_id(&self, playlist_id: Option<String>) {
         let mut state = self
             .state
