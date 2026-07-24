@@ -4,10 +4,20 @@ import type { NetworkPlayRequest } from "../types/network";
 import type { PlayerApi } from "./usePlaybackController";
 import { loadUiState } from "./useUiStateStore";
 import { isLikelyLivePlaybackSource } from "../utils/livePlayback";
+import {
+    getCommonSelectionSourceLabel,
+    getParsedPlaylistWorkflow,
+    getPlaylistNameFromSource,
+    getPlaylistSourceLabel,
+    getUniquePathCount,
+    isPlaylistSource,
+    isYoutubePlaylistUrl,
+    shouldConfirmMultiPathPlaylistCreation,
+    shouldConfirmYoutubePlaylistCreation,
+} from "../utils/playlistSourceWorkflow";
 import type {
     ParsedPlaylistEntry,
     ParsedPlaylistFile,
-    ParsedPlaylistMetadata,
     ResolvedYoutubePlaylist,
 } from "./usePlaybackCommands";
 import {
@@ -152,39 +162,6 @@ const parsePlaybackPreferences = (
     };
 };
 
-const isPlaylistSource = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return false;
-    try {
-        const parsed = new URL(trimmed);
-        const pathname = parsed.pathname.toLowerCase();
-        return pathname.endsWith(".m3u") || pathname.endsWith(".m3u8");
-    } catch {
-        const lower = trimmed.toLowerCase();
-        return lower.endsWith(".m3u") || lower.endsWith(".m3u8");
-    }
-};
-
-const isYoutubePlaylistUrl = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return false;
-    try {
-        const parsed = new URL(trimmed);
-        if (
-            parsed.hostname !== "www.youtube.com" &&
-            parsed.hostname !== "youtube.com" &&
-            parsed.hostname !== "music.youtube.com"
-        ) {
-            return false;
-        }
-        if (parsed.pathname === "/playlist") return true;
-        if (parsed.pathname.startsWith("/show/")) return true;
-        return false;
-    } catch {
-        return false;
-    }
-};
-
 export const usePlaybackFlow = ({
     isMacOS,
     player,
@@ -273,16 +250,6 @@ export const usePlaybackFlow = ({
         if (livePlaybackPlaylistEntryCounts.get(playbackKey) !== 1) return;
         player.state.media.isLivePlayback = false;
         rememberNonLivePlaybackSource(playbackKey);
-    };
-
-    const isHlsVodPlaylist = (metadata: ParsedPlaylistMetadata) => {
-        const playlistType = metadata.playlistType?.trim().toUpperCase() ?? "";
-        return metadata.hasEndList || playlistType === "VOD";
-    };
-
-    const isParsedPlaylistLiveCandidate = (parsed: ParsedPlaylistFile) => {
-        if (!parsed.metadata.hasHlsTags) return true;
-        return !isHlsVodPlaylist(parsed.metadata);
     };
 
     const getParsedPlaylistPaths = (parsed: ParsedPlaylistFile) =>
@@ -424,53 +391,12 @@ export const usePlaybackFlow = ({
         await playSource(path, preferredTitle, options);
     };
 
-    const getPlaylistNameFromSource = (source: string, fallback?: string) => {
-        try {
-            const parsed = new URL(source);
-            const fileName = parsed.pathname.split("/").pop() ?? "";
-            const normalized = fileName.replace(/\.(m3u8?|M3U8?)$/, "");
-            return normalized.trim() || fallback;
-        } catch {
-            const fileName = source.split(/[/\\]+/).pop() ?? "";
-            const normalized = fileName.replace(/\.(m3u8?|M3U8?)$/, "");
-            return normalized.trim() || fallback;
-        }
-    };
-
     const toPlaylistEntries = (entries: ParsedPlaylistEntry[]) =>
         entries.map((entry) => ({
             path: entry.path?.trim() ?? "",
             title: entry.title?.trim() || undefined,
             iconUrl: entry.icon?.trim() || undefined,
         }));
-
-    const getUniquePathCount = (paths: string[]) =>
-        new Set(paths.map((path) => path.trim()).filter(Boolean)).size;
-
-    const collapseHomePath = (path: string) =>
-        path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
-
-    const getParentPath = (path: string) => {
-        const normalizedPath = path.trim();
-        if (!normalizedPath) return "";
-        const separatorIndex = Math.max(
-            normalizedPath.lastIndexOf("/"),
-            normalizedPath.lastIndexOf("\\"),
-        );
-        if (separatorIndex <= 0) return normalizedPath;
-        return normalizedPath.slice(0, separatorIndex);
-    };
-
-    const getCommonSelectionSourceLabel = (paths: string[]) => {
-        const normalizedPaths = paths.map((path) => path.trim()).filter(Boolean);
-        if (!normalizedPaths.length) return "";
-        if (normalizedPaths.length === 1) return collapseHomePath(normalizedPaths[0]);
-
-        const parentPaths = normalizedPaths.map(getParentPath).filter(Boolean);
-        const firstParent = parentPaths[0] ?? "";
-        const hasCommonParent = parentPaths.every((path) => path === firstParent);
-        return collapseHomePath(hasCommonParent ? firstParent : normalizedPaths[0]);
-    };
 
     const confirmPlaylistCreation = async (
         defaultName: string,
@@ -489,9 +415,12 @@ export const usePlaybackFlow = ({
         playlistNameFallback?: string,
         preferredTitle?: string,
     ) => {
-        const isLiveCandidate = isParsedPlaylistLiveCandidate(parsed);
-        if (parsed.metadata.hasHlsTags) {
-            if (isLiveCandidate) {
+        const workflow = getParsedPlaylistWorkflow(
+            parsed.metadata,
+            getParsedPlaylistPaths(parsed),
+        );
+        if (workflow.type === "playSource") {
+            if (workflow.isLivePlayback) {
                 livePlaybackKeys.add(source);
                 nonLivePlaybackKeys.delete(source);
                 livePlaybackPlaylistEntryCounts.delete(source);
@@ -499,18 +428,19 @@ export const usePlaybackFlow = ({
                 rememberNonLivePlaybackSource(source);
             }
             await playPath(source, preferredTitle, {
-                isLivePlayback: isLiveCandidate,
+                isLivePlayback: workflow.isLivePlayback,
             });
             return true;
         }
 
-        const paths = getParsedPlaylistPaths(parsed);
-        if (!paths.length) {
+        if (workflow.type === "fallbackToOriginalSource") {
             hideHistory.value = false;
             isLoading.value = false;
             return false;
         }
-        if (paths.length > 1) {
+
+        const paths = workflow.paths;
+        if (workflow.shouldConfirmPlaylistCreation) {
             const playlistEntries = toPlaylistEntries(parsed.entries);
             const fallbackName =
                 getPlaylistNameFromSource(source, playlistNameFallback) ??
@@ -518,7 +448,7 @@ export const usePlaybackFlow = ({
             const confirmation = await confirmPlaylistCreation(
                 fallbackName,
                 getUniquePathCount(paths),
-                collapseHomePath(source),
+                getPlaylistSourceLabel(source),
             );
             if (confirmation.shouldCreate) {
                 const playlistId = playlistState.createPlaylistWithEntries(
@@ -540,7 +470,7 @@ export const usePlaybackFlow = ({
             paths[0],
             firstEntry?.title?.trim() || preferredTitle || undefined,
             {
-                isLivePlayback: true,
+                isLivePlayback: workflow.isLivePlayback,
             },
         );
         return true;
@@ -571,21 +501,23 @@ export const usePlaybackFlow = ({
                 playlistEntries,
                 "YouTube Playlist",
             );
-        const confirmation = await confirmPlaylistCreation(
-            defaultName,
-            resolved.entries.length,
-            url,
-        );
-        if (confirmation.shouldCreate) {
-            const playlistId = playlistState.createPlaylistWithEntries(
-                playlistEntries,
-                {
-                    name: confirmation.name,
-                    openInDrawer: true,
-                    setAsPlayback: true,
-                },
+        if (shouldConfirmYoutubePlaylistCreation(resolved.entries.length)) {
+            const confirmation = await confirmPlaylistCreation(
+                defaultName,
+                resolved.entries.length,
+                url,
             );
-            if (playlistId) onPlaylistCreated?.(playlistId);
+            if (confirmation.shouldCreate) {
+                const playlistId = playlistState.createPlaylistWithEntries(
+                    playlistEntries,
+                    {
+                        name: confirmation.name,
+                        openInDrawer: true,
+                        setAsPlayback: true,
+                    },
+                );
+                if (playlistId) onPlaylistCreated?.(playlistId);
+            }
         }
         const firstEntry = playlistEntries[0];
         await playPath(firstEntry.path, firstEntry.title);
@@ -611,7 +543,7 @@ export const usePlaybackFlow = ({
                 }
             }
         }
-        if (selected.length > 1) {
+        if (shouldConfirmMultiPathPlaylistCreation(selected.length)) {
             const defaultName = playlistState.getDefaultPlaylistNameForPaths(
                 selected,
             );

@@ -843,3 +843,81 @@ pub(crate) fn parse_playlist_source(
 ) -> Result<ParsedPlaylistFile, String> {
     parse_playlist_source_inner(&app, &payload.source)
 }
+
+#[cfg(test)]
+mod playlist_source_tests {
+    use super::{parse_m3u_playlist, PlaylistBase};
+    use std::path::Path;
+
+    #[test]
+    fn parses_local_entries_titles_icons_and_relative_paths() {
+        let parsed = parse_m3u_playlist(
+            "\u{feff}#EXTM3U\n#EXTINF:-1 tvg-logo=\"logos/news.png\",News, HD\nchannels/news.ts\n#EXTINF:-1,Absolute\n/exports/movie.mkv\n",
+            &PlaylistBase::Local(Path::new("/media/lists")),
+        );
+
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].path, "/media/lists/channels/news.ts");
+        assert_eq!(parsed.entries[0].title.as_deref(), Some("News, HD"));
+        assert_eq!(
+            parsed.entries[0].icon.as_deref(),
+            Some("/media/lists/logos/news.png")
+        );
+        assert_eq!(parsed.entries[1].path, "/exports/movie.mkv");
+        assert_eq!(parsed.entries[1].title.as_deref(), Some("Absolute"));
+        assert!(!parsed.metadata.has_hls_tags);
+    }
+
+    #[test]
+    fn resolves_remote_entries_and_icons_against_playlist_url() {
+        let base = url::Url::parse("https://media.example/lists/main.m3u").unwrap();
+        let parsed = parse_m3u_playlist(
+            "#EXTM3U\n#EXTINF:-1 tvg-logo=\"../art/channel.png\",Channel\n../streams/channel.m3u8\n",
+            &PlaylistBase::Remote(base),
+        );
+
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(
+            parsed.entries[0].path,
+            "https://media.example/streams/channel.m3u8"
+        );
+        assert_eq!(
+            parsed.entries[0].icon.as_deref(),
+            Some("https://media.example/art/channel.png")
+        );
+    }
+
+    #[test]
+    fn characterizes_live_hls_metadata() {
+        let parsed = parse_m3u_playlist(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:10\nsegment-10.ts\n",
+            &PlaylistBase::Remote(
+                url::Url::parse("https://media.example/live/index.m3u8").unwrap(),
+            ),
+        );
+
+        assert!(parsed.metadata.has_hls_tags);
+        assert!(!parsed.metadata.has_end_list);
+        assert_eq!(parsed.metadata.playlist_type, None);
+        assert_eq!(parsed.metadata.target_duration, Some(6.0));
+        assert_eq!(
+            parsed.entries[0].path,
+            "https://media.example/live/segment-10.ts"
+        );
+    }
+
+    #[test]
+    fn characterizes_vod_hls_metadata() {
+        let parsed = parse_m3u_playlist(
+            "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-TARGETDURATION:8\nsegment.ts\n#EXT-X-ENDLIST\n",
+            &PlaylistBase::Remote(
+                url::Url::parse("https://media.example/vod/index.m3u8").unwrap(),
+            ),
+        );
+
+        assert!(parsed.metadata.has_hls_tags);
+        assert!(parsed.metadata.has_end_list);
+        assert_eq!(parsed.metadata.playlist_type.as_deref(), Some("VOD"));
+        assert_eq!(parsed.metadata.target_duration, Some(8.0));
+    }
+}

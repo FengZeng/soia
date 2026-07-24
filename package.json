@@ -15,6 +15,7 @@
     "protocol:generate": "cargo run --manifest-path src-tauri/protocol/Cargo.toml --bin generate_protocol_types",
     "protocol:check": "pnpm protocol:generate && git diff --exit-code -- src/core-client/generated",
     "check:playback-navigation": "node ./scripts/check_playback_navigation.mjs",
+    "check:playlist-source-workflows": "node ./scripts/check_playlist_source_workflows.mjs",
     "preview": "vite preview",
     "tauri": "pnpm version:sync && pnpm media:sync && node ./scripts/run_tauri.mjs",
     "version:sync": "node ./scripts/sync_version.mjs",
