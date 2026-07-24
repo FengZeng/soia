@@ -354,6 +354,7 @@ fn compute_buffered_pos(time_pos: f64, duration: f64, cache_time_metric: f64) ->
 fn emit_end_file_and_progress(
     app_handle: &AppHandle,
     reason: c_int,
+    loaded_playback: Option<&(u64, String)>,
     last_time_pos: &mut f64,
     last_duration: f64,
     last_buffered_pos: &mut f64,
@@ -403,9 +404,19 @@ fn emit_end_file_and_progress(
     // Trigger Core auto-play-next on natural EOF
     if reason == 0 {
         let handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            crate::commands::navigation::handle_end_of_file(&handle).await;
-        });
+        // This key was bound when mpv emitted FILE_LOADED, so a delayed EOF
+        // cannot accidentally target a newer Core playback request.
+        let ended_playback = loaded_playback.cloned();
+        if let Some((ended_generation, ended_key)) = ended_playback {
+            tauri::async_runtime::spawn(async move {
+                crate::commands::navigation::handle_end_of_file(
+                    &handle,
+                    ended_generation,
+                    &ended_key,
+                )
+                .await;
+            });
+        }
     }
 }
 
@@ -647,6 +658,8 @@ pub(super) fn mpv_event_loop(
     let mut carried_sid: i64 = 0;
     let mut carried_aid: i64 = 0;
     let mut is_current_file_loaded: bool = false;
+    let mut starting_playback: Option<(u64, String)> = None;
+    let mut loaded_playback: Option<(u64, String)> = None;
 
     unsafe {
         observe_property(
@@ -760,6 +773,14 @@ pub(super) fn mpv_event_loop(
                     carried_sid = last_selected_sid;
                     carried_aid = last_selected_aid;
                     is_current_file_loaded = false;
+                    starting_playback = {
+                        let state: tauri::State<'_, AppState> = app_handle.state();
+                        state
+                            .pending_playback_loads
+                            .lock()
+                            .ok()
+                            .and_then(|mut pending| pending.pop_front())
+                    };
                     last_media_title = None;
                     update_hdr_content_state(&app_handle, &mut last_is_hdr_content, false);
                     publish_playback_snapshot(
@@ -805,6 +826,7 @@ pub(super) fn mpv_event_loop(
                     eof_reached.store(false, Ordering::SeqCst);
                     is_playing.store(true, Ordering::Relaxed);
                     is_current_file_loaded = true;
+                    loaded_playback = starting_playback.take();
                     if let Some(title) = last_media_title.as_deref() {
                         if series_matcher.on_media_title_change(title) {
                             apply_carried_track_ids(
@@ -1087,6 +1109,7 @@ pub(super) fn mpv_event_loop(
                                             emit_end_file_and_progress(
                                                 &app_handle,
                                                 0,
+                                                loaded_playback.as_ref(),
                                                 &mut last_time_pos,
                                                 last_duration,
                                                 &mut last_buffered_pos,
@@ -1424,12 +1447,15 @@ pub(super) fn mpv_event_loop(
                         emit_end_file_and_progress(
                             &app_handle,
                             reason,
+                            loaded_playback.as_ref(),
                             &mut last_time_pos,
                             last_duration,
                             &mut last_buffered_pos,
                             &mut last_video_bitrate,
                         );
                     }
+                    starting_playback = None;
+                    loaded_playback = None;
                     end_file_emitted_for_current_item = reason == 0;
                     is_rendering.store(false, Ordering::Relaxed);
                     wake_lock_manager.update(false);
@@ -1444,6 +1470,8 @@ pub(super) fn mpv_event_loop(
                     );
                 }
                 mpv_event_id::MPV_EVENT_IDLE => {
+                    starting_playback = None;
+                    loaded_playback = None;
                     if let Err(error) = crate::flush_pending_play_history_entry(&app_handle) {
                         warn!(
                             "MPV Event Loop: failed to flush pending play history on idle: {error}"

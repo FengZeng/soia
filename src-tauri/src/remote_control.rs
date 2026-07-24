@@ -321,6 +321,7 @@ async fn websocket(
 
 async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
+    let legacy_client_id = format!("remote-legacy-{}", uuid::Uuid::now_v7());
     let hello = WebSocketServerMessage::Hello {
         protocol_version: 1,
     };
@@ -360,7 +361,7 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session:
                 if !is_connection_active(&state, session.as_deref()) {
                     return;
                 }
-                let response = handle_websocket_text(&state, &text).await;
+                let response = handle_websocket_text(&state, &text, &legacy_client_id).await;
                 if send_ws_json(&mut sender, &response).await.is_err() {
                     return;
                 }
@@ -381,6 +382,7 @@ async fn handle_websocket(socket: WebSocket, state: RemoteControlState, session:
 async fn handle_websocket_text(
     state: &RemoteControlState,
     text: &str,
+    legacy_client_id: &str,
 ) -> WebSocketServerMessage {
     match serde_json::from_str::<WebSocketClientMessage>(text) {
         Ok(WebSocketClientMessage::Ping { id }) => WebSocketServerMessage::Pong { id },
@@ -398,15 +400,20 @@ async fn handle_websocket_text(
                 }
             } else {
                 let app_state: tauri::State<'_, AppState> = state.app_handle.state();
-                match app_state.playback_service.execute(&app_state, envelope) {
+                match app_state.playback_service.execute(&app_state, envelope).await {
                     Ok(result) => WebSocketServerMessage::CommandResult { result },
                     Err(error) => WebSocketServerMessage::Error { id, error },
                 }
             }
         }
         Ok(WebSocketClientMessage::Navigation { id, action }) => {
-            // Legacy Navigation message — convert to CommandEnvelope for unified handling
-            let envelope = navigation_action_to_envelope(&action, id.as_deref());
+            // Legacy Navigation message — retain the request ID for response
+            // correlation and retry deduplication within this WebSocket connection.
+            let envelope = navigation_action_to_envelope(
+                &action,
+                id.as_deref(),
+                legacy_client_id,
+            );
             match envelope {
                 Ok(envelope) => {
                     let cmd_id = Some(envelope.command_id.clone());
@@ -438,6 +445,7 @@ async fn handle_websocket_text(
 fn navigation_action_to_envelope(
     action: &str,
     id: Option<&str>,
+    client_id: &str,
 ) -> Result<crate::protocol::CommandEnvelopeDto, String> {
     let command = match action {
         "previous" => crate::protocol::PlaybackCommandDto::Previous,
@@ -446,9 +454,11 @@ fn navigation_action_to_envelope(
     };
     Ok(crate::protocol::CommandEnvelopeDto {
         command_id: id
-            .map(|s| s.to_string())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-        client_id: "remote-browser".to_string(),
+        client_id: client_id.to_string(),
         playback_session_id: None,
         command,
     })
@@ -666,4 +676,24 @@ fn with_cors(response: impl IntoResponse) -> Response {
         HeaderValue::from_static("86400"),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::navigation_action_to_envelope;
+    use crate::protocol::PlaybackCommandDto;
+
+    #[test]
+    fn legacy_navigation_preserves_connection_and_request_identity() {
+        let envelope = navigation_action_to_envelope(
+            "next",
+            Some("request-42"),
+            "legacy-connection-7",
+        )
+        .expect("legacy navigation should map to a command envelope");
+
+        assert_eq!(envelope.command_id, "request-42");
+        assert_eq!(envelope.client_id, "legacy-connection-7");
+        assert!(matches!(envelope.command, PlaybackCommandDto::Next));
+    }
 }

@@ -17,11 +17,11 @@ fn with_mpv_state<R>(
 }
 
 #[tauri::command]
-pub(crate) fn execute_playback_command(
+pub(crate) async fn execute_playback_command(
     state: tauri::State<'_, AppState>,
     envelope: crate::protocol::CommandEnvelopeDto,
 ) -> Result<crate::protocol::CommandResultDto, crate::protocol::CoreErrorDto> {
-    state.playback_service.execute(&state, envelope)
+    state.playback_service.execute(&state, envelope).await
 }
 
 #[tauri::command]
@@ -178,6 +178,7 @@ pub(crate) async fn load_playback_source(
     state: tauri::State<'_, AppState>,
     payload: LoadPlaybackSourcePayload,
 ) -> Result<LoadPlaybackSourceResult, String> {
+    let _admission_lock = state.playback_command_lock.lock().await;
     load_source(&app, &state, payload).await
 }
 
@@ -271,6 +272,16 @@ pub(crate) async fn load_source(
             );
         }
     };
+    // If a preferred_title is set (from playlist entry), inject force-media-title
+    // so mpv reports this title in its media-title property. This prevents the
+    // mpv event loop from overwriting our preferred title with a filename.
+    let mut mpv_load_options = prepared.mpv_load_options.clone();
+    if let Some(ref title) = preferred_title {
+        mpv_load_options.push(format!(
+            "force-media-title={}",
+            crate::playback_source::load::escape_mpv_load_option_value(title)
+        ));
+    }
     let load_result = state
         .playback_load_coordinator
         .execute_if_current(generation, || {
@@ -283,11 +294,18 @@ pub(crate) async fn load_source(
             ) {
                 log::warn!("failed to emit prepared playback load: {error}");
             }
+            {
+                let mut pending_loads = state
+                    .pending_playback_loads
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                pending_loads.push_back((generation, source_key.clone()));
+            }
             match with_mpv_state(state, |mpv_guard| {
                 crate::core::playback_loading::load(
                     mpv_guard,
                     &prepared.playback_url,
-                    &prepared.mpv_load_options,
+                    &mpv_load_options,
                     load_options,
                     prepared.command_mode,
                 )
@@ -317,6 +335,15 @@ pub(crate) async fn load_source(
                     })
                 }
                 Err(error) => {
+                    {
+                        let mut pending_loads = state
+                            .pending_playback_loads
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        pending_loads.retain(|(pending_generation, _)| {
+                            *pending_generation != generation
+                        });
+                    }
                     publish_source_load_state(
                         &app,
                         &state,
@@ -351,20 +378,22 @@ mod tests {
 }
 
 #[tauri::command]
-pub(crate) fn cycle_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
+pub(crate) async fn cycle_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let paused = state.playback_state.current().is_playing;
     state
         .playback_service
         .execute(&state, legacy_command_envelope(crate::protocol::PlaybackCommandDto::SetPaused { paused }))
+        .await
         .map_err(core_error_message)?;
     Ok(())
 }
 
 #[tauri::command]
-pub(crate) fn seek_video(state: tauri::State<'_, AppState>, position: f64) -> Result<(), String> {
+pub(crate) async fn seek_video(state: tauri::State<'_, AppState>, position: f64) -> Result<(), String> {
     state
         .playback_service
         .execute(&state, legacy_command_envelope(crate::protocol::PlaybackCommandDto::SeekAbsolute { position }))
+        .await
         .map_err(core_error_message)?;
     Ok(())
 }

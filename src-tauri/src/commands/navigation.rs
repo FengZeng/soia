@@ -4,18 +4,8 @@ use crate::AppState;
 use std::collections::VecDeque;
 use std::sync::Mutex as StdMutex;
 use tauri::Manager;
-use tokio::sync::Mutex as TokioMutex;
 
 const NAVIGATION_RESULT_CACHE_CAPACITY: usize = 64;
-
-/// Serialization lock for navigation commands. Ensures that concurrent
-/// previous/next from multiple clients execute deterministically in order
-/// rather than racing on the same `current_playback_key`.
-static NAVIGATION_LOCK: std::sync::OnceLock<TokioMutex<()>> = std::sync::OnceLock::new();
-
-fn navigation_lock() -> &'static TokioMutex<()> {
-    NAVIGATION_LOCK.get_or_init(|| TokioMutex::new(()))
-}
 
 struct CachedNavResult {
     client_id: String,
@@ -88,8 +78,8 @@ pub(crate) async fn execute_navigation_envelope(
         return cached;
     }
 
-    // Serialize navigation execution — only one navigation runs at a time
-    let _lock = navigation_lock().lock().await;
+    // Serialize all Core playback commands through one admission lock.
+    let _lock = state.playback_command_lock.lock().await;
 
     // Re-check cache after acquiring lock (another request may have completed)
     if let Some(cached) = lookup_cached(&envelope.client_id, &envelope.command_id) {
@@ -206,9 +196,14 @@ async fn load_and_get_revision(
 const AUTO_PLAY_NEXT_SETTING_LABEL: &str = "AUTO_PLAY_NEXT_IN_PLAYLIST";
 
 /// Called by the mpv event loop when a track ends naturally (EOF).
-/// Resolves the next track using playlist end-of-track logic (respects loop-one,
-/// shuffle, wrap-around) and loads it. Runs serialized through the navigation lock.
-pub(crate) async fn handle_end_of_file(app: &tauri::AppHandle) {
+/// The generation and key are bound to mpv's FILE_LOADED event. After acquiring
+/// the shared playback command lock, both must still be current; otherwise a
+/// newer playback request has superseded this EOF action.
+pub(crate) async fn handle_end_of_file(
+    app: &tauri::AppHandle,
+    ended_generation: u64,
+    ended_key: &str,
+) {
     let state: tauri::State<'_, AppState> = app.state();
 
     // Check auto-play setting
@@ -216,20 +211,29 @@ pub(crate) async fn handle_end_of_file(app: &tauri::AppHandle) {
         return;
     }
 
-    // Acquire navigation lock to serialize with other navigation commands
-    let _lock = navigation_lock().lock().await;
+    // Serialize EOF navigation with every other Core playback command.
+    let _lock = state.playback_command_lock.lock().await;
 
+    if state.playback_load_coordinator.current() != ended_generation {
+        return;
+    }
+
+    // Verify the media hasn't changed since EOF was fired. If the user (or
+    // another client) loaded a new track between EOF and now, discard this.
     let current_key = match state.current_playback_key.lock() {
         Ok(guard) => guard.clone(),
         Err(_) => return,
     };
-    let Some(current_key) = current_key else { return };
-    if current_key.trim().is_empty() {
-        return;
+    match current_key.as_deref() {
+        Some(key) if key == ended_key => {}
+        _ => {
+            // Media changed — discard stale EOF action
+            return;
+        }
     }
 
     // Try playlist resolution for end-of-track (respects loop-one)
-    let playlist_result = state.navigation_service.resolve_path_for_end(&current_key);
+    let playlist_result = state.navigation_service.resolve_path_for_end(ended_key);
 
     let (target_key, title) = if let Some(nav_result) = playlist_result {
         (nav_result.path, nav_result.title)
@@ -237,7 +241,7 @@ pub(crate) async fn handle_end_of_file(app: &tauri::AppHandle) {
         // Fallback: directory adjacency (forward only)
         let adjacent_key = crate::playback_source::adjacency::resolve_adjacent_key(
             app,
-            &current_key,
+            ended_key,
             1,
         )
         .await

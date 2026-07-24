@@ -94,7 +94,9 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
         mpv_player,
         pending_play_history_entry: Mutex::new(None),
         current_playback_key: Mutex::new(None),
+        pending_playback_loads: Mutex::new(std::collections::VecDeque::new()),
         now_playing: Mutex::new(Default::default()),
+        playback_command_lock: tokio::sync::Mutex::new(()),
         playback_state: crate::core::state::PlaybackStatePublisher::new(),
         shader_pipeline: crate::shader_pipeline::ShaderPipeline::default(),
     }

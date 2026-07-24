@@ -9,7 +9,6 @@ const SNAPSHOT_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct PlaybackService {
     sender: mpsc::Sender<QueuedCommand>,
-    admission_lock: Mutex<()>,
     recent_results: Mutex<VecDeque<CachedCommandResult>>,
 }
 
@@ -41,7 +40,6 @@ impl PlaybackService {
             .expect("failed to start playback command queue");
         Self {
             sender,
-            admission_lock: Mutex::new(()),
             recent_results: Mutex::new(VecDeque::with_capacity(COMMAND_RESULT_CACHE_CAPACITY)),
         }
     }
@@ -55,7 +53,7 @@ impl PlaybackService {
         )
     }
 
-    pub(crate) fn execute(
+    pub(crate) async fn execute(
         &self,
         state: &AppState,
         envelope: CommandEnvelopeDto,
@@ -68,10 +66,7 @@ impl PlaybackService {
                 message: "navigation commands must be dispatched through the navigation service".into(),
             });
         }
-        let _admission_lock = self
-            .admission_lock
-            .lock()
-            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?;
+        let _admission_lock = state.playback_command_lock.lock().await;
         if let Some(result) = self.cached_result(&envelope.client_id, &envelope.command_id) {
             return result;
         }

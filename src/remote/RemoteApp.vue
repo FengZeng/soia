@@ -99,9 +99,7 @@ function command(command: PlaybackCommandDto) {
 }
 
 function navigation(action: "previous" | "next") {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    commandSequence += 1;
-    socket.send(JSON.stringify({ type: "navigation", id: String(commandSequence), action }));
+    command({ type: action });
 }
 
 function seek(position: number) {

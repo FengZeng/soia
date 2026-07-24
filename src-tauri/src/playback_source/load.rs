@@ -9,7 +9,7 @@ pub(crate) struct PreparedPlaybackSource {
     pub is_live_playback: bool,
 }
 
-fn escape_mpv_load_option_value(value: &str) -> String {
+pub(crate) fn escape_mpv_load_option_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace(',', "\\,")
 }
 

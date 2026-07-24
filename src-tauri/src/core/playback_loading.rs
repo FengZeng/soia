@@ -21,6 +21,13 @@ impl PlaybackLoadCoordinator {
         *generation
     }
 
+    pub(crate) fn current(&self) -> u64 {
+        *self
+            .generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub(crate) fn execute_if_current<T>(
         &self,
         generation: u64,
@@ -166,6 +173,7 @@ mod tests {
         let first = coordinator.begin();
         let second = coordinator.begin();
 
+        assert_eq!(coordinator.current(), second);
         assert!(coordinator.execute_if_current(first, || true).is_none());
         assert_eq!(coordinator.execute_if_current(second, || 42), Some(42));
     }

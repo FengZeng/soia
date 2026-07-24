@@ -1,4 +1,5 @@
 // Tauri imports
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,9 @@ pub struct AppState {
     pub mpv_player: Arc<Mutex<MpvHandle>>,
     pub pending_play_history_entry: Mutex<Option<store::play_history::PlayHistoryEntry>>,
     pub current_playback_key: Mutex<Option<String>>,
+    pub(crate) pending_playback_loads: Mutex<VecDeque<(u64, String)>>,
     now_playing: Mutex<NowPlayingState>,
+    pub(crate) playback_command_lock: tokio::sync::Mutex<()>,
     pub(crate) playback_state: core::state::PlaybackStatePublisher,
     pub(crate) playback_service: core::playback_service::PlaybackService,
     pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
