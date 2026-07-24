@@ -57,7 +57,6 @@ pub(crate) fn mpv_set_option_string(
 pub(crate) struct LoadPlaybackSourcePayload {
     key_or_url: String,
     #[serde(default)]
-    #[allow(dead_code)]
     preferred_title: Option<String>,
 }
 
@@ -189,6 +188,10 @@ pub(crate) async fn load_source(
     payload: LoadPlaybackSourcePayload,
 ) -> Result<LoadPlaybackSourceResult, String> {
     let request_key = payload.key_or_url.trim().to_string();
+    let preferred_title = payload.preferred_title.and_then(|t| {
+        let trimmed = t.trim().to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    });
     if request_key.is_empty() {
         return Err("playback source cannot be empty".to_string());
     }
@@ -298,9 +301,17 @@ pub(crate) async fn load_source(
                         *current_playback_key = Some(source_key.clone());
                     }
                     publish_source_load_state(&app, &state, false, None, None);
+                    // Use preferred_title (from playlist) if available, otherwise
+                    // fall back to the title resolved by the source preparer.
+                    let effective_title = preferred_title.clone().or(prepared.title);
+                    if let Some(ref title) = effective_title {
+                        state.playback_state.update(|snapshot| {
+                            snapshot.title = Some(title.clone());
+                        });
+                    }
                     Ok(LoadPlaybackSourceResult {
                         playback_key: Some(source_key.clone()),
-                        title: prepared.title,
+                        title: effective_title,
                         is_live_playback: prepared.is_live_playback,
                         superseded: false,
                     })
