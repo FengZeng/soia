@@ -38,7 +38,10 @@ export type PlayerApi = {
   bufferedPercent: { value: number };
   isUrlModified: { value: boolean };
   formatTime: (seconds: number) => string;
-  loadPlaybackSource: (keyOrUrl: string) => Promise<LoadFileResult>;
+  loadPlaybackSource: (
+    keyOrUrl: string,
+    preferredTitle?: string,
+  ) => Promise<LoadFileResult>;
   parsePlaylistFile: (path: string) => Promise<ParsedPlaylistFile>;
   parsePlaylistSource: (source: string) => Promise<ParsedPlaylistFile>;
   resolveYoutubePlaylist: (url: string) => Promise<ResolvedYoutubePlaylist>;

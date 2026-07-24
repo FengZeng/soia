@@ -309,7 +309,26 @@ export const usePlaybackFlow = ({
             const parsed = new URL(raw);
             const pathname = decodeURIComponent(parsed.pathname || "").trim();
             if (!pathname) return parsed.origin.toLowerCase();
-            return `${parsed.origin}${pathname}`.toLowerCase();
+            const baseKey = `${parsed.origin}${pathname}`.toLowerCase();
+            const hostname = parsed.hostname.toLowerCase();
+            const isYouTubeHost =
+                hostname === "youtube.com" ||
+                hostname === "www.youtube.com" ||
+                hostname === "music.youtube.com";
+            if (isYouTubeHost) {
+                // YouTube identifies videos and playlists in the query string.
+                // Dropping it aliases every `/watch` URL to the same preferred
+                // title cache entry, causing next/previous to reuse the old title.
+                const identity = ["v", "list"]
+                    .map((name) => [name, parsed.searchParams.get(name)?.trim()] as const)
+                    .filter((entry): entry is readonly [string, string] => !!entry[1])
+                    .map(([name, queryValue]) =>
+                        `${name}=${encodeURIComponent(queryValue)}`,
+                    )
+                    .join("&");
+                if (identity) return `${baseKey}?${identity}`;
+            }
+            return baseKey;
         } catch {
             return raw.toLowerCase();
         }
@@ -374,7 +393,10 @@ export const usePlaybackFlow = ({
         player.state.playback.hwdecCurrent = "";
         loadingUrl.value = requestedKey;
         isLoading.value = true;
-        const result = await player.loadPlaybackSource(requestedKey);
+        const result = await player.loadPlaybackSource(
+            requestedKey,
+            preferredTitle?.trim() || undefined,
+        );
         if (result.superseded) return;
         const playbackKey = result.playbackKey?.trim() || requestedKey;
         player.state.media.url = playbackKey;

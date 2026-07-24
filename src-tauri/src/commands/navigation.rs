@@ -143,14 +143,17 @@ async fn execute_direction(
     let (target_key, title) = if let Some(nav_result) = playlist_result {
         (nav_result.path, nav_result.title)
     } else {
-        let adjacent_key =
+        let adjacent =
             crate::playback_source::adjacency::resolve_adjacent_key(app, &current_key, direction)
                 .await
                 .map_err(|e| CoreErrorDto::NavigationFailed { message: e })?;
-        match adjacent_key {
-            Some(key) => {
-                let title = state.navigation_service.get_title_for_path(&key);
-                (key, title)
+        match adjacent {
+            Some(source) => {
+                let title = state
+                    .navigation_service
+                    .get_title_for_path(&source.playback_key)
+                    .or(source.title);
+                (source.playback_key, title)
             }
             None => {
                 return Err(CoreErrorDto::NavigationFailed {
@@ -239,17 +242,20 @@ pub(crate) async fn handle_end_of_file(
         (nav_result.path, nav_result.title)
     } else {
         // Fallback: directory adjacency (forward only)
-        let adjacent_key = crate::playback_source::adjacency::resolve_adjacent_key(
+        let adjacent = crate::playback_source::adjacency::resolve_adjacent_key(
             app,
             ended_key,
             1,
         )
         .await
         .unwrap_or(None);
-        match adjacent_key {
-            Some(key) => {
-                let title = state.navigation_service.get_title_for_path(&key);
-                (key, title)
+        match adjacent {
+            Some(source) => {
+                let title = state
+                    .navigation_service
+                    .get_title_for_path(&source.playback_key)
+                    .or(source.title);
+                (source.playback_key, title)
             }
             None => return, // No next track — playback ends
         }

@@ -17,6 +17,12 @@ pub(crate) struct AdjacentPlaybackSourcePayload {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AdjacentPlaybackSourceResult {
     playback_key: String,
+    title: Option<String>,
+}
+
+pub(crate) struct AdjacentPlaybackSource {
+    pub(crate) playback_key: String,
+    pub(crate) title: Option<String>,
 }
 
 fn is_media_path(path: &str) -> bool {
@@ -88,7 +94,7 @@ async fn resolve_adjacent_network(
     current_path: &str,
     parent_path: &str,
     direction: i32,
-) -> Result<Option<String>, String> {
+) -> Result<Option<AdjacentPlaybackSource>, String> {
     let connection =
         crate::store::network_connection_store::find_network_connection(app, connection_id)?;
     let result =
@@ -114,7 +120,10 @@ async fn resolve_adjacent_network(
             create_smb_playback_key(connection_id, &next_entry.path)
         }
     };
-    Ok(Some(playback_key))
+    Ok(Some(AdjacentPlaybackSource {
+        playback_key,
+        title: (!next_entry.name.trim().is_empty()).then_some(next_entry.name.clone()),
+    }))
 }
 
 #[tauri::command]
@@ -128,8 +137,11 @@ pub(crate) async fn resolve_adjacent_playback_source(
         _ => return Ok(None),
     };
 
-    let playback_key = match parse_playback_source(&payload.playback_key) {
-        PlaybackSource::Local { path } => resolve_adjacent_local(&path, direction),
+    let source = match parse_playback_source(&payload.playback_key) {
+        PlaybackSource::Local { path } => resolve_adjacent_local(&path, direction).map(|playback_key| AdjacentPlaybackSource {
+            playback_key,
+            title: None,
+        }),
         PlaybackSource::Webdav {
             connection_id,
             file_path,
@@ -187,8 +199,9 @@ pub(crate) async fn resolve_adjacent_playback_source(
         PlaybackSource::Smb { .. } | PlaybackSource::DirectSmbUrl => None,
     };
 
-    Ok(playback_key.map(|playback_key| AdjacentPlaybackSourceResult {
-        playback_key,
+    Ok(source.map(|source| AdjacentPlaybackSourceResult {
+        playback_key: source.playback_key,
+        title: source.title,
     }))
 }
 
@@ -199,15 +212,18 @@ pub(crate) async fn resolve_adjacent_key(
     app: &tauri::AppHandle,
     current_key: &str,
     direction: i32,
-) -> Result<Option<String>, String> {
+) -> Result<Option<AdjacentPlaybackSource>, String> {
     let direction = match direction {
         value if value < 0 => -1,
         value if value > 0 => 1,
         _ => return Ok(None),
     };
 
-    let playback_key = match parse_playback_source(current_key) {
-        PlaybackSource::Local { path } => resolve_adjacent_local(&path, direction),
+    let source = match parse_playback_source(current_key) {
+        PlaybackSource::Local { path } => resolve_adjacent_local(&path, direction).map(|playback_key| AdjacentPlaybackSource {
+            playback_key,
+            title: None,
+        }),
         PlaybackSource::Webdav {
             connection_id,
             file_path,
@@ -265,5 +281,5 @@ pub(crate) async fn resolve_adjacent_key(
         PlaybackSource::Smb { .. } | PlaybackSource::DirectSmbUrl => None,
     };
 
-    Ok(playback_key)
+    Ok(source)
 }

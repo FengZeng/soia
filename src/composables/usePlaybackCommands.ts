@@ -85,9 +85,12 @@ export const usePlaybackCommands = (
     return normalizeSelectedPaths(selected);
   };
 
-  const loadPlaybackSource = async (keyOrUrl: string): Promise<LoadFileResult> => {
+  const loadPlaybackSource = async (
+    keyOrUrl: string,
+    preferredTitle?: string,
+  ): Promise<LoadFileResult> => {
     return await invoke<LoadFileResult>("load_playback_source", {
-      payload: { keyOrUrl },
+      payload: { keyOrUrl, preferredTitle },
     });
   };
 
