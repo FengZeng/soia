@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Stable, transport-safe playback state sent to Tauri and WebSocket clients.
 #[derive(Clone, Debug, Default, Serialize, TS)]
@@ -12,6 +12,7 @@ pub struct PlaybackSnapshotDto {
     pub protocol_version: u32,
     #[ts(type = "number")]
     pub revision: u64,
+    pub playback_session_id: Option<String>,
     pub title: Option<String>,
     pub duration: f64,
     pub position: f64,
@@ -83,6 +84,13 @@ pub enum CoreErrorDto {
     InvalidCommand { message: String },
     ExecutionFailed { message: String },
     NavigationFailed { message: String },
+    StalePlaybackSession {
+        message: String,
+        #[serde(rename = "requestedPlaybackSessionId")]
+        requested_playback_session_id: Option<String>,
+        #[serde(rename = "currentPlaybackSessionId")]
+        current_playback_session_id: Option<String>,
+    },
 }
 
 pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
@@ -95,4 +103,29 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     CommandResultDto::export_all_to(path).map_err(|error| error.to_string())?;
     CoreErrorDto::export_all_to(path).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoreErrorDto, PlaybackSnapshotDto};
+
+    #[test]
+    fn serializes_playback_session_fields_in_camel_case() {
+        let snapshot = PlaybackSnapshotDto {
+            playback_session_id: Some("session-b".to_string()),
+            ..PlaybackSnapshotDto::default()
+        };
+        let snapshot_json = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(snapshot_json["playbackSessionId"], "session-b");
+
+        let error = CoreErrorDto::StalePlaybackSession {
+            message: "playback session has changed".to_string(),
+            requested_playback_session_id: Some("session-a".to_string()),
+            current_playback_session_id: Some("session-b".to_string()),
+        };
+        let error_json = serde_json::to_value(error).unwrap();
+        assert_eq!(error_json["type"], "stalePlaybackSession");
+        assert_eq!(error_json["requestedPlaybackSessionId"], "session-a");
+        assert_eq!(error_json["currentPlaybackSessionId"], "session-b");
+    }
 }

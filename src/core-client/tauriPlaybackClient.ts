@@ -5,6 +5,11 @@ import type { PlaybackCommandDto } from "./generated/PlaybackCommandDto";
 
 const clientId = "desktop";
 let commandSequence = 0;
+let playbackSessionId: string | null = null;
+
+export const updatePlaybackSessionId = (sessionId: string | null) => {
+    playbackSessionId = sessionId;
+};
 
 export const executePlaybackCommand = async (
     command: PlaybackCommandDto,
@@ -13,7 +18,7 @@ export const executePlaybackCommand = async (
     const envelope: CommandEnvelopeDto = {
         commandId: `${clientId}:${commandSequence}`,
         clientId,
-        playbackSessionId: null,
+        playbackSessionId,
         command,
     };
     return invoke<CommandResultDto>("execute_playback_command", { envelope });

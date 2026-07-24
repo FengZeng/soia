@@ -5,7 +5,7 @@ import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnaps
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
 import type { CoreErrorDto } from "../core-client/generated/CoreErrorDto";
 
-const state = ref<PlaybackSnapshotDto>({ protocolVersion: 1, revision: 0, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
+const state = ref<PlaybackSnapshotDto>({ protocolVersion: 2, revision: 0, playbackSessionId: null, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
 const connectionState = ref("Connecting…");
 const error = ref("");
 let socket: WebSocket | null = null;
@@ -92,7 +92,7 @@ function command(command: PlaybackCommandDto) {
         envelope: {
             commandId: `${clientId}:${commandSequence}`,
             clientId,
-            playbackSessionId: null,
+            playbackSessionId: state.value.playbackSessionId,
             command,
         },
     }));

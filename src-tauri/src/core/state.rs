@@ -7,6 +7,7 @@ use tokio::sync::watch;
 /// implementation details can evolve without becoming client contract.
 #[derive(Clone)]
 pub(crate) struct PlaybackSnapshot {
+    pub playback_session_id: Option<String>,
     pub title: Option<String>,
     pub duration: f64,
     pub position: f64,
@@ -26,6 +27,7 @@ pub(crate) struct PlaybackSnapshot {
 impl Default for PlaybackSnapshot {
     fn default() -> Self {
         Self {
+            playback_session_id: None,
             title: None,
             duration: 0.0,
             position: 0.0,
@@ -49,6 +51,7 @@ impl PlaybackSnapshot {
         PlaybackSnapshotDto {
             protocol_version: PROTOCOL_VERSION,
             revision,
+            playback_session_id: self.playback_session_id.clone(),
             title: self.title.clone(),
             duration: self.duration,
             position: self.position,
@@ -124,5 +127,25 @@ impl PlaybackStatePublisher {
             }
         }
         Some(state.1.to_dto(state.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaybackStatePublisher;
+
+    #[test]
+    fn publishes_playback_session_identity_in_snapshot() {
+        let publisher = PlaybackStatePublisher::new();
+        let published = publisher.update(|snapshot| {
+            snapshot.playback_session_id = Some("session-b".to_string());
+        });
+
+        assert_eq!(published.protocol_version, 2);
+        assert_eq!(published.playback_session_id.as_deref(), Some("session-b"));
+        assert_eq!(
+            publisher.current().playback_session_id.as_deref(),
+            Some("session-b")
+        );
     }
 }

@@ -71,6 +71,16 @@ impl PlaybackService {
             return result;
         }
 
+        validate_playback_session(
+            &envelope.command,
+            envelope.playback_session_id.as_deref(),
+            state
+                .playback_state
+                .current()
+                .playback_session_id
+                .as_deref(),
+        )?;
+
         let command = envelope.command.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
         self.sender
@@ -129,6 +139,31 @@ impl PlaybackService {
             result,
         });
     }
+}
+
+fn command_requires_playback_session(command: &PlaybackCommandDto) -> bool {
+    matches!(
+        command,
+        PlaybackCommandDto::SeekAbsolute { .. } | PlaybackCommandDto::SeekRelative { .. }
+    )
+}
+
+fn validate_playback_session(
+    command: &PlaybackCommandDto,
+    requested_playback_session_id: Option<&str>,
+    current_playback_session_id: Option<&str>,
+) -> Result<(), CoreErrorDto> {
+    if !command_requires_playback_session(command)
+        || requested_playback_session_id == current_playback_session_id
+    {
+        return Ok(());
+    }
+
+    Err(CoreErrorDto::StalePlaybackSession {
+        message: "playback session has changed".to_string(),
+        requested_playback_session_id: requested_playback_session_id.map(str::to_string),
+        current_playback_session_id: current_playback_session_id.map(str::to_string),
+    })
 }
 
 fn command_is_already_reflected(command: &PlaybackCommandDto, snapshot: &crate::protocol::PlaybackSnapshotDto) -> bool {
@@ -201,5 +236,69 @@ fn execute_command(
                 message: "navigation commands must be handled by the navigation service".into(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod playback_session_tests {
+    use super::validate_playback_session;
+    use crate::protocol::{CoreErrorDto, PlaybackCommandDto};
+
+    #[test]
+    fn accepts_seek_for_current_playback_session() {
+        let result = validate_playback_session(
+            &PlaybackCommandDto::SeekAbsolute { position: 42.0 },
+            Some("session-b"),
+            Some("session-b"),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_delayed_seek_for_replaced_playback_session() {
+        let result = validate_playback_session(
+            &PlaybackCommandDto::SeekRelative { seconds: 5.0 },
+            Some("session-a"),
+            Some("session-b"),
+        );
+
+        match result {
+            Err(CoreErrorDto::StalePlaybackSession {
+                message,
+                requested_playback_session_id,
+                current_playback_session_id,
+            }) => {
+                assert_eq!(message, "playback session has changed");
+                assert_eq!(requested_playback_session_id.as_deref(), Some("session-a"));
+                assert_eq!(current_playback_session_id.as_deref(), Some("session-b"));
+            }
+            _ => panic!("expected stale playback session error"),
+        }
+    }
+
+    #[test]
+    fn rejects_seek_without_session_after_media_is_loaded() {
+        let result = validate_playback_session(
+            &PlaybackCommandDto::SeekAbsolute { position: 42.0 },
+            None,
+            Some("session-b"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CoreErrorDto::StalePlaybackSession { .. })
+        ));
+    }
+
+    #[test]
+    fn does_not_require_session_for_last_write_wins_controls() {
+        let result = validate_playback_session(
+            &PlaybackCommandDto::SetVolume { volume: 80.0 },
+            Some("session-a"),
+            Some("session-b"),
+        );
+
+        assert!(result.is_ok());
     }
 }

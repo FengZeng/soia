@@ -9,6 +9,7 @@ import {
 } from "@tauri-apps/api/window";
 import type { ProgressPayload, MediaTrack } from "../types/media";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
+import { updatePlaybackSessionId } from "../core-client/tauriPlaybackClient";
 import type { PlayerApi } from "./usePlaybackController";
 
 type TracksUpdatePayload = {
@@ -121,6 +122,7 @@ export const useAppEventBindings = ({
         unlistenPlaybackSnapshot = await listen<PlaybackSnapshotDto>(
             "playback-snapshot",
             (event) => {
+                updatePlaybackSessionId(event.payload.playbackSessionId);
                 player.state.playback.currentTime = event.payload.position;
                 player.state.playback.duration = event.payload.duration;
                 player.state.playback.bufferedTime =

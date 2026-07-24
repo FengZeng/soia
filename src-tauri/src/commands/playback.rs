@@ -133,23 +133,6 @@ fn source_load_error_or_superseded(
         .unwrap_or_else(|| Ok(superseded_load_result()))
 }
 
-fn legacy_command_envelope(command: crate::protocol::PlaybackCommandDto) -> crate::protocol::CommandEnvelopeDto {
-    crate::protocol::CommandEnvelopeDto {
-        command_id: uuid::Uuid::now_v7().to_string(),
-        client_id: "legacy-tauri".to_string(),
-        playback_session_id: None,
-        command,
-    }
-}
-
-fn core_error_message(error: crate::protocol::CoreErrorDto) -> String {
-    match error {
-        crate::protocol::CoreErrorDto::InvalidCommand { message }
-        | crate::protocol::CoreErrorDto::ExecutionFailed { message }
-        | crate::protocol::CoreErrorDto::NavigationFailed { message } => message,
-    }
-}
-
 const SKIP_INTRO_SECONDS_SETTING_LABEL: &str = "SKIP_INTRO_SECONDS";
 
 fn parse_skip_intro_seconds(value: Option<String>) -> f64 {
@@ -311,6 +294,7 @@ pub(crate) async fn load_source(
                 )
             }) {
                 Ok(()) => {
+                    let playback_session_id = uuid::Uuid::now_v7().to_string();
                     {
                         let mut current_playback_key = state
                             .current_playback_key
@@ -318,14 +302,20 @@ pub(crate) async fn load_source(
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                         *current_playback_key = Some(source_key.clone());
                     }
-                    publish_source_load_state(&app, &state, false, None, None);
                     // Use preferred_title (from playlist) if available, otherwise
                     // fall back to the title resolved by the source preparer.
                     let effective_title = preferred_title.clone().or(prepared.title);
-                    if let Some(ref title) = effective_title {
-                        state.playback_state.update(|snapshot| {
+                    let snapshot = state.playback_state.update(|snapshot| {
+                        snapshot.playback_session_id = Some(playback_session_id);
+                        snapshot.source_loading = false;
+                        snapshot.source_loading_key = None;
+                        snapshot.source_load_error = None;
+                        if let Some(ref title) = effective_title {
                             snapshot.title = Some(title.clone());
-                        });
+                        }
+                    });
+                    if let Err(error) = app.emit("playback-snapshot", snapshot) {
+                        log::warn!("failed to emit loaded source snapshot: {error}");
                     }
                     Ok(LoadPlaybackSourceResult {
                         playback_key: Some(source_key.clone()),
@@ -375,27 +365,6 @@ mod tests {
         assert_eq!(parse_skip_intro_seconds(Some("-5".to_string())), 0.0);
         assert_eq!(parse_skip_intro_seconds(Some("NaN".to_string())), 0.0);
     }
-}
-
-#[tauri::command]
-pub(crate) async fn cycle_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let paused = state.playback_state.current().is_playing;
-    state
-        .playback_service
-        .execute(&state, legacy_command_envelope(crate::protocol::PlaybackCommandDto::SetPaused { paused }))
-        .await
-        .map_err(core_error_message)?;
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) async fn seek_video(state: tauri::State<'_, AppState>, position: f64) -> Result<(), String> {
-    state
-        .playback_service
-        .execute(&state, legacy_command_envelope(crate::protocol::PlaybackCommandDto::SeekAbsolute { position }))
-        .await
-        .map_err(core_error_message)?;
-    Ok(())
 }
 
 #[derive(Serialize)]
