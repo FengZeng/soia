@@ -1,15 +1,14 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { PlayerApi } from "./usePlaybackController";
 import { resolveAdjacentPathInSameDirectory } from "./usePlaybackAdjacency";
 import {
     resolvePlaybackNavigationPath,
     type PlaybackDirection,
 } from "../utils/playbackNavigation";
+import type { CommandEnvelopeDto } from "../core-client/generated/CommandEnvelopeDto";
+import type { CommandResultDto } from "../core-client/generated/CommandResultDto";
 
 type PlaylistApi = {
-    getAdjacentPath: (
-        currentPath: string,
-        direction: PlaybackDirection,
-    ) => string | null;
     getPathForEnd: (currentPath: string) => string | null;
     getTitleForPath: (path: string) => string | undefined;
 };
@@ -20,24 +19,31 @@ type UsePlaybackNavigationOptions = {
     playPath: (path: string, preferredTitle?: string) => Promise<void>;
 };
 
+let navigationCommandCounter = 0;
+
+const createNavigationEnvelope = (
+    command: CommandEnvelopeDto["command"],
+): CommandEnvelopeDto => ({
+    commandId: `nav-desktop-${Date.now()}-${++navigationCommandCounter}`,
+    clientId: "desktop",
+    playbackSessionId: null,
+    command,
+});
+
 export const usePlaybackNavigation = ({
     player,
     playlistState,
     playPath,
 }: UsePlaybackNavigationOptions) => {
-    const resolveTrackPath = (direction: PlaybackDirection) =>
-        resolvePlaybackNavigationPath({
-            currentPath: player.state.media.url,
-            direction,
-            resolvePlaylistPath: playlistState.getAdjacentPath,
-            resolveDirectoryPath: resolveAdjacentPathInSameDirectory,
-        });
-
     const playTrack = async (direction: PlaybackDirection) => {
-        const nextPath = await resolveTrackPath(direction);
-        if (!nextPath) return;
-        await player.stopPlayback();
-        await playPath(nextPath, playlistState.getTitleForPath(nextPath));
+        const envelope = createNavigationEnvelope(
+            direction === 1 ? { type: "next" } : { type: "previous" },
+        );
+        await invoke<CommandResultDto>("execute_navigation_command", { envelope }).catch(
+            () => {
+                // Navigation failed (no adjacent media, etc.) — silently ignore
+            },
+        );
     };
 
     const playNextAfterEnd = async () => {
@@ -53,7 +59,6 @@ export const usePlaybackNavigation = ({
     };
 
     return {
-        resolveTrackPath,
         playPreviousTrack: () => playTrack(-1),
         playNextTrack: () => playTrack(1),
         playNextAfterEnd,

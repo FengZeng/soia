@@ -94,6 +94,7 @@ struct CommandResponse {
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+#[allow(dead_code)]
 enum WebSocketServerMessage {
     Hello { protocol_version: u32 },
     State { state: PlaybackSnapshotDto },
@@ -385,21 +386,43 @@ async fn handle_websocket_text(
         Ok(WebSocketClientMessage::Ping { id }) => WebSocketServerMessage::Pong { id },
         Ok(WebSocketClientMessage::Command { envelope }) => {
             let id = Some(envelope.command_id.clone());
-            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
-            match app_state.playback_service.execute(&app_state, envelope) {
-                Ok(result) => WebSocketServerMessage::CommandResult { result },
-                Err(error) => WebSocketServerMessage::Error {
-                    id,
-                    error,
-                },
+            if crate::core::playback_service::PlaybackService::is_navigation_command(&envelope.command) {
+                let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+                match crate::commands::navigation::execute_navigation_envelope(
+                    &state.app_handle,
+                    &app_state,
+                    envelope,
+                ).await {
+                    Ok(result) => WebSocketServerMessage::CommandResult { result },
+                    Err(error) => WebSocketServerMessage::Error { id, error },
+                }
+            } else {
+                let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+                match app_state.playback_service.execute(&app_state, envelope) {
+                    Ok(result) => WebSocketServerMessage::CommandResult { result },
+                    Err(error) => WebSocketServerMessage::Error { id, error },
+                }
             }
         }
         Ok(WebSocketClientMessage::Navigation { id, action }) => {
-            match execute_core_navigation_action(&state.app_handle, &action).await {
-                Ok(()) => WebSocketServerMessage::NavigationResult { id, ok: true },
+            // Legacy Navigation message — convert to CommandEnvelope for unified handling
+            let envelope = navigation_action_to_envelope(&action, id.as_deref());
+            match envelope {
+                Ok(envelope) => {
+                    let cmd_id = Some(envelope.command_id.clone());
+                    let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+                    match crate::commands::navigation::execute_navigation_envelope(
+                        &state.app_handle,
+                        &app_state,
+                        envelope,
+                    ).await {
+                        Ok(result) => WebSocketServerMessage::CommandResult { result },
+                        Err(error) => WebSocketServerMessage::Error { id: cmd_id, error },
+                    }
+                }
                 Err(error) => WebSocketServerMessage::Error {
                     id,
-                    error: CoreErrorDto::NavigationFailed { message: error },
+                    error: CoreErrorDto::InvalidCommand { message: error },
                 },
             }
         }
@@ -410,6 +433,25 @@ async fn handle_websocket_text(
             },
         },
     }
+}
+
+fn navigation_action_to_envelope(
+    action: &str,
+    id: Option<&str>,
+) -> Result<crate::protocol::CommandEnvelopeDto, String> {
+    let command = match action {
+        "previous" => crate::protocol::PlaybackCommandDto::Previous,
+        "next" => crate::protocol::PlaybackCommandDto::Next,
+        _ => return Err(format!("unsupported navigation action: {action}")),
+    };
+    Ok(crate::protocol::CommandEnvelopeDto {
+        command_id: id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+        client_id: "remote-browser".to_string(),
+        playback_session_id: None,
+        command,
+    })
 }
 
 async fn send_ws_json(
@@ -443,15 +485,6 @@ fn execute_mpv_command(
     let state: tauri::State<'_, AppState> = app_handle.state();
     let mpv_guard = state.mpv_player.lock().map_err(|error| error.to_string())?;
     mpv_command_checked(&mpv_guard, &args_str)
-}
-
-async fn execute_core_navigation_action(app_handle: &tauri::AppHandle, action: &str) -> Result<(), String> {
-    let direction = match action {
-        "previous" => -1,
-        "next" => 1,
-        _ => return Err("unsupported remote navigation action".to_string()),
-    };
-    crate::commands::navigation::execute_core_navigation(app_handle, direction).await
 }
 
 fn resolve_auth_token() -> Option<String> {
