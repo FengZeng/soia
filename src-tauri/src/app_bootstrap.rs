@@ -72,6 +72,8 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
     app.manage(build_app_state(mpv_player_handle));
     app.manage(crate::platform::new_platform_state());
 
+    load_navigation_state_from_persistence(app);
+
     configure_mpv_startup(app)?;
     start_event_listener(app)?;
     if let Err(error) = crate::remote_control::start(app.handle().clone()) {
@@ -95,6 +97,19 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
         now_playing: Mutex::new(Default::default()),
         playback_state: crate::core::state::PlaybackStatePublisher::new(),
         shader_pipeline: crate::shader_pipeline::ShaderPipeline::default(),
+    }
+}
+
+fn load_navigation_state_from_persistence(app: &tauri::App) {
+    let app_handle = app.handle();
+    match ui_state_store::load_navigation_state(app_handle) {
+        Ok(nav_state) => {
+            let state: tauri::State<'_, AppState> = app.state();
+            state.navigation_service.sync_state(nav_state);
+        }
+        Err(error) => {
+            warn!("failed to load navigation state from persistence: {error}");
+        }
     }
 }
 

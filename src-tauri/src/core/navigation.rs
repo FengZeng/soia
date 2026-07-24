@@ -81,12 +81,19 @@ impl NavigationService {
     }
 
     /// Replace the navigation state with a fresh sync from the frontend.
+    /// Preserves the Core-owned `playback_playlist_id` — clients must not
+    /// reset this field since Core determines it during navigation resolution.
     pub(crate) fn sync_state(&self, new_state: NavigationState) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let preserved_playback_id = state.playback_playlist_id.take();
         *state = new_state;
+        // Restore Core-owned playback playlist if the sync didn't provide one
+        if state.playback_playlist_id.is_none() {
+            state.playback_playlist_id = preserved_playback_id;
+        }
     }
 
     /// Update only the playback playlist ID (set when navigation resolves a playlist).
