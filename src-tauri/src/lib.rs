@@ -493,6 +493,7 @@ pub fn run() {
             commands::platform::pick_paths_native,
             commands::playback::consume_pending_open_files,
             commands::playback::execute_playback_command,
+            commands::playback::get_playback_snapshot,
             commands::window::set_window_controls_visible,
             commands::window::apply_window_appearance,
             commands::window::set_window_vibrancy_visible,

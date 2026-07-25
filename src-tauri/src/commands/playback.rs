@@ -25,6 +25,13 @@ pub(crate) async fn execute_playback_command(
 }
 
 #[tauri::command]
+pub(crate) fn get_playback_snapshot(
+    state: tauri::State<'_, AppState>,
+) -> crate::protocol::PlaybackSnapshotDto {
+    state.playback_state.current()
+}
+
+#[tauri::command]
 pub(crate) fn mpv_run_command(
     state: tauri::State<'_, AppState>,
     args: Vec<serde_json::Value>,
