@@ -1,29 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import SeekBar from "../components/player-controls/SeekBar.vue";
+import type { CoreClientError } from "../core-client/CoreClient";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
-import type { CoreErrorDto } from "../core-client/generated/CoreErrorDto";
+import {
+    WebSocketCoreClient,
+    type WebSocketCoreClientConnectionState,
+} from "../core-client/webSocketCoreClient";
 
 const state = ref<PlaybackSnapshotDto>({ protocolVersion: 2, revision: 0, playbackSessionId: null, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
 const connectionState = ref("Connecting…");
 const error = ref("");
-let socket: WebSocket | null = null;
-let reconnectTimer: number | null = null;
-let commandSequence = 0;
 const pendingSeek = ref<number | null>(null);
 const playbackRates = [2, 1.75, 1.5, 1.25, 1, 0.75, 0.5, 0.25];
-
-function createClientId() {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-        return crypto.randomUUID();
-    }
-    return `remote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-const clientId = createClientId();
-
-let pairCode = new URLSearchParams(window.location.hash.slice(1)).get("pair");
 const canControl = computed(() => connectionState.value === "Connected");
 const durationLabel = computed(() => formatTime(state.value.duration));
 const displayedPosition = computed(() => pendingSeek.value ?? state.value.position);
@@ -37,65 +27,46 @@ function formatTime(seconds: number) {
     return `${minutes}:${String(value % 60).padStart(2, "0")}`;
 }
 
-async function connect() {
-    if (pairCode) {
-        try {
-            const response = await fetch("/api/pair", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pairCode }),
-            });
-            if (!response.ok) throw new Error("Pairing code expired");
-            window.history.replaceState(null, "", window.location.pathname);
-            pairCode = null;
-        } catch (pairError) {
-            connectionState.value = "Pairing failed";
-            error.value = pairError instanceof Error ? pairError.message : "Could not pair with Soia.";
-            return;
-        }
+const connectionLabels: Record<WebSocketCoreClientConnectionState, string> = {
+    idle: "Connecting…",
+    pairing: "Pairing…",
+    connecting: "Connecting…",
+    connected: "Connected",
+    reconnecting: "Reconnecting…",
+    incompatible: "Incompatible protocol",
+    failed: "Pairing failed",
+    closed: "Disconnected",
+};
+
+const errorMessage = (clientError: CoreClientError) =>
+    clientError.type === "core"
+        ? clientError.error.message
+        : clientError.message;
+
+const remoteClient = new WebSocketCoreClient({
+    onConnectionStateChange: (nextState) => {
+        connectionState.value = connectionLabels[nextState];
+        if (nextState === "connected") error.value = "";
+    },
+});
+
+const handleSnapshot = (nextState: PlaybackSnapshotDto) => {
+    if (pendingSeek.value !== null && Math.abs(nextState.position - pendingSeek.value) < 2) {
+        pendingSeek.value = null;
     }
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    socket.onopen = () => { connectionState.value = "Connected"; error.value = ""; };
-    socket.onmessage = (event) => {
-        const message = JSON.parse(event.data) as { type: string; state?: PlaybackSnapshotDto; error?: CoreErrorDto };
-        if (message.type === "state" && message.state) {
-            const nextState = message.state;
-            if (nextState.revision < state.value.revision) return;
-            if (pendingSeek.value !== null && Math.abs(nextState.position - pendingSeek.value) < 2) {
-                pendingSeek.value = null;
-            }
-            state.value = nextState;
-            if (nextState.sourceLoadError) {
-                error.value = nextState.sourceLoadError;
-            } else if (nextState.sourceLoading) {
-                error.value = "";
-            }
-        }
-        if (message.type === "error") {
-            pendingSeek.value = null;
-            error.value = message.error?.message ?? "The command failed.";
-        }
-    };
-    socket.onclose = () => {
-        connectionState.value = "Reconnecting…";
-        reconnectTimer = window.setTimeout(connect, 1500);
-    };
-    socket.onerror = () => { error.value = "Could not connect to Soia."; };
-}
+    state.value = nextState;
+    if (nextState.sourceLoadError) {
+        error.value = nextState.sourceLoadError;
+    } else if (nextState.sourceLoading) {
+        error.value = "";
+    }
+};
 
 function command(command: PlaybackCommandDto) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    commandSequence += 1;
-    socket.send(JSON.stringify({
-        type: "command",
-        envelope: {
-            commandId: `${clientId}:${commandSequence}`,
-            clientId,
-            playbackSessionId: state.value.playbackSessionId,
-            command,
-        },
-    }));
+    void remoteClient.execute(command).catch((clientError: CoreClientError) => {
+        pendingSeek.value = null;
+        error.value = errorMessage(clientError);
+    });
 }
 
 function navigation(action: "previous" | "next") {
@@ -115,8 +86,18 @@ function setSpeed(event: Event) {
     command({ type: "setSpeed", speed: Number((event.target as HTMLSelectElement).value) });
 }
 
-onMounted(connect);
-onBeforeUnmount(() => { socket?.close(); if (reconnectTimer) window.clearTimeout(reconnectTimer); });
+let unsubscribe: (() => void) | null = null;
+
+onMounted(() => {
+    unsubscribe = remoteClient.subscribe(handleSnapshot, (clientError) => {
+        error.value = errorMessage(clientError);
+    });
+});
+
+onBeforeUnmount(() => {
+    unsubscribe?.();
+    remoteClient.dispose();
+});
 </script>
 
 <template>

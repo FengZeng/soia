@@ -18,6 +18,7 @@
     "check:playlist-source-workflows": "node ./scripts/check_playlist_source_workflows.mjs",
     "check:core-client-contract": "node ./scripts/check_core_client_contract.mjs",
     "check:core-client-error": "node ./scripts/check_core_client_error.mjs",
+    "check:websocket-core-client-protocol": "node ./scripts/check_websocket_core_client_protocol.mjs",
     "preview": "vite preview",
     "tauri": "pnpm version:sync && pnpm media:sync && node ./scripts/run_tauri.mjs",
     "version:sync": "node ./scripts/sync_version.mjs",

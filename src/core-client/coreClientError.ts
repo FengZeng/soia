@@ -18,7 +18,7 @@ const errorMessage = (error: unknown, fallback: string) => {
     return fallback;
 };
 
-const isCoreError = (error: unknown): error is CoreErrorDto => {
+export const isCoreErrorDto = (error: unknown): error is CoreErrorDto => {
     if (!error || typeof error !== "object") return false;
     const type = (error as { type?: unknown }).type;
     return typeof type === "string" && coreErrorTypes.has(type as CoreErrorDto["type"]);
@@ -28,6 +28,6 @@ export const toCoreClientTransportError = (
     error: unknown,
     fallback: string,
 ): CoreClientError =>
-    isCoreError(error)
+    isCoreErrorDto(error)
         ? { type: "core", error }
         : { type: "transport", message: errorMessage(error, fallback) };
