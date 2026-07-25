@@ -8,6 +8,7 @@ const props = defineProps<{
     formatTime: (seconds: number) => string;
     controlsVisible?: boolean;
     showHoverTooltip?: boolean;
+    alwaysShowScrubber?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -50,6 +51,16 @@ const updateHoverByClientX = (clientX: number) => {
 const updateHoverTime = (event: MouseEvent) => {
     if (isDragging.value) return;
     updateHoverByClientX(event.clientX);
+};
+
+const onMouseMove = (event: MouseEvent) => {
+    if (props.alwaysShowScrubber) return;
+    updateHoverTime(event);
+};
+
+const onMouseLeave = () => {
+    if (props.alwaysShowScrubber) return;
+    hideHoverTime();
 };
 
 const hideHoverTime = () => {
@@ -146,10 +157,13 @@ onUnmounted(() => {
         ref="progressAreaRef"
         class="progress-area"
         data-window-no-drag
-        :class="{ 'is-dragging': isDragging }"
+        :class="{
+            'is-dragging': isDragging,
+            'always-show-scrubber': props.alwaysShowScrubber,
+        }"
         @pointerdown.prevent="onPointerDown"
-        @mousemove="updateHoverTime"
-        @mouseleave="hideHoverTime"
+        @mousemove="onMouseMove"
+        @mouseleave="onMouseLeave"
     >
         <div
             v-if="showHoverTime && props.showHoverTooltip !== false"
@@ -206,6 +220,10 @@ onUnmounted(() => {
     height: 5px;
 }
 
+.progress-area.always-show-scrubber .progress-bg {
+    height: 5px;
+}
+
 .progress-current {
     height: 100%;
     background: var(--progress-color);
@@ -249,6 +267,12 @@ onUnmounted(() => {
 .progress-area.is-dragging .scrubber-head {
     opacity: 1;
     transform: translate(-50%, -50%) scale(1.35);
+}
+
+.progress-area.always-show-scrubber .scrubber-head,
+.progress-area.always-show-scrubber:hover .scrubber-head {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15);
 }
 
 .time-tooltip {

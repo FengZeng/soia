@@ -7,6 +7,7 @@ import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnaps
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
 import type { MediaTrackDto } from "../core-client/generated/MediaTrackDto";
 import { remoteConnectionState } from "./remoteCoreClient";
+import soiaIconUrl from "../../src-tauri/icons/128x128@2x.png";
 
 const state = ref<PlaybackSnapshotDto>({
     protocolVersion: 3,
@@ -48,6 +49,15 @@ const selectedAudioTrackId = computed(
 );
 const selectedSubtitleTrackId = computed(
     () => subtitleTracks.value.find((track) => track.selected)?.id ?? 0,
+);
+const statusMessage = computed(() => {
+    if (pendingSeek.value !== null) return "Seeking…";
+    if (state.value.sourceLoading) return "Preparing source…";
+    if (error.value) return error.value;
+    return "";
+});
+const statusIsError = computed(
+    () => Boolean(error.value) && pendingSeek.value === null && !state.value.sourceLoading,
 );
 
 function formatTime(seconds: number) {
@@ -156,25 +166,45 @@ onBeforeUnmount(() => {
 
 <template>
     <main class="remote-app">
-        <header><span class="brand">SOIA</span><span class="connection">{{ connectionState }}</span></header>
+        <header class="app-header">
+            <span class="brand"><span class="brand-mark">S</span>SOIA</span>
+            <span
+                class="connection"
+                :class="{ 'connection--active': canControl }"
+            >
+                <span class="connection-dot" aria-hidden="true"></span>
+                {{ connectionState }}
+            </span>
+        </header>
         <section class="now-playing">
-            <div class="artwork">▶</div>
+            <p
+                class="playback-status"
+                :class="{ 'playback-status--error': statusIsError }"
+                :title="statusMessage || undefined"
+                aria-live="polite"
+            >
+                <span v-if="statusMessage">{{ statusMessage }}</span>
+            </p>
+            <div class="artwork">
+                <img :src="soiaIconUrl" alt="Soia" />
+            </div>
             <p class="eyebrow">NOW PLAYING</p>
             <h1>{{ state.title || "Nothing playing" }}</h1>
         </section>
         <section class="controls" :aria-disabled="!canControl">
-            <SeekBar
-                class="remote-seek"
-                :duration="state.duration"
-                :progress-percent="progressPercent"
-                :buffered-percent="progressPercent"
-                :format-time="formatTime"
-                :show-hover-tooltip="false"
-                @seek="seek"
-            />
-            <div class="time"><span>{{ formatTime(displayedPosition) }}</span><span>{{ durationLabel }}</span></div>
-            <p v-if="pendingSeek !== null" class="seeking">Seeking…</p>
-            <p v-else-if="state.sourceLoading" class="seeking">Preparing source…</p>
+            <div class="seek-group">
+                <SeekBar
+                    class="remote-seek"
+                    :duration="state.duration"
+                    :progress-percent="progressPercent"
+                    :buffered-percent="progressPercent"
+                    :format-time="formatTime"
+                    :always-show-scrubber="true"
+                    :show-hover-tooltip="false"
+                    @seek="seek"
+                />
+                <div class="time"><span>{{ formatTime(displayedPosition) }}</span><span>{{ durationLabel }}</span></div>
+            </div>
             <div class="transport">
                 <button :disabled="!canControl" aria-label="Previous item" @click="navigation('previous')">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18V6h2v12H6zm3.5-6 8.5 6V6l-8.5 6z" /></svg>
@@ -194,19 +224,28 @@ onBeforeUnmount(() => {
                 </button>
             </div>
             <div class="volume">
-                <button :disabled="!canControl" :aria-label="state.muted ? 'Unmute' : 'Mute'" @click="command({ type: 'setMuted', muted: !state.muted })">{{ state.muted ? "🔇" : "🔊" }}</button>
+                <button :disabled="!canControl" :aria-label="state.muted ? 'Unmute' : 'Mute'" @click="command({ type: 'setMuted', muted: !state.muted })">
+                    <svg v-if="state.muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63Zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71ZM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25A8.9 8.9 0 0 1 14 18.7v2.06a10.7 10.7 0 0 0 3.69-1.81L19.73 21 21 19.73 4.27 3ZM12 4 9.91 6.09 12 8.18V4Z" /></svg>
+                    <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12ZM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77Z" /></svg>
+                </button>
                 <input type="range" min="0" max="130" :value="state.volume" :disabled="!canControl" @change="setVolume" />
-                <span>{{ Math.round(state.volume) }}%</span>
+                <output>{{ Math.round(state.volume) }}%</output>
             </div>
-            <label class="speed-control">
-                <span>Playback speed</span>
+            <label class="control-field speed-control">
+                <span class="control-label">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 1 0 8 8 8.01 8.01 0 0 0-8-8Zm0 14a6 6 0 1 1 6-6 6.01 6.01 0 0 1-6 6Zm3.8-8.6-4.36 2.18A1 1 0 0 0 11 12.9V15h2v-1.48l3.7-1.85-.9-1.79V9.4Z" /></svg>
+                    <span>Speed</span>
+                </span>
                 <select :value="state.speed" :disabled="!canControl" @change="setSpeed">
                     <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}×</option>
                 </select>
             </label>
             <div class="track-controls">
-                <label>
-                    <span>Audio</span>
+                <label class="control-field">
+                    <span class="control-label">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6Z" /></svg>
+                        <span>Audio</span>
+                    </span>
                     <select
                         :value="selectedAudioTrackId"
                         :disabled="!canControl || !audioTracks.length"
@@ -218,8 +257,11 @@ onBeforeUnmount(() => {
                         </option>
                     </select>
                 </label>
-                <label>
-                    <span>Subtitles</span>
+                <label class="control-field">
+                    <span class="control-label">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2ZM11 11H9.5v-1h-3v4h3v-1H11v1a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 5 14v-4a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 11 10v1Zm8 0h-1.5v-1h-3v4h3v-1H19v1a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 13 14v-4a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 19 10v1Z" /></svg>
+                        <span>Subtitles</span>
+                    </span>
                     <select
                         :value="selectedSubtitleTrackId"
                         :disabled="!canControl || !subtitleTracks.length"
@@ -233,6 +275,5 @@ onBeforeUnmount(() => {
                 </label>
             </div>
         </section>
-        <p v-if="error" class="error">{{ error }}</p>
     </main>
 </template>
