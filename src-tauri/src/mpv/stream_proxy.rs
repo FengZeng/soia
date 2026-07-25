@@ -45,7 +45,7 @@ static STREAM_PROXY_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::ne
 static STREAM_PROXY_PARALLEL_RANGE_ENABLED: AtomicBool = AtomicBool::new(false);
 static STREAM_PROXY_BACKENDS: OnceLock<Mutex<StreamBackendRegistry>> =
     OnceLock::new();
-static ACTIVE_STREAM_PROXY_BACKEND: OnceLock<Mutex<Option<Arc<dyn StreamBackend>>>> =
+static ACTIVE_STREAM_PROXY_BACKENDS: OnceLock<Mutex<Option<Vec<Arc<dyn StreamBackend>>>>> =
     OnceLock::new();
 
 struct CachedClient {
@@ -201,8 +201,8 @@ impl DownloadSpeedSample {
 }
 
 pub(crate) struct DownloadSpeedActivation {
-    previous_backend: Option<Arc<dyn StreamBackend>>,
-    previous_meter: Option<(DownloadSpeedMeterHandle, DownloadSpeedMeter)>,
+    previous_backends: Option<Vec<Arc<dyn StreamBackend>>>,
+    previous_meters: Vec<(DownloadSpeedMeterHandle, DownloadSpeedMeter)>,
     committed: bool,
 }
 
@@ -217,23 +217,22 @@ impl Drop for DownloadSpeedActivation {
         if self.committed {
             return;
         }
-        if let Some((meter, previous_meter)) = self.previous_meter.take() {
+        for (meter, previous_meter) in self.previous_meters.drain(..) {
             if let Ok(mut current_meter) = meter.lock() {
                 *current_meter = previous_meter;
             }
         }
-        if let Ok(mut active_backend) = ACTIVE_STREAM_PROXY_BACKEND
+        if let Ok(mut active_backends) = ACTIVE_STREAM_PROXY_BACKENDS
             .get_or_init(|| Mutex::new(None))
             .lock()
         {
-            *active_backend = self.previous_backend.take();
+            *active_backends = self.previous_backends.take();
         }
     }
 }
 
 pub(crate) struct DownloadSpeedGeneration {
-    meter: DownloadSpeedMeterHandle,
-    previous_meter: Option<DownloadSpeedMeter>,
+    previous_meters: Vec<(DownloadSpeedMeterHandle, DownloadSpeedMeter)>,
     committed: bool,
 }
 
@@ -248,8 +247,8 @@ impl Drop for DownloadSpeedGeneration {
         if self.committed {
             return;
         }
-        if let Some(previous_meter) = self.previous_meter.take() {
-            if let Ok(mut current_meter) = self.meter.lock() {
+        for (meter, previous_meter) in self.previous_meters.drain(..) {
+            if let Ok(mut current_meter) = meter.lock() {
                 *current_meter = previous_meter;
             }
         }
@@ -813,53 +812,77 @@ fn stream_backends() -> &'static Mutex<StreamBackendRegistry> {
 }
 
 pub(crate) fn download_speed_bps() -> f64 {
-    ACTIVE_STREAM_PROXY_BACKEND
+    ACTIVE_STREAM_PROXY_BACKENDS
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
-        .and_then(|backend| backend.as_ref().cloned())
-        .and_then(|backend| backend.download_speed_meter().lock().ok().map(|meter| meter.speed_bps()))
+        .and_then(|backends| backends.as_ref().cloned())
+        .map(|backends| {
+            backends
+                .iter()
+                .filter_map(|backend| {
+                    backend
+                        .download_speed_meter()
+                        .lock()
+                        .ok()
+                        .map(|meter| meter.speed_bps())
+                })
+                .sum()
+        })
         .unwrap_or(0.0)
 }
 
 pub(crate) fn begin_download_speed_activation(url: &str) -> DownloadSpeedActivation {
-    let backend = proxy_stream_backend_for_url(url);
-    let previous_meter = backend.as_ref().and_then(|backend| {
-        let meter = backend.download_speed_meter().clone();
-        let previous_meter = meter.lock().ok().map(|mut current_meter| {
-            let previous_meter = current_meter.clone();
-            current_meter.begin_generation();
-            previous_meter
-        });
-        previous_meter.map(|previous_meter| (meter, previous_meter))
-    });
-    let previous_backend = ACTIVE_STREAM_PROXY_BACKEND
+    let backends = proxy_stream_backends_for_url(url);
+    let previous_meters = backends
+        .iter()
+        .filter_map(|backend| {
+            let meter = backend.download_speed_meter().clone();
+            let previous_meter = meter.lock().ok().map(|mut current_meter| {
+                let previous_meter = current_meter.clone();
+                current_meter.begin_generation();
+                previous_meter
+            });
+            previous_meter.map(|previous_meter| (meter, previous_meter))
+        })
+        .collect();
+    let previous_backends = ACTIVE_STREAM_PROXY_BACKENDS
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
-        .and_then(|mut active_backend| std::mem::replace(&mut *active_backend, backend));
+        .and_then(|mut active_backends| {
+            std::mem::replace(&mut *active_backends, (!backends.is_empty()).then_some(backends))
+        });
     DownloadSpeedActivation {
-        previous_backend,
-        previous_meter,
+        previous_backends,
+        previous_meters,
         committed: false,
     }
 }
 
 pub(crate) fn begin_download_speed_generation() -> Option<DownloadSpeedGeneration> {
-    let backend = ACTIVE_STREAM_PROXY_BACKEND
+    let backends = ACTIVE_STREAM_PROXY_BACKENDS
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
-        .and_then(|backend| backend.as_ref().cloned());
-    let meter = backend?.download_speed_meter().clone();
-    let previous_meter = meter.lock().ok().map(|mut current_meter| {
-        let previous_meter = current_meter.clone();
-        current_meter.begin_generation();
-        previous_meter
-    })?;
+        .and_then(|backends| backends.as_ref().cloned())?;
+    let previous_meters = backends
+        .iter()
+        .filter_map(|backend| {
+            let meter = backend.download_speed_meter().clone();
+            let previous_meter = meter.lock().ok().map(|mut current_meter| {
+                let previous_meter = current_meter.clone();
+                current_meter.begin_generation();
+                previous_meter
+            });
+            previous_meter.map(|previous_meter| (meter, previous_meter))
+        })
+        .collect::<Vec<_>>();
+    if previous_meters.is_empty() {
+        return None;
+    }
     Some(DownloadSpeedGeneration {
-        meter,
-        previous_meter: Some(previous_meter),
+        previous_meters,
         committed: false,
     })
 }
@@ -894,10 +917,48 @@ fn proxy_url_for_existing_origin(origin: &str) -> Option<String> {
     Some(format!("{base}/stream/{token}"))
 }
 
+fn proxy_stream_backends_for_url(url: &str) -> Vec<Arc<dyn StreamBackend>> {
+    let urls = if url.starts_with("edl://") {
+        edl_stream_urls(url)
+    } else {
+        vec![url]
+    };
+    urls.into_iter()
+        .filter_map(proxy_stream_backend_for_url)
+        .fold(Vec::new(), |mut backends, backend| {
+            if !backends.iter().any(|existing| Arc::ptr_eq(existing, &backend)) {
+                backends.push(backend);
+            }
+            backends
+        })
+}
+
 fn proxy_stream_backend_for_url(url: &str) -> Option<Arc<dyn StreamBackend>> {
     let target = Url::parse(url).ok()?.path().to_string();
     let token = target.strip_prefix("/stream/")?.trim();
     (!token.is_empty()).then(|| stream_backends().lock().ok()?.get(token))?
+}
+
+fn edl_stream_urls(value: &str) -> Vec<&str> {
+    let mut urls = Vec::new();
+    let mut rest = value.strip_prefix("edl://").unwrap_or(value);
+    while let Some(marker_start) = rest.find('%') {
+        rest = &rest[marker_start + 1..];
+        let Some(length_end) = rest.find('%') else {
+            break;
+        };
+        let Ok(length) = rest[..length_end].parse::<usize>() else {
+            continue;
+        };
+        rest = &rest[length_end + 1..];
+        if rest.len() < length {
+            break;
+        }
+        let (url, remaining) = rest.split_at(length);
+        urls.push(url);
+        rest = remaining;
+    }
+    urls
 }
 
 fn lookup_stream_backend(target: &str) -> Option<Arc<dyn StreamBackend>> {
@@ -1981,7 +2042,7 @@ async fn write_response(
 
 #[cfg(test)]
 mod tests {
-    use super::DownloadSpeedMeter;
+    use super::{edl_stream_urls, DownloadSpeedMeter};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -2080,5 +2141,20 @@ mod tests {
         let speed = meter.speed_bps_at(start + Duration::from_millis(2800));
         assert!(speed > 1.5 * 1024.0 * 1024.0);
         assert!(speed < 1.6 * 1024.0 * 1024.0);
+    }
+
+    #[test]
+    fn edl_stream_urls_extracts_each_embedded_proxy_url() {
+        let video = "http://127.0.0.1:31000/stream/video-token";
+        let audio = "http://127.0.0.1:31000/stream/audio-token";
+        let edl = format!(
+            "edl://!new_stream;%{}%{};!new_stream;%{}%{}",
+            video.len(),
+            video,
+            audio.len(),
+            audio,
+        );
+
+        assert_eq!(edl_stream_urls(&edl), vec![video, audio]);
     }
 }
