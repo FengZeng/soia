@@ -13,6 +13,7 @@ import { useMenuControls } from "./useMenuControls";
 import { useNowPlayingState } from "./useNowPlayingState";
 import { useUiControls } from "./useUiControls";
 import { useFullscreenTransition } from "./useFullscreenTransition";
+import type { CoreClient } from "../core-client/CoreClient";
 
 export type SideActionId = "home" | "history" | "network" | "settings";
 export type ClearConfirmTarget = "playlist" | "history" | null;
@@ -24,13 +25,13 @@ const detectNativePipPlatform = () =>
     typeof navigator !== "undefined" &&
     /\b(mac|darwin|windows)\b/i.test(navigator.userAgent);
 
-export const useAppBootstrap = () => {
+export const useAppBootstrap = (coreClient: CoreClient) => {
     const isMacOS = detectMacOS();
     const isNativePipPlatform = detectNativePipPlatform();
-    const player = usePlaybackController();
+    const player = usePlaybackController(coreClient);
     const history = usePlaybackHistory();
     const tracks = useMediaTracks(() => player.state.media.url, history);
-    const speed = usePlaybackSpeed();
+    const speed = usePlaybackSpeed(coreClient);
     const adjustments = usePlaybackAdjustments();
     const subtitleAppearance = useSubtitleAppearance();
     const playlistState = usePlaylistState();

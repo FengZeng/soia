@@ -8,8 +8,11 @@ import {
     primaryMonitor,
 } from "@tauri-apps/api/window";
 import type { ProgressPayload, MediaTrack } from "../types/media";
+import type {
+    CoreClient,
+    CoreClientUnsubscribe,
+} from "../core-client/CoreClient";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
-import { updatePlaybackSessionId } from "../core-client/tauriPlaybackClient";
 import type { PlayerApi } from "./usePlaybackController";
 
 type TracksUpdatePayload = {
@@ -45,6 +48,7 @@ type UiApi = {
 };
 
 type AppEventBindingsOptions = {
+    coreClient: CoreClient;
     player: PlayerEventApi;
     tracks: TracksApi;
     ui: UiApi;
@@ -68,6 +72,7 @@ const AUTO_RESIZE_MIN_WIDTH = 720;
 const AUTO_RESIZE_MIN_HEIGHT = 480;
 
 export const useAppEventBindings = ({
+    coreClient,
     player,
     tracks,
     ui,
@@ -87,7 +92,7 @@ export const useAppEventBindings = ({
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
     // 事件监听器引用
-    let unlistenPlaybackSnapshot: UnlistenFn | null = null;
+    let unlistenPlaybackSnapshot: CoreClientUnsubscribe | null = null;
     let unlistenPlaybackLoadPrepared: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
     let unlistenPlaybackRestart: UnlistenFn | null = null;
@@ -107,6 +112,39 @@ export const useAppEventBindings = ({
         ["dblclick", (event) => onDoubleClick(event as MouseEvent)],
     ];
 
+    let latestPlaybackSnapshotRevision = -1;
+    const applyPlaybackSnapshot = (snapshot: PlaybackSnapshotDto) => {
+        if (snapshot.revision < latestPlaybackSnapshotRevision) return;
+        latestPlaybackSnapshotRevision = snapshot.revision;
+        player.state.playback.currentTime = snapshot.position;
+        player.state.playback.duration = snapshot.duration;
+        player.state.playback.bufferedTime =
+            typeof snapshot.bufferedPosition === "number" &&
+            Number.isFinite(snapshot.bufferedPosition)
+                ? snapshot.bufferedPosition
+                : snapshot.position;
+        player.state.playback.isPlaying = snapshot.isPlaying;
+        player.state.playback.isBuffering = snapshot.isBuffering === true;
+        player.state.playback.volume = snapshot.volume;
+        onPlaybackSpeedChange?.(snapshot.speed);
+        onSourceLoadState?.({
+            loading: snapshot.sourceLoading,
+            loadingKey: snapshot.sourceLoadingKey,
+            error: snapshot.sourceLoadError,
+        });
+        if (onProgress) {
+            onProgress({
+                time_pos: snapshot.position,
+                duration: snapshot.duration,
+                buffered_pos: snapshot.bufferedPosition,
+                is_playing: snapshot.isPlaying,
+                video_bitrate: player.state.playback.videoBitrate,
+                is_buffering: snapshot.isBuffering,
+                download_speed_bps: player.state.playback.downloadSpeedBps,
+            });
+        }
+    };
+
     onMounted(async () => {
         const currentWindow = Window.getCurrent();
         unlistenWindowResized = await currentWindow.onResized(async () => {
@@ -118,41 +156,8 @@ export const useAppEventBindings = ({
             onFullscreenTransition();
         });
 
-        // Rust Core publishes the same snapshot that WebSocket clients receive.
-        unlistenPlaybackSnapshot = await listen<PlaybackSnapshotDto>(
-            "playback-snapshot",
-            (event) => {
-                updatePlaybackSessionId(event.payload.playbackSessionId);
-                player.state.playback.currentTime = event.payload.position;
-                player.state.playback.duration = event.payload.duration;
-                player.state.playback.bufferedTime =
-                    typeof event.payload.bufferedPosition === "number" &&
-                    Number.isFinite(event.payload.bufferedPosition)
-                        ? event.payload.bufferedPosition
-                        : event.payload.position;
-                player.state.playback.isPlaying = event.payload.isPlaying;
-                player.state.playback.isBuffering =
-                    event.payload.isBuffering === true;
-                player.state.playback.volume = event.payload.volume;
-                onPlaybackSpeedChange?.(event.payload.speed);
-                onSourceLoadState?.({
-                    loading: event.payload.sourceLoading,
-                    loadingKey: event.payload.sourceLoadingKey,
-                    error: event.payload.sourceLoadError,
-                });
-                if (onProgress) {
-                    onProgress({
-                        time_pos: event.payload.position,
-                        duration: event.payload.duration,
-                        buffered_pos: event.payload.bufferedPosition,
-                        is_playing: event.payload.isPlaying,
-                        video_bitrate: player.state.playback.videoBitrate,
-                        is_buffering: event.payload.isBuffering,
-                        download_speed_bps: player.state.playback.downloadSpeedBps,
-                    });
-                }
-            },
-        );
+        unlistenPlaybackSnapshot = coreClient.subscribe(applyPlaybackSnapshot);
+        void coreClient.getSnapshot().then(applyPlaybackSnapshot).catch(() => {});
 
         unlistenPlaybackLoadPrepared = await listen<PlaybackLoadPreparedPayload>(
             "playback-load-prepared",

@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import SeekBar from "../components/player-controls/SeekBar.vue";
 import type { CoreClientError } from "../core-client/CoreClient";
+import { coreClientKey } from "../core-client/coreClientKey";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
-import {
-    WebSocketCoreClient,
-    type WebSocketCoreClientConnectionState,
-} from "../core-client/webSocketCoreClient";
+import { remoteConnectionState } from "./remoteCoreClient";
 
 const state = ref<PlaybackSnapshotDto>({ protocolVersion: 2, revision: 0, playbackSessionId: null, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
-const connectionState = ref("Connecting…");
 const error = ref("");
 const pendingSeek = ref<number | null>(null);
 const playbackRates = [2, 1.75, 1.5, 1.25, 1, 0.75, 0.5, 0.25];
@@ -27,7 +24,7 @@ function formatTime(seconds: number) {
     return `${minutes}:${String(value % 60).padStart(2, "0")}`;
 }
 
-const connectionLabels: Record<WebSocketCoreClientConnectionState, string> = {
+const connectionLabels = {
     idle: "Connecting…",
     pairing: "Pairing…",
     connecting: "Connecting…",
@@ -37,18 +34,23 @@ const connectionLabels: Record<WebSocketCoreClientConnectionState, string> = {
     failed: "Pairing failed",
     closed: "Disconnected",
 };
+const connectionState = computed(
+    () => connectionLabels[remoteConnectionState.value],
+);
+
+watch(remoteConnectionState, (nextState) => {
+    if (nextState === "connected") error.value = "";
+});
 
 const errorMessage = (clientError: CoreClientError) =>
     clientError.type === "core"
         ? clientError.error.message
         : clientError.message;
 
-const remoteClient = new WebSocketCoreClient({
-    onConnectionStateChange: (nextState) => {
-        connectionState.value = connectionLabels[nextState];
-        if (nextState === "connected") error.value = "";
-    },
-});
+const remoteClient = inject(coreClientKey);
+if (!remoteClient) {
+    throw new Error("Remote CoreClient is unavailable");
+}
 
 const handleSnapshot = (nextState: PlaybackSnapshotDto) => {
     if (pendingSeek.value !== null && Math.abs(nextState.position - pendingSeek.value) < 2) {
@@ -96,7 +98,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
     unsubscribe?.();
-    remoteClient.dispose();
 });
 </script>
 

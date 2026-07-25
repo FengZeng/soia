@@ -34,6 +34,7 @@ import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePer
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useNavigationStateSync } from "./composables/useNavigationStateSync";
+import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
 
 const {
     isMacOS,
@@ -77,7 +78,7 @@ const {
     hasSubTracks,
     setWindowControlsVisible,
     normalizeStoredPanel,
-} = useAppBootstrap();
+} = useAppBootstrap(tauriCoreClient);
 
 const clearNavSelectionDuringLoad = ref(false);
 const playbackLoadingState = usePlaybackLoadingState();
@@ -140,9 +141,7 @@ const onStopPlaybackWithWindowRestore = async () => {
 };
 
 const playbackNavigation = usePlaybackNavigation({
-    player,
-    playlistState,
-    playPath,
+    coreClient: tauriCoreClient,
 });
 
 useNavigationStateSync({
@@ -384,6 +383,7 @@ const onProgressWithLivePlaybackUpdate = (
 };
 
 useAppRuntimeBindings({
+    coreClient: tauriCoreClient,
     player,
     tracks,
     ui,

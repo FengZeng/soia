@@ -1,7 +1,7 @@
 import { ref } from "vue";
-import { executePlaybackCommand } from "../core-client/tauriPlaybackClient";
+import type { CoreClient } from "../core-client/CoreClient";
 
-export const usePlaybackSpeed = () => {
+export const usePlaybackSpeed = (coreClient: CoreClient) => {
     const playbackRates = [2.0, 1.75, 1.5, 1.25, 1.0, 0.75, 0.5, 0.25];
     const currentSpeed = ref(1.0);
     const showSpeedMenu = ref(false);
@@ -9,7 +9,7 @@ export const usePlaybackSpeed = () => {
     const setSpeed = async (rate: number) => {
         currentSpeed.value = rate;
         showSpeedMenu.value = false;
-        await executePlaybackCommand({ type: "setSpeed", speed: rate });
+        await coreClient.execute({ type: "setSpeed", speed: rate });
     };
 
     return {

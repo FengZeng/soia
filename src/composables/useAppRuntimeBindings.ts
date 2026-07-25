@@ -27,6 +27,7 @@ type UseAppRuntimeBindingsOptions = Omit<UseAppEventBindingsOptions, "ui"> & {
 };
 
 export const useAppRuntimeBindings = ({
+    coreClient,
     player,
     tracks,
     ui,
@@ -66,6 +67,7 @@ export const useAppRuntimeBindings = ({
     };
 
     useAppEventBindings({
+        coreClient,
         player,
         tracks,
         ui,

@@ -1,5 +1,6 @@
 import { computed, reactive } from "vue";
 import { Window } from "@tauri-apps/api/window";
+import type { CoreClient } from "../core-client/CoreClient";
 import {
   usePlaybackCommands,
   type LoadFileResult,
@@ -59,7 +60,7 @@ export type PlayerApi = {
   toggleMuted: () => Promise<void>;
 };
 
-export const usePlaybackController = (): PlayerApi => {
+export const usePlaybackController = (coreClient: CoreClient): PlayerApi => {
   const currentWindow = Window.getCurrent();
 
   const state = reactive<PlayerState>({
@@ -103,7 +104,7 @@ export const usePlaybackController = (): PlayerApi => {
     return Boolean(nextUrl) && nextUrl !== state.media.lastLoadedUrl;
   });
 
-  const commands = usePlaybackCommands(state, currentWindow);
+  const commands = usePlaybackCommands(state, currentWindow, coreClient);
 
   return {
     state,

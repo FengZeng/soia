@@ -14,6 +14,13 @@ import { PlaybackCommandContext } from "./playbackCommandContext";
 
 const PLAYBACK_SNAPSHOT_EVENT = "playback-snapshot";
 
+const tauriCommandFor = (command: PlaybackCommandDto) =>
+    command.type === "previous" ||
+    command.type === "next" ||
+    command.type === "playSource"
+        ? "execute_navigation_command"
+        : "execute_playback_command";
+
 export class TauriCoreClient implements CoreClient {
     private readonly commandContext: PlaybackCommandContext;
 
@@ -78,7 +85,7 @@ export class TauriCoreClient implements CoreClient {
     async execute(command: PlaybackCommandDto): Promise<CommandResultDto> {
         const envelope = this.commandContext.createEnvelope(command);
         try {
-            return await invoke<CommandResultDto>("execute_playback_command", {
+            return await invoke<CommandResultDto>(tauriCommandFor(command), {
                 envelope,
             });
         } catch (error) {
@@ -87,9 +94,5 @@ export class TauriCoreClient implements CoreClient {
                 "failed to execute playback command",
             );
         }
-    }
-
-    updatePlaybackSessionId(sessionId: string | null) {
-        this.commandContext.updatePlaybackSessionId(sessionId);
     }
 }

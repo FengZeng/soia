@@ -1,44 +1,17 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { CommandEnvelopeDto } from "../core-client/generated/CommandEnvelopeDto";
-import type { CommandResultDto } from "../core-client/generated/CommandResultDto";
+import type { CoreClient } from "../core-client/CoreClient";
 import type { PlaybackDirection } from "../utils/playbackNavigation";
 
-type PlaylistApi = {
-    getPathForEnd: (currentPath: string) => string | null;
-    getTitleForPath: (path: string) => string | undefined;
-};
-
-type PlayerApi = {
-    state: { media: { url: string } };
-};
-
 type UsePlaybackNavigationOptions = {
-    player: PlayerApi;
-    playlistState: PlaylistApi;
-    playPath: (path: string, preferredTitle?: string) => Promise<void>;
+    coreClient: CoreClient;
 };
 
-let navigationCommandCounter = 0;
-
-const createNavigationEnvelope = (
-    command: CommandEnvelopeDto["command"],
-): CommandEnvelopeDto => ({
-    commandId: `nav-desktop-${Date.now()}-${++navigationCommandCounter}`,
-    clientId: "desktop",
-    playbackSessionId: null,
-    command,
-});
-
-export const usePlaybackNavigation = (_options: UsePlaybackNavigationOptions) => {
+export const usePlaybackNavigation = ({ coreClient }: UsePlaybackNavigationOptions) => {
     const playTrack = async (direction: PlaybackDirection) => {
-        const envelope = createNavigationEnvelope(
+        await coreClient.execute(
             direction === 1 ? { type: "next" } : { type: "previous" },
-        );
-        await invoke<CommandResultDto>("execute_navigation_command", { envelope }).catch(
-            () => {
-                // Navigation failed (no adjacent media, etc.) — silently ignore
-            },
-        );
+        ).catch(() => {
+            // Navigation failed (no adjacent media, etc.) — silently ignore.
+        });
     };
 
     // EOF auto-play is now handled by Core (mpv event loop → handle_end_of_file).
