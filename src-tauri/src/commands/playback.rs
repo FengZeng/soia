@@ -101,7 +101,7 @@ fn superseded_load_result() -> LoadPlaybackSourceResult {
     }
 }
 
-fn publish_source_load_state(
+pub(crate) fn publish_source_load_state(
     app: &tauri::AppHandle,
     state: &AppState,
     loading: bool,

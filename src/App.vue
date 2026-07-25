@@ -404,9 +404,20 @@ useAppRuntimeBindings({
     onRemoteSeekFailed: resetSeekLoading,
     onProgress: onProgressWithLivePlaybackUpdate,
     onEndFile,
-    onSourceLoadState: ({ loadingKey, error }) => {
+    onSourceLoadState: ({ loading, loadingKey, error }) => {
+        if (loading) {
+            isLoading.value = true;
+            loadingUrl.value = loadingKey || player.state.media.url;
+            return;
+        }
         if (!error) return;
-        if (loadingKey && loadingKey !== player.state.media.url) return;
+        if (
+            loadingKey &&
+            loadingKey !== loadingUrl.value &&
+            loadingKey !== player.state.media.url
+        ) {
+            return;
+        }
         isLoading.value = false;
         loadingUrl.value = "";
     },

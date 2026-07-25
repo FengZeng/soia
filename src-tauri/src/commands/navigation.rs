@@ -113,7 +113,7 @@ pub(crate) async fn execute_navigation_envelope(
     result
 }
 
-/// Execute previous/next navigation: resolve target path, then load source.
+/// Execute previous/next navigation: stop playback, resolve the target, then load it.
 async fn execute_direction(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -134,6 +134,44 @@ async fn execute_direction(
         });
     }
 
+    crate::commands::playback::publish_source_load_state(
+        app,
+        state,
+        true,
+        Some(current_key.clone()),
+        None,
+    );
+
+    // Stop immediately so the current source does not keep playing while a
+    // remote target (for example YouTube) is being resolved and prepared.
+    {
+        let mpv = match state.mpv_player.lock() {
+            Ok(mpv) => mpv,
+            Err(error) => {
+                let message = error.to_string();
+                crate::commands::playback::publish_source_load_state(
+                    app,
+                    state,
+                    false,
+                    Some(current_key.clone()),
+                    Some(message.clone()),
+                );
+                return Err(CoreErrorDto::ExecutionFailed { message });
+            }
+        };
+        if let Err(error) = crate::mpv_command_checked(&mpv, &["stop"]) {
+            let message = format!("failed to stop current playback: {error}");
+            crate::commands::playback::publish_source_load_state(
+                app,
+                state,
+                false,
+                Some(current_key.clone()),
+                Some(message.clone()),
+            );
+            return Err(CoreErrorDto::NavigationFailed { message });
+        }
+    }
+
     // Step 1: Try playlist resolution (synchronous)
     let playlist_result = state
         .navigation_service
@@ -143,10 +181,25 @@ async fn execute_direction(
     let (target_key, title) = if let Some(nav_result) = playlist_result {
         (nav_result.path, nav_result.title)
     } else {
-        let adjacent =
-            crate::playback_source::adjacency::resolve_adjacent_key(app, &current_key, direction)
-                .await
-                .map_err(|e| CoreErrorDto::NavigationFailed { message: e })?;
+        let adjacent = match crate::playback_source::adjacency::resolve_adjacent_key(
+            app,
+            &current_key,
+            direction,
+        )
+        .await
+        {
+            Ok(adjacent) => adjacent,
+            Err(message) => {
+                crate::commands::playback::publish_source_load_state(
+                    app,
+                    state,
+                    false,
+                    Some(current_key.clone()),
+                    Some(message.clone()),
+                );
+                return Err(CoreErrorDto::NavigationFailed { message });
+            }
+        };
         match adjacent {
             Some(source) => {
                 let title = state
@@ -156,8 +209,16 @@ async fn execute_direction(
                 (source.playback_key, title)
             }
             None => {
+                let message = "no adjacent media found".to_string();
+                crate::commands::playback::publish_source_load_state(
+                    app,
+                    state,
+                    false,
+                    Some(current_key),
+                    Some(message.clone()),
+                );
                 return Err(CoreErrorDto::NavigationFailed {
-                    message: "no adjacent media found".into(),
+                    message,
                 });
             }
         }
