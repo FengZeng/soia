@@ -1,25 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CommandEnvelopeDto } from "./generated/CommandEnvelopeDto";
 import type { CommandResultDto } from "./generated/CommandResultDto";
 import type { PlaybackCommandDto } from "./generated/PlaybackCommandDto";
+import { PlaybackCommandContext } from "./playbackCommandContext";
 
-const clientId = "desktop";
-let commandSequence = 0;
-let playbackSessionId: string | null = null;
+const commandContext = new PlaybackCommandContext("desktop");
 
 export const updatePlaybackSessionId = (sessionId: string | null) => {
-    playbackSessionId = sessionId;
+    commandContext.updatePlaybackSessionId(sessionId);
 };
 
 export const executePlaybackCommand = async (
     command: PlaybackCommandDto,
 ): Promise<CommandResultDto> => {
-    commandSequence += 1;
-    const envelope: CommandEnvelopeDto = {
-        commandId: `${clientId}:${commandSequence}`,
-        clientId,
-        playbackSessionId,
-        command,
-    };
+    const envelope = commandContext.createEnvelope(command);
     return invoke<CommandResultDto>("execute_playback_command", { envelope });
 };
