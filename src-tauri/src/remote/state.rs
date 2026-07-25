@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const PAIR_CODE_TTL: Duration = Duration::from_secs(60);
+const PAIR_CODE_TTL: Duration = Duration::from_secs(99);
 
 pub(super) static REMOTE_CONTROL_ADDR: OnceLock<SocketAddr> = OnceLock::new();
 pub(super) static REMOTE_CONTROL_TOKEN: OnceLock<String> = OnceLock::new();

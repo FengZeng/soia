@@ -225,6 +225,20 @@ onUnmounted(() => {
                     >
                         <path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z" />
                     </svg>
+                    <svg
+                        v-else-if="item.icon === 'remote-control'"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    >
+                        <rect x="4.5" y="2.5" width="9" height="19" rx="2" />
+                        <path d="M8 18.25h2" />
+                        <path d="M16.5 9.25a4.5 4.5 0 0 1 0 5.5" />
+                        <path d="M19 6.5a8 8 0 0 1 0 11" />
+                    </svg>
                 </span>
                 {{ item.label }}
                 <span

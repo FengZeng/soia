@@ -2,6 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsPanel } from "../composables/useSettingsPanel";
+import {
+    useRemoteControlQrDialog,
+    type RemoteControlStatus,
+} from "../composables/useRemoteControlQrDialog";
+import RemoteControlQrDialog from "../components/RemoteControlQrDialog.vue";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 import {
     ENABLE_COMPACT_MODE_SETTING_LABEL,
@@ -98,65 +103,24 @@ const activeOnlineSubtitleTab = ref<(typeof onlineSubtitleTabs)[number]["id"]>(
     "opensubtitles",
 );
 
-type RemoteControlInfo = { url: string; qrSvg: string };
-type RemoteControlStatus = { enabled: boolean; connectedDevices: number };
-const remoteControlInfo = ref<RemoteControlInfo | null>(null);
 const remoteControlError = ref("");
 const isLoadingRemoteControl = ref(false);
 const remoteControlStatus = ref<RemoteControlStatus | null>(null);
-const isRemoteQrOpen = ref(false);
-const remoteQrSecondsRemaining = ref(60);
-let remoteQrMonitorTimer: number | null = null;
-let remoteQrExpiresAt = 0;
-let remoteQrInitialDeviceCount = 0;
-let isRemoteQrStatusRequestPending = false;
-
-const closeRemoteQrDialog = () => {
-    isRemoteQrOpen.value = false;
-    remoteControlInfo.value = null;
-    if (remoteQrMonitorTimer !== null) {
-        window.clearInterval(remoteQrMonitorTimer);
-        remoteQrMonitorTimer = null;
-    }
-};
-
-const monitorRemoteQr = () => {
-    remoteQrExpiresAt = Date.now() + 60_000;
-    remoteQrSecondsRemaining.value = 60;
-    remoteQrMonitorTimer = window.setInterval(async () => {
-        const remaining = Math.max(0, Math.ceil((remoteQrExpiresAt - Date.now()) / 1000));
-        remoteQrSecondsRemaining.value = remaining;
-        if (remaining <= 0) {
-            closeRemoteQrDialog();
-            return;
-        }
-        if (isRemoteQrStatusRequestPending) return;
-        isRemoteQrStatusRequestPending = true;
-        try {
-            const status = await invoke<RemoteControlStatus>("get_remote_control_status");
-            remoteControlStatus.value = status;
-            if (status.connectedDevices > remoteQrInitialDeviceCount) {
-                closeRemoteQrDialog();
-            }
-        } catch {
-            // Keep the QR visible until it expires if status polling briefly fails.
-        } finally {
-            isRemoteQrStatusRequestPending = false;
-        }
-    }, 500);
-};
+const {
+    remoteControlInfo,
+    isRemoteQrOpen,
+    remoteQrSecondsRemaining,
+    showRemoteControlQr,
+    closeRemoteQrDialog,
+} = useRemoteControlQrDialog((status) => {
+    remoteControlStatus.value = status;
+});
 
 const showRemoteControl = async () => {
     isLoadingRemoteControl.value = true;
     remoteControlError.value = "";
     try {
-        closeRemoteQrDialog();
-        const status = await invoke<RemoteControlStatus>("get_remote_control_status");
-        remoteControlStatus.value = status;
-        remoteQrInitialDeviceCount = status.connectedDevices;
-        remoteControlInfo.value = await invoke<RemoteControlInfo>("get_remote_control_info");
-        isRemoteQrOpen.value = true;
-        monitorRemoteQr();
+        await showRemoteControlQr();
     } catch (error) {
         remoteControlError.value = String(error);
     } finally {
@@ -569,7 +533,10 @@ onBeforeUnmount(() => {
                 </button>
             </div>
         </div>
-        <section class="panel__section panel__remote-control">
+        <section
+            v-if="remoteControlStatus || remoteControlError"
+            class="panel__section panel__remote-control"
+        >
             <div class="panel__remote-shell" :class="{ 'panel__remote-shell--disabled': remoteControlStatus && !remoteControlStatus.enabled }">
                 <div class="panel__remote-header">
                     <div class="panel__remote-heading">
@@ -581,7 +548,7 @@ onBeforeUnmount(() => {
                         </span>
                         <span class="panel__remote-heading-text">
                             <span class="panel__remote-title">Remote Controller</span>
-                            <span class="panel__remote-copy">Control playback from a phone on the same local network.</span>
+                            <span class="panel__remote-copy">Control playback from a web browser on the same local network</span>
                         </span>
                     </div>
                     <label class="panel__toggle panel__remote-toggle">
@@ -597,7 +564,7 @@ onBeforeUnmount(() => {
                     </label>
                 </div>
 
-                <div class="panel__remote-toolbar">
+                <div v-if="remoteControlStatus?.enabled" class="panel__remote-toolbar">
                     <div class="panel__remote-state">
                         <span class="panel__remote-state-dot" :class="{ 'panel__remote-state-dot--online': remoteControlStatus?.enabled }"></span>
                         <span>{{ remoteControlStatus?.enabled ? "Available on local network" : "Remote access is off" }}</span>
@@ -628,41 +595,12 @@ onBeforeUnmount(() => {
                 <p v-if="remoteControlError" class="panel__remote-error">{{ remoteControlError }}</p>
             </div>
         </section>
-        <Teleport to="body">
-            <Transition name="remote-qr-dialog">
-                <div
-                    v-if="isRemoteQrOpen && remoteControlInfo"
-                    class="remote-qr-dialog__backdrop"
-                    @mousedown.self="closeRemoteQrDialog"
-                >
-                    <section
-                        class="remote-qr-dialog"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="remote-qr-dialog-title"
-                    >
-                        <button
-                            class="remote-qr-dialog__close"
-                            type="button"
-                            aria-label="Close QR code"
-                            @click="closeRemoteQrDialog"
-                        >
-                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
-                        </button>
-                        <div class="remote-qr-dialog__heading">
-                            <span class="remote-qr-dialog__eyebrow">Remote Controller</span>
-                            <h2 id="remote-qr-dialog-title">Scan to connect</h2>
-                            <p>Use a phone on the same local network.</p>
-                        </div>
-                        <div class="remote-qr-dialog__code" v-html="remoteControlInfo.qrSvg"></div>
-                        <div class="remote-qr-dialog__expiry">
-                            <span class="remote-qr-dialog__timer">{{ remoteQrSecondsRemaining }}</span>
-                            <span>seconds remaining</span>
-                        </div>
-                    </section>
-                </div>
-            </Transition>
-        </Teleport>
+        <RemoteControlQrDialog
+            :open="isRemoteQrOpen"
+            :info="remoteControlInfo"
+            :seconds-remaining="remoteQrSecondsRemaining"
+            @close="closeRemoteQrDialog"
+        />
         <div v-if="isLoading" class="panel__skeleton">
             <div class="panel__skeleton-row"></div>
             <div class="panel__skeleton-row"></div>

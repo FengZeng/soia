@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 export type ContextMenuItem = {
     id: string;
     label: string;
-    icon?: "heart" | "settings" | "subtitle" | "subtitle-advanced-settings" | "subtitle-search";
+    icon?: "heart" | "settings" | "subtitle" | "subtitle-advanced-settings" | "subtitle-search" | "remote-control";
     disabled?: boolean;
     children?: ContextMenuItem[];
 };
@@ -16,6 +16,8 @@ type UsePlaybackContextMenuOptions = {
     searchOnlineSubtitles: (path: string, title?: string) => void | Promise<void>;
     openSubtitleAdvancedSettings: () => void;
     openSettings: () => void | Promise<void>;
+    isRemoteControlEnabled: () => Promise<boolean>;
+    showRemoteControlQr: () => void | Promise<void>;
     hideAllMenus: () => void;
 };
 
@@ -24,6 +26,7 @@ const SUBTITLE_ID = "subtitle";
 const SUBTITLE_FIND_ONLINE_ID = "subtitle/find-online-subtitle";
 const SUBTITLE_ADVANCED_SETTINGS_ID = "subtitle/advanced-settings";
 const OPEN_SETTINGS_ID = "open-settings";
+const REMOTE_CONTROL_QR_CODE_ID = "remote-control-qr-code";
 
 const isInteractiveContextTarget = (target: HTMLElement | null) =>
     !!target?.closest(
@@ -52,14 +55,18 @@ export const usePlaybackContextMenu = ({
     searchOnlineSubtitles,
     openSubtitleAdvancedSettings,
     openSettings,
+    isRemoteControlEnabled,
+    showRemoteControlQr,
     hideAllMenus,
 }: UsePlaybackContextMenuOptions) => {
     const isOpen = ref(false);
     const position = ref({ x: 0, y: 0 });
+    const remoteControlEnabled = ref(false);
+    let contextMenuRequestId = 0;
 
     const items = computed<ContextMenuItem[]>(() => {
         const hasPath = !!getCurrentPath().trim();
-        return [
+        const menuItems: ContextMenuItem[] = [
             {
                 id: ADD_TO_FAVORITES_ID,
                 label: "Add to Favorites",
@@ -92,9 +99,18 @@ export const usePlaybackContextMenu = ({
                 icon: "settings",
             },
         ];
+        if (remoteControlEnabled.value) {
+            menuItems.push({
+                id: REMOTE_CONTROL_QR_CODE_ID,
+                label: "Remote Control",
+                icon: "remote-control",
+            });
+        }
+        return menuItems;
     });
 
     const close = () => {
+        contextMenuRequestId += 1;
         isOpen.value = false;
     };
 
@@ -103,7 +119,7 @@ export const usePlaybackContextMenu = ({
         isOpen.value = true;
     };
 
-    const onContextMenu = (event: MouseEvent) => {
+    const onContextMenu = async (event: MouseEvent) => {
         if (!isFileLoaded()) return;
         if (isInteractiveContextTarget(event.target as HTMLElement | null)) return;
 
@@ -113,6 +129,10 @@ export const usePlaybackContextMenu = ({
         event.preventDefault();
         event.stopPropagation();
         hideAllMenus();
+        const requestId = ++contextMenuRequestId;
+        const enabled = await isRemoteControlEnabled().catch(() => false);
+        if (requestId !== contextMenuRequestId) return;
+        remoteControlEnabled.value = enabled;
         openAt(event.clientX, event.clientY);
     };
 
@@ -134,6 +154,9 @@ export const usePlaybackContextMenu = ({
         }
         if (id === SUBTITLE_ADVANCED_SETTINGS_ID) {
             openSubtitleAdvancedSettings();
+        }
+        if (id === REMOTE_CONTROL_QR_CODE_ID) {
+            void showRemoteControlQr();
         }
         close();
         if (id === OPEN_SETTINGS_ID) {

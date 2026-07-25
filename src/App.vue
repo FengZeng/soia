@@ -11,6 +11,7 @@ import PlaylistCreationDialog from "./components/PlaylistCreationDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import OnlineSubtitleDialog from "./components/OnlineSubtitleDialog.vue";
+import RemoteControlQrDialog from "./components/RemoteControlQrDialog.vue";
 import WindowResizeRegions from "./components/WindowResizeRegions.vue";
 import { usePlaybackShortcuts } from "./composables/usePlaybackShortcuts";
 import { usePlaybackFlow } from "./composables/usePlaybackFlow";
@@ -34,6 +35,7 @@ import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePer
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useNavigationStateSync } from "./composables/useNavigationStateSync";
+import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
 
 const {
@@ -325,6 +327,7 @@ const playlistEntriesWithProgress = usePlaylistEntriesWithProgress(
     orderedPlaylist,
     history.history,
 );
+const remoteControlQrDialog = useRemoteControlQrDialog();
 const playbackContextMenu = usePlaybackContextMenu({
     isFileLoaded: () => player.state.media.isFileLoaded,
     getCurrentPath: () => player.state.media.url,
@@ -336,6 +339,9 @@ const playbackContextMenu = usePlaybackContextMenu({
         tracks.showSubtitleAdvancedSettings.value = true;
     },
     openSettings: openSettingsFromPlaybackContextMenu,
+    isRemoteControlEnabled: async () =>
+        (await remoteControlQrDialog.getRemoteControlStatus()).enabled,
+    showRemoteControlQr: remoteControlQrDialog.showRemoteControlQr,
     hideAllMenus,
 });
 
@@ -584,6 +590,13 @@ useAppStartupBindings({
             :items="playbackContextMenu.items.value"
             @select="playbackContextMenu.onSelect"
             @close="playbackContextMenu.close"
+        />
+
+        <RemoteControlQrDialog
+            :open="remoteControlQrDialog.isRemoteQrOpen.value"
+            :info="remoteControlQrDialog.remoteControlInfo.value"
+            :seconds-remaining="remoteControlQrDialog.remoteQrSecondsRemaining.value"
+            @close="remoteControlQrDialog.closeRemoteQrDialog"
         />
 
         <OnlineSubtitleDialog
