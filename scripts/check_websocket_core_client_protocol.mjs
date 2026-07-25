@@ -34,9 +34,9 @@ try {
 
   assert.deepEqual(
     protocol.parseWebSocketServerMessage(
-      JSON.stringify({ type: "hello", protocol_version: 2 }),
+      JSON.stringify({ type: "hello", protocol_version: 3 }),
     ),
-    { type: "hello", protocolVersion: 2 },
+    { type: "hello", protocolVersion: 3 },
   );
   assert.deepEqual(
     protocol.parseWebSocketServerMessage(

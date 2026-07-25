@@ -5,9 +5,29 @@ import type { CoreClientError } from "../core-client/CoreClient";
 import { coreClientKey } from "../core-client/coreClientKey";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
+import type { MediaTrackDto } from "../core-client/generated/MediaTrackDto";
 import { remoteConnectionState } from "./remoteCoreClient";
 
-const state = ref<PlaybackSnapshotDto>({ protocolVersion: 2, revision: 0, playbackSessionId: null, title: null, duration: 0, position: 0, bufferedPosition: 0, isPlaying: false, isBuffering: false, sourceLoading: false, sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100, muted: false, playlistPosition: -1, playlistCount: 0 });
+const state = ref<PlaybackSnapshotDto>({
+    protocolVersion: 3,
+    revision: 0,
+    playbackSessionId: null,
+    title: null,
+    duration: 0,
+    position: 0,
+    bufferedPosition: 0,
+    isPlaying: false,
+    isBuffering: false,
+    sourceLoading: false,
+    sourceLoadingKey: null,
+    sourceLoadError: null,
+    speed: 1,
+    volume: 100,
+    muted: false,
+    tracks: [],
+    playlistPosition: -1,
+    playlistCount: 0,
+});
 const error = ref("");
 const pendingSeek = ref<number | null>(null);
 const playbackRates = [2, 1.75, 1.5, 1.25, 1, 0.75, 0.5, 0.25];
@@ -17,6 +37,18 @@ const displayedPosition = computed(() => pendingSeek.value ?? state.value.positi
 const progressPercent = computed(() => state.value.duration > 0
     ? displayedPosition.value / state.value.duration * 100
     : 0);
+const audioTracks = computed(() =>
+    state.value.tracks.filter((track) => track.trackType === "audio"),
+);
+const subtitleTracks = computed(() =>
+    state.value.tracks.filter((track) => track.trackType === "sub"),
+);
+const selectedAudioTrackId = computed(
+    () => audioTracks.value.find((track) => track.selected)?.id ?? "",
+);
+const selectedSubtitleTrackId = computed(
+    () => subtitleTracks.value.find((track) => track.selected)?.id ?? 0,
+);
 
 function formatTime(seconds: number) {
     const value = Math.max(0, Math.floor(seconds || 0));
@@ -88,6 +120,27 @@ function setSpeed(event: Event) {
     command({ type: "setSpeed", speed: Number((event.target as HTMLSelectElement).value) });
 }
 
+function trackLabel(track: MediaTrackDto) {
+    const labels = [track.title || track.lang || `Track ${track.id}`];
+    if (track.lang && track.lang !== track.title) labels.push(track.lang);
+    if (track.codec) labels.push(track.codec.toUpperCase());
+    if (track.isDefault) labels.push("Default");
+    if (track.forced) labels.push("Forced");
+    return labels.join(" · ");
+}
+
+function selectAudioTrack(event: Event) {
+    const trackId = Number((event.target as HTMLSelectElement).value);
+    if (trackId > 0) command({ type: "selectAudioTrack", trackId });
+}
+
+function selectSubtitleTrack(event: Event) {
+    const trackId = Number((event.target as HTMLSelectElement).value);
+    command(trackId > 0
+        ? { type: "selectSubtitleTrack", trackId }
+        : { type: "disableSubtitles" });
+}
+
 let unsubscribe: (() => void) | null = null;
 
 onMounted(() => {
@@ -151,6 +204,34 @@ onBeforeUnmount(() => {
                     <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}×</option>
                 </select>
             </label>
+            <div class="track-controls">
+                <label>
+                    <span>Audio</span>
+                    <select
+                        :value="selectedAudioTrackId"
+                        :disabled="!canControl || !audioTracks.length"
+                        @change="selectAudioTrack"
+                    >
+                        <option v-if="!audioTracks.length" value="">Unavailable</option>
+                        <option v-for="track in audioTracks" :key="track.id" :value="track.id">
+                            {{ trackLabel(track) }}
+                        </option>
+                    </select>
+                </label>
+                <label>
+                    <span>Subtitles</span>
+                    <select
+                        :value="selectedSubtitleTrackId"
+                        :disabled="!canControl || !subtitleTracks.length"
+                        @change="selectSubtitleTrack"
+                    >
+                        <option :value="0">Off</option>
+                        <option v-for="track in subtitleTracks" :key="track.id" :value="track.id">
+                            {{ trackLabel(track) }}
+                        </option>
+                    </select>
+                </label>
+            </div>
         </section>
         <p v-if="error" class="error">{{ error }}</p>
     </main>

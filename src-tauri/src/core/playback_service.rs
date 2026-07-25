@@ -80,6 +80,7 @@ impl PlaybackService {
                 .playback_session_id
                 .as_deref(),
         )?;
+        validate_track_selection(&envelope.command, &state.playback_state.current())?;
 
         let command = envelope.command.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
@@ -144,8 +145,40 @@ impl PlaybackService {
 fn command_requires_playback_session(command: &PlaybackCommandDto) -> bool {
     matches!(
         command,
-        PlaybackCommandDto::SeekAbsolute { .. } | PlaybackCommandDto::SeekRelative { .. }
+        PlaybackCommandDto::SeekAbsolute { .. }
+            | PlaybackCommandDto::SeekRelative { .. }
+            | PlaybackCommandDto::SelectAudioTrack { .. }
+            | PlaybackCommandDto::SelectSubtitleTrack { .. }
+            | PlaybackCommandDto::DisableSubtitles
     )
+}
+
+fn validate_track_selection(
+    command: &PlaybackCommandDto,
+    snapshot: &crate::protocol::PlaybackSnapshotDto,
+) -> Result<(), CoreErrorDto> {
+    let (track_id, expected_type) = match command {
+        PlaybackCommandDto::SelectAudioTrack { track_id } => (*track_id, "audio"),
+        PlaybackCommandDto::SelectSubtitleTrack { track_id } => (*track_id, "sub"),
+        _ => return Ok(()),
+    };
+    if track_id <= 0 {
+        return Err(CoreErrorDto::InvalidCommand {
+            message: "trackId must be a positive integer".into(),
+        });
+    }
+    if snapshot
+        .tracks
+        .iter()
+        .any(|track| track.id == track_id && track.track_type == expected_type)
+    {
+        return Ok(());
+    }
+    Err(CoreErrorDto::InvalidCommand {
+        message: format!(
+            "{expected_type} track {track_id} is not available for the current media"
+        ),
+    })
 }
 
 fn validate_playback_session(
@@ -175,6 +208,18 @@ fn command_is_already_reflected(command: &PlaybackCommandDto, snapshot: &crate::
         PlaybackCommandDto::SetVolume { volume } => (snapshot.volume - volume.clamp(0.0, 130.0)).abs() < 0.25,
         PlaybackCommandDto::SetMuted { muted } => snapshot.muted == *muted,
         PlaybackCommandDto::SetSpeed { speed } => (snapshot.speed - speed).abs() < 0.001,
+        PlaybackCommandDto::SelectAudioTrack { track_id } => snapshot
+            .tracks
+            .iter()
+            .any(|track| track.track_type == "audio" && track.id == *track_id && track.selected),
+        PlaybackCommandDto::SelectSubtitleTrack { track_id } => snapshot
+            .tracks
+            .iter()
+            .any(|track| track.track_type == "sub" && track.id == *track_id && track.selected),
+        PlaybackCommandDto::DisableSubtitles => !snapshot
+            .tracks
+            .iter()
+            .any(|track| track.track_type == "sub" && track.selected),
         PlaybackCommandDto::SeekRelative { .. }
         | PlaybackCommandDto::Stop
         | PlaybackCommandDto::Previous
@@ -230,6 +275,17 @@ fn execute_command(
             let speed = speed.to_string();
             mpv_command_checked(mpv, &["set", "speed", &speed]).map_err(command_error)
         }
+        PlaybackCommandDto::SelectAudioTrack { track_id } => {
+            let track_id = track_id.to_string();
+            mpv_command_checked(mpv, &["set", "aid", &track_id]).map_err(command_error)
+        }
+        PlaybackCommandDto::SelectSubtitleTrack { track_id } => {
+            let track_id = track_id.to_string();
+            mpv_command_checked(mpv, &["set", "sid", &track_id]).map_err(command_error)
+        }
+        PlaybackCommandDto::DisableSubtitles => {
+            mpv_command_checked(mpv, &["set", "sid", "no"]).map_err(command_error)
+        }
         PlaybackCommandDto::Stop => mpv_command_checked(mpv, &["stop"]).map_err(command_error),
         PlaybackCommandDto::Previous | PlaybackCommandDto::Next | PlaybackCommandDto::PlaySource { .. } => {
             Err(CoreErrorDto::InvalidCommand {
@@ -241,8 +297,10 @@ fn execute_command(
 
 #[cfg(test)]
 mod playback_session_tests {
-    use super::validate_playback_session;
-    use crate::protocol::{CoreErrorDto, PlaybackCommandDto};
+    use super::{validate_playback_session, validate_track_selection};
+    use crate::protocol::{
+        CoreErrorDto, MediaTrackDto, PlaybackCommandDto, PlaybackSnapshotDto,
+    };
 
     #[test]
     fn accepts_seek_for_current_playback_session() {
@@ -300,5 +358,115 @@ mod playback_session_tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_track_selection_for_replaced_playback_session() {
+        let result = validate_playback_session(
+            &PlaybackCommandDto::SelectAudioTrack { track_id: 1 },
+            Some("session-a"),
+            Some("session-b"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CoreErrorDto::StalePlaybackSession { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_track_selection_without_a_playback_session() {
+        let result = validate_playback_session(
+            &PlaybackCommandDto::SelectSubtitleTrack { track_id: 1 },
+            None,
+            Some("session-b"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CoreErrorDto::StalePlaybackSession { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_track_selection_when_only_the_wrong_track_type_has_the_id() {
+        let snapshot = PlaybackSnapshotDto {
+            tracks: vec![MediaTrackDto {
+                id: 4,
+                track_type: "sub".to_string(),
+                ..MediaTrackDto::default()
+            }],
+            ..PlaybackSnapshotDto::default()
+        };
+
+        let result = validate_track_selection(
+            &PlaybackCommandDto::SelectAudioTrack { track_id: 4 },
+            &snapshot,
+        );
+
+        assert!(matches!(result, Err(CoreErrorDto::InvalidCommand { .. })));
+    }
+
+    #[test]
+    fn accepts_duplicate_track_ids_when_the_requested_type_exists() {
+        let snapshot = PlaybackSnapshotDto {
+            tracks: vec![
+                MediaTrackDto {
+                    id: 1,
+                    track_type: "video".to_string(),
+                    ..MediaTrackDto::default()
+                },
+                MediaTrackDto {
+                    id: 1,
+                    track_type: "audio".to_string(),
+                    ..MediaTrackDto::default()
+                },
+                MediaTrackDto {
+                    id: 1,
+                    track_type: "sub".to_string(),
+                    ..MediaTrackDto::default()
+                },
+            ],
+            ..PlaybackSnapshotDto::default()
+        };
+
+        assert!(validate_track_selection(
+            &PlaybackCommandDto::SelectAudioTrack { track_id: 1 },
+            &snapshot,
+        )
+        .is_ok());
+        assert!(validate_track_selection(
+            &PlaybackCommandDto::SelectSubtitleTrack { track_id: 1 },
+            &snapshot,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn accepts_available_track_of_the_requested_type() {
+        let snapshot = PlaybackSnapshotDto {
+            tracks: vec![MediaTrackDto {
+                id: 4,
+                track_type: "sub".to_string(),
+                ..MediaTrackDto::default()
+            }],
+            ..PlaybackSnapshotDto::default()
+        };
+
+        assert!(validate_track_selection(
+            &PlaybackCommandDto::SelectSubtitleTrack { track_id: 4 },
+            &snapshot,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_a_track_that_is_not_in_the_current_snapshot() {
+        let result = validate_track_selection(
+            &PlaybackCommandDto::SelectSubtitleTrack { track_id: 99 },
+            &PlaybackSnapshotDto::default(),
+        );
+
+        assert!(matches!(result, Err(CoreErrorDto::InvalidCommand { .. })));
     }
 }

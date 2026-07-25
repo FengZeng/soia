@@ -133,6 +133,34 @@ struct TracksPayload {
     tracks: Vec<MediaTrack>,
 }
 
+impl From<&MediaTrack> for crate::protocol::MediaTrackDto {
+    fn from(track: &MediaTrack) -> Self {
+        Self {
+            id: track.id,
+            track_type: track.track_type.clone(),
+            title: track.title.clone(),
+            lang: track.lang.clone(),
+            selected: track.selected,
+            codec: track.codec.clone(),
+            codec_desc: track.codec_desc.clone(),
+            decoder_desc: track.decoder_desc.clone(),
+            demux_w: track.demux_w,
+            demux_h: track.demux_h,
+            demux_fps: track.demux_fps,
+            demux_bitrate: track.demux_bitrate,
+            demux_samplerate: track.demux_samplerate,
+            demux_channels: track.demux_channels.clone(),
+            demux_channel_count: track.demux_channel_count,
+            fps: track.fps,
+            w: track.w,
+            h: track.h,
+            is_default: track.is_default,
+            forced: track.forced,
+            external: track.external,
+        }
+    }
+}
+
 /// Classifies decoded video using mpv's canonical transfer names.
 ///
 /// mpv defines these strings in `pl_csp_trc_names` (`video/csputils.c`),
@@ -1393,9 +1421,18 @@ pub(super) fn mpv_event_loop(
                                             emit_event(
                                                 &app_handle,
                                                 "mpv-tracks-update",
-                                                TracksPayload { tracks },
+                                                TracksPayload {
+                                                    tracks: tracks.clone(),
+                                                },
                                             );
                                         }
+                                        let snapshot_tracks = tracks
+                                            .iter()
+                                            .map(crate::protocol::MediaTrackDto::from)
+                                            .collect();
+                                        update_snapshot(&app_handle, |snapshot| {
+                                            snapshot.tracks = snapshot_tracks;
+                                        });
                                     }
                                 }
                             }
@@ -1481,6 +1518,9 @@ pub(super) fn mpv_event_loop(
                     is_rendering.store(false, Ordering::Relaxed);
                     set_render_target_visible(&app_handle, false);
                     wake_lock_manager.update(false);
+                    update_snapshot(&app_handle, |snapshot| {
+                        snapshot.tracks.clear();
+                    });
                     publish_playback_snapshot(&app_handle, 0.0, 0.0, 0.0, false, false, Some(None));
                 }
                 _ => {}

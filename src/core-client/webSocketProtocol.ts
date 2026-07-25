@@ -3,7 +3,7 @@ import type { CommandResultDto } from "./generated/CommandResultDto";
 import type { CoreErrorDto } from "./generated/CoreErrorDto";
 import type { PlaybackSnapshotDto } from "./generated/PlaybackSnapshotDto";
 
-export const WEBSOCKET_PROTOCOL_VERSION = 2;
+export const WEBSOCKET_PROTOCOL_VERSION = 3;
 
 export type WebSocketServerMessage =
     | { type: "hello"; protocolVersion: number }

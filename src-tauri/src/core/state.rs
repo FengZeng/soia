@@ -1,4 +1,4 @@
-use crate::protocol::{PlaybackSnapshotDto, PROTOCOL_VERSION};
+use crate::protocol::{MediaTrackDto, PlaybackSnapshotDto, PROTOCOL_VERSION};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -20,6 +20,7 @@ pub(crate) struct PlaybackSnapshot {
     pub speed: f64,
     pub volume: f64,
     pub muted: bool,
+    pub tracks: Vec<MediaTrackDto>,
     pub playlist_position: i64,
     pub playlist_count: i64,
 }
@@ -40,6 +41,7 @@ impl Default for PlaybackSnapshot {
             speed: 1.0,
             volume: 100.0,
             muted: false,
+            tracks: Vec::new(),
             playlist_position: -1,
             playlist_count: 0,
         }
@@ -64,6 +66,7 @@ impl PlaybackSnapshot {
             speed: self.speed,
             volume: self.volume,
             muted: self.muted,
+            tracks: self.tracks.clone(),
             playlist_position: self.playlist_position,
             playlist_count: self.playlist_count,
         }
@@ -141,7 +144,7 @@ mod tests {
             snapshot.playback_session_id = Some("session-b".to_string());
         });
 
-        assert_eq!(published.protocol_version, 2);
+        assert_eq!(published.protocol_version, 3);
         assert_eq!(published.playback_session_id.as_deref(), Some("session-b"));
         assert_eq!(
             publisher.current().playback_session_id.as_deref(),
