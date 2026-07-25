@@ -28,7 +28,7 @@ pub(crate) fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let addr = listener.local_addr().map_err(|error| error.to_string())?;
     let token = resolve_auth_token(TOKEN_ENV_VAR);
     let control_runtime = Arc::new(Mutex::new(RemoteControlRuntime {
-        enabled: true,
+        enabled: false,
         pair_code: None,
         sessions: Default::default(),
     }));

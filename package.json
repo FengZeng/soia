@@ -7,6 +7,7 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "dev": "vite",
+    "dev:tauri": "vite build && vite",
     "media:sync": "node ./scripts/sync_media_extensions.mjs",
     "setup:libs": "node ./scripts/setup_runtime_libs.mjs",
     "setup:libs:mac:intel": "MPV_TARGET_ARCH=x86_64 node ./scripts/setup_runtime_libs.mjs --platform darwin",

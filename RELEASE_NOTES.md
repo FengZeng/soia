@@ -19,22 +19,21 @@ You can also go to System Settings > Privacy & Security and click "Open Anyway" 
 
 The app is open-source and its code is publicly available for anyone to inspect.
 
-## [0.2.8] - 2026-07-11
+## [0.2.9] - 2026-07-25
 
 ### Highlights
 
-* **Improved SMB Browsing & Playback**
-  SMB stream proxy now uses async pipeline reads and respects server-negotiated max read size, resulting in smoother browsing and more reliable playback over SMB shares.
+* **Remote Controller**
+  Added a browser-based Remote Controller for controlling playback from another device on your local network. Open it from Settings or scan the QR code in the playback context menu. It supports playback, seeking, volume, previous/next controls, and audio/subtitle track controls.
 
-* **More yt-dlp Configuration Options**
-  Added configurable max stream resolution, cookies-from-browser support, and improved format selection (preferring avc1 over vp9). YouTube `/show/` playlist URLs are now recognized as playlists.
+  More powerful Remote Controller features are planned for future updates.
+
+* **Refined Playback Architecture**
+  Reworked the playback architecture around a shared core, making desktop and remote controls more consistent and reliable.
+
+* **Remembered Subtitle Choices for Series**
+  Your subtitle track selection is now preserved when moving between episodes in the same series.
 
 ### Fixes
 
-* Fixed video aspect ratio distortion when resizing the window while paused on macOS.
-
-* Fixed AppImage failing to launch on Fedora by excluding bundled libpulse.
-
-* Fixed playback speed resetting when switching between videos.
-
-* Fixed playback history not being saved before switching tracks.
+* Fixed HDR brightness adjustment so it is applied correctly to HDR content. Thanks to [@cjohnsto-nz](https://github.com/cjohnsto-nz) for the contribution.

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.9] - 2026-07-25
+
+### Features
+
+- Added a browser-based Remote Controller for local-network playback control, including play/pause, seeking, volume, playlist navigation, and audio/subtitle track selection.
+- Added a QR-code entry point for the Remote Controller in the playback context menu.
+- Preserve subtitle track selection when moving between episodes in the same series.
+
+### Improvements
+
+- Reworked the playback architecture around a shared, transport-neutral core so desktop and remote clients use a unified playback command and state flow.
+
+### Fixes
+
+- Fixed HDR brightness adjustment to use the correct HDR transfer handling. Thanks to [@cjohnsto-nz](https://github.com/cjohnsto-nz) for the contribution.
+
 ## [0.2.8] - 2026-07-11
 
 ### Features

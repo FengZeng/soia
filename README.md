@@ -52,8 +52,14 @@
 
 Download from the [release page](https://github.com/FengZeng/soia/releases).
 
-Or you can build it yourself. Support macOS 13+, Windows, and Linux(Ubuntu).
-Current Linux builds target Ubuntu Wayland sessions only (`X11` is not supported at this time).
+On Windows, you can also install it with WinGet:
+
+```powershell
+winget install soia
+```
+
+Or you can build it yourself. Support macOS 13+, Windows, and Linux.
+Linux builds have been tested on Ubuntu and Fedora Wayland sessions (`X11` is not currently supported).
 
 ## FAQ
 

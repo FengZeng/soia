@@ -4,7 +4,7 @@
   "version": "0.2.9",
   "identifier": "com.soia.player",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm dev:tauri",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
@@ -28,9 +28,9 @@
   },
   "bundle": {
     "active": true,
-    "resources": [
-      "../dist"
-    ],
+    "resources": {
+      "../dist": "dist"
+    },
     "targets": "all",
     "icon": [
       "icons/32x32.png",
