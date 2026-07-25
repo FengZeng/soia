@@ -60,6 +60,8 @@ type AppEventBindingsOptions = {
     setWindowControlsVisible: (visible: boolean) => Promise<void>;
     onFileLoaded?: () => void | Promise<void>;
     onPlaybackRestart?: () => void | Promise<void>;
+    onRemoteSeekStarted?: () => void;
+    onRemoteSeekFailed?: () => void;
     onProgress?: (payload: ProgressPayload) => void;
     onEndFile?: (payload: EndFilePayload) => void | Promise<void>;
     onSourceLoadState?: (state: SourceLoadState) => void;
@@ -84,6 +86,8 @@ export const useAppEventBindings = ({
     setWindowControlsVisible,
     onFileLoaded,
     onPlaybackRestart,
+    onRemoteSeekStarted,
+    onRemoteSeekFailed,
     onProgress,
     onEndFile,
     onSourceLoadState,
@@ -96,6 +100,8 @@ export const useAppEventBindings = ({
     let unlistenPlaybackLoadPrepared: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
     let unlistenPlaybackRestart: UnlistenFn | null = null;
+    let unlistenRemoteSeekStarted: UnlistenFn | null = null;
+    let unlistenRemoteSeekFailed: UnlistenFn | null = null;
     let unlistenResize: UnlistenFn | null = null;
     let unlistenTracksUpdate: UnlistenFn | null = null;
     let unlistenWindowResized: UnlistenFn | null = null;
@@ -178,6 +184,14 @@ export const useAppEventBindings = ({
             if (onPlaybackRestart) {
                 void onPlaybackRestart();
             }
+        });
+
+        unlistenRemoteSeekStarted = await listen("remote-seek-started", () => {
+            onRemoteSeekStarted?.();
+        });
+
+        unlistenRemoteSeekFailed = await listen("remote-seek-failed", () => {
+            onRemoteSeekFailed?.();
         });
 
         unlistenEndFile = await listen<EndFilePayload>("mpv-end-file", (event) => {
@@ -335,6 +349,8 @@ export const useAppEventBindings = ({
         unlistenPlaybackLoadPrepared?.();
         unlistenFileLoaded?.();
         unlistenPlaybackRestart?.();
+        unlistenRemoteSeekStarted?.();
+        unlistenRemoteSeekFailed?.();
         unlistenResize?.();
         unlistenTracksUpdate?.();
         unlistenWindowResized?.();

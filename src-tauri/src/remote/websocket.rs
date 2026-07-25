@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -158,9 +158,26 @@ async fn handle_websocket_text(
                 }
             } else {
                 let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+                let is_seek = matches!(
+                    &envelope.command,
+                    crate::protocol::PlaybackCommandDto::SeekAbsolute { .. }
+                        | crate::protocol::PlaybackCommandDto::SeekRelative { .. }
+                );
+                if is_seek {
+                    if let Err(error) = state.app_handle.emit("remote-seek-started", ()) {
+                        warn!("remote control: failed to emit seek start: {error}");
+                    }
+                }
                 match app_state.playback_service.execute(&app_state, envelope).await {
                     Ok(result) => WebSocketServerMessage::CommandResult { result },
-                    Err(error) => WebSocketServerMessage::Error { id, error },
+                    Err(error) => {
+                        if is_seek {
+                            if let Err(emit_error) = state.app_handle.emit("remote-seek-failed", ()) {
+                                warn!("remote control: failed to emit seek failure: {emit_error}");
+                            }
+                        }
+                        WebSocketServerMessage::Error { id, error }
+                    }
                 }
             }
         }

@@ -20,13 +20,17 @@ export const usePlaybackSeekActions = ({
         return true;
     };
 
+    const resetSeekLoading = () => {
+        isLoading.value = false;
+        loadingUrl.value = "";
+    };
+
     const onSeek = async (position: number) => {
         if (!beginSeekLoading()) return;
         try {
             await player.seek(position);
         } catch {
-            isLoading.value = false;
-            loadingUrl.value = "";
+            resetSeekLoading();
         }
     };
 
@@ -35,13 +39,14 @@ export const usePlaybackSeekActions = ({
         try {
             await player.seekRelative(position);
         } catch {
-            isLoading.value = false;
-            loadingUrl.value = "";
+            resetSeekLoading();
         }
     };
 
     return {
         onSeek,
         onSeekRelative,
+        beginSeekLoading,
+        resetSeekLoading,
     };
 };

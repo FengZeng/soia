@@ -260,7 +260,12 @@ const openSettingsFromPlaybackContextMenu = async () => {
     await onNavAction("settings");
 };
 
-const { onSeek, onSeekRelative } = usePlaybackSeekActions({
+const {
+    onSeek,
+    onSeekRelative,
+    beginSeekLoading,
+    resetSeekLoading,
+} = usePlaybackSeekActions({
     player,
     isLoading,
     loadingUrl,
@@ -395,6 +400,8 @@ useAppRuntimeBindings({
     setWindowControlsVisible,
     onFileLoaded,
     onPlaybackRestart,
+    onRemoteSeekStarted: beginSeekLoading,
+    onRemoteSeekFailed: resetSeekLoading,
     onProgress: onProgressWithLivePlaybackUpdate,
     onEndFile,
     onSourceLoadState: ({ loadingKey, error }) => {
