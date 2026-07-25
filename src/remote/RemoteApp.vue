@@ -19,6 +19,7 @@ const state = ref<PlaybackSnapshotDto>({
     bufferedPosition: 0,
     isPlaying: false,
     isBuffering: false,
+    downloadSpeedBps: 0,
     sourceLoading: false,
     sourceLoadingKey: null,
     sourceLoadError: null,

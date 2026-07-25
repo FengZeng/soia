@@ -19,6 +19,9 @@ pub(crate) use stream_proxy::rewrite_http_stream_url;
 pub(crate) use stream_proxy::rewrite_https_stream_url;
 pub(crate) use stream_proxy::rewrite_smb_stream_url;
 pub(crate) use stream_proxy::set_parallel_range_enabled;
+pub(crate) use stream_proxy::begin_download_speed_activation;
+pub(crate) use stream_proxy::begin_download_speed_generation;
+pub(crate) use stream_proxy::is_stream_proxy_url;
 
 pub(crate) const USE_SMB_STREAM_PROXY: bool = true;
 pub(crate) const USE_WEBDAV_STREAM_PROXY: bool = true;

@@ -249,8 +249,26 @@ fn mpv_command_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
         .as_ref()
         .map(|args| args.iter().map(String::as_str).collect())
         .unwrap_or_else(|| args.to_vec());
+    let download_speed_activation = if loadfile_replaces_current(&command_args) {
+        command_args
+            .get(1)
+            .map(|url| crate::mpv::begin_download_speed_activation(url))
+    } else {
+        None
+    };
+    let download_speed_generation = if command_args.first().copied() == Some("seek") {
+        crate::mpv::begin_download_speed_generation()
+    } else {
+        None
+    };
     let result_code = mpv.command(&command_args);
     if result_code == 0 {
+        if let Some(activation) = download_speed_activation {
+            activation.commit();
+        }
+        if let Some(generation) = download_speed_generation {
+            generation.commit();
+        }
         Ok(())
     } else {
         let log_args = redact_mpv_command_args(&command_args);
@@ -262,8 +280,25 @@ fn mpv_command_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
 }
 
 fn mpv_command_direct_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
+    let download_speed_activation = if loadfile_replaces_current(args) {
+        args.get(1)
+            .map(|url| crate::mpv::begin_download_speed_activation(url))
+    } else {
+        None
+    };
+    let download_speed_generation = if args.first().copied() == Some("seek") {
+        crate::mpv::begin_download_speed_generation()
+    } else {
+        None
+    };
     let result_code = mpv.command(args);
     if result_code == 0 {
+        if let Some(activation) = download_speed_activation {
+            activation.commit();
+        }
+        if let Some(generation) = download_speed_generation {
+            generation.commit();
+        }
         Ok(())
     } else {
         let log_args = redact_mpv_command_args(args);
@@ -271,6 +306,31 @@ fn mpv_command_direct_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
             "MPV command {:?} failed with error code: {}",
             log_args, result_code
         ))
+    }
+}
+
+fn loadfile_replaces_current(args: &[&str]) -> bool {
+    args.first().copied() == Some("loadfile")
+        && args
+            .get(2)
+            .is_none_or(|mode| mode.eq_ignore_ascii_case("replace"))
+}
+
+#[cfg(test)]
+mod mpv_command_tests {
+    use super::loadfile_replaces_current;
+
+    #[test]
+    fn activates_download_speed_only_for_replacing_loads() {
+        assert!(loadfile_replaces_current(&["loadfile", "stream"]));
+        assert!(loadfile_replaces_current(&["loadfile", "stream", "replace"]));
+        assert!(!loadfile_replaces_current(&["loadfile", "stream", "append"]));
+        assert!(!loadfile_replaces_current(&[
+            "loadfile",
+            "stream",
+            "append-play",
+        ]));
+        assert!(!loadfile_replaces_current(&["seek", "10", "absolute"]));
     }
 }
 
@@ -303,6 +363,10 @@ fn redact_url(raw: &str) -> String {
 fn rewrite_mpv_command_urls(args: &[&str]) -> Option<Vec<String>> {
     if args.len() < 2 || args.first().copied() != Some("loadfile") {
         return None;
+    }
+
+    if crate::mpv::is_stream_proxy_url(args[1]) {
+        return Some(args.iter().map(|arg| (*arg).to_string()).collect());
     }
 
     // Remote protocol credentials, headers, cookies, and connection state belong in stream_proxy

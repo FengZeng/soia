@@ -10,7 +10,10 @@ use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+
+const SEEK_DOWNLOAD_SPEED_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use keepawake::{Builder, KeepAwake};
@@ -248,6 +251,7 @@ fn publish_playback_snapshot(
     buffered_position: f64,
     is_playing: bool,
     is_buffering: bool,
+    include_download_speed: bool,
     title: Option<Option<String>>,
 ) {
     update_snapshot(app_handle, |snapshot| {
@@ -256,6 +260,11 @@ fn publish_playback_snapshot(
         snapshot.buffered_position = sanitize_non_negative_f64(buffered_position);
         snapshot.is_playing = is_playing;
         snapshot.is_buffering = is_buffering;
+        snapshot.download_speed_bps = if include_download_speed {
+            crate::mpv::stream_proxy::download_speed_bps()
+        } else {
+            0.0
+        };
         if let Some(title) = title {
             snapshot.title = title;
         }
@@ -321,38 +330,6 @@ fn parse_seekable_ranges(cache_state: &serde_json::Value) -> Vec<(f64, f64)> {
     }
 
     ranges
-}
-
-fn extract_download_speed_bps(cache_state: &serde_json::Value) -> f64 {
-    let as_non_negative_f64 = |value: Option<&serde_json::Value>| {
-        value
-            .and_then(|entry| entry.as_f64())
-            .map(sanitize_non_negative_f64)
-            .unwrap_or(0.0)
-    };
-
-    let direct_candidates = [
-        "raw-input-rate",
-        "download-speed",
-        "bytes-per-second",
-        "cache-speed",
-        "fw-bytes-per-second",
-    ];
-
-    for key in direct_candidates {
-        let speed = as_non_negative_f64(cache_state.get(key));
-        if speed > 0.0 {
-            return speed;
-        }
-    }
-
-    let fw_bytes = as_non_negative_f64(cache_state.get("fw-bytes"));
-    let cache_duration = as_non_negative_f64(cache_state.get("cache-duration"));
-    if fw_bytes > 0.0 && cache_duration > 0.0 {
-        return fw_bytes / cache_duration;
-    }
-
-    0.0
 }
 
 fn is_time_in_ranges(time_pos: f64, ranges: &[(f64, f64)]) -> bool {
@@ -653,6 +630,8 @@ pub(super) fn mpv_event_loop(
     let mut last_buffered_pos: f64 = 0.0;
     let mut last_is_buffering: bool = false;
     let mut last_download_speed_bps: f64 = 0.0;
+    let mut seek_speed_refresh_active = false;
+    let mut next_seek_speed_refresh_at: Option<Instant> = None;
     let mut notify_start: bool = false;
     let mut width: i64 = 0;
     let mut height: i64 = 0;
@@ -786,6 +765,20 @@ pub(super) fn mpv_event_loop(
                 continue;
             }
 
+            if seek_speed_refresh_active {
+                let now = Instant::now();
+                if next_seek_speed_refresh_at.is_some_and(|refresh_at| now >= refresh_at) {
+                    let download_speed_bps = crate::mpv::stream_proxy::download_speed_bps();
+                    if download_speed_bps != last_download_speed_bps {
+                        last_download_speed_bps = download_speed_bps;
+                        update_snapshot(&app_handle, |snapshot| {
+                            snapshot.download_speed_bps = download_speed_bps;
+                        });
+                    }
+                    next_seek_speed_refresh_at = Some(now + SEEK_DOWNLOAD_SPEED_REFRESH_INTERVAL);
+                }
+            }
+
             match (*event).event_id {
                 mpv_event_id::MPV_EVENT_START_FILE => {
                     #[cfg(debug_assertions)]
@@ -798,6 +791,8 @@ pub(super) fn mpv_event_loop(
                     last_seekable_ranges.clear();
                     last_is_buffering = false;
                     last_download_speed_bps = 0.0;
+                    seek_speed_refresh_active = false;
+                    next_seek_speed_refresh_at = None;
                     carried_sid = last_selected_sid;
                     carried_aid = last_selected_aid;
                     is_current_file_loaded = false;
@@ -818,6 +813,7 @@ pub(super) fn mpv_event_loop(
                         last_buffered_pos,
                         !last_is_paused,
                         last_is_buffering,
+                        true,
                         None,
                     );
                     series_matcher.on_file_started();
@@ -869,6 +865,8 @@ pub(super) fn mpv_event_loop(
                     #[cfg(debug_assertions)]
                     debug!("MPV Event Loop: MPV_EVENT_PLAYBACK_RESTART received.");
 
+                    seek_speed_refresh_active = false;
+                    next_seek_speed_refresh_at = None;
                     is_playing.store(!last_is_paused, Ordering::Relaxed);
                     if notify_start {
                         notify_start = false;
@@ -890,6 +888,13 @@ pub(super) fn mpv_event_loop(
                 mpv_event_id::MPV_EVENT_SEEK => {
                     #[cfg(debug_assertions)]
                     debug!("MPV Event Loop: MPV_EVENT_SEEK received.");
+                    last_download_speed_bps = 0.0;
+                    seek_speed_refresh_active = true;
+                    next_seek_speed_refresh_at =
+                        Some(Instant::now() + SEEK_DOWNLOAD_SPEED_REFRESH_INTERVAL);
+                    update_snapshot(&app_handle, |snapshot| {
+                        snapshot.download_speed_bps = 0.0;
+                    });
                     // demuxer-cache-time can briefly reflect the pre-seek segment.
                     // Reset it so buffered progress won't jump to a wrong position.
                     seek_from_time_pos = sanitize_non_negative_f64(last_time_pos);
@@ -1083,6 +1088,7 @@ pub(super) fn mpv_event_loop(
                                                 last_buffered_pos,
                                                 !last_is_paused,
                                                 last_is_buffering,
+                                                true,
                                                 Some(Some(title)),
                                             );
                                         }
@@ -1209,7 +1215,7 @@ pub(super) fn mpv_event_loop(
                                     let json_cache_state = parse_node(node);
                                     last_seekable_ranges = parse_seekable_ranges(&json_cache_state);
                                     last_download_speed_bps =
-                                        extract_download_speed_bps(&json_cache_state);
+                                        crate::mpv::stream_proxy::download_speed_bps();
                                     #[cfg(debug_assertions)]
                                     trace!(
                                         "cache-state-ranges-updated: count={}",
@@ -1457,6 +1463,7 @@ pub(super) fn mpv_event_loop(
                                 last_buffered_pos,
                                 !last_is_paused,
                                 last_is_buffering,
+                                true,
                                 None,
                             );
                         }
@@ -1467,6 +1474,8 @@ pub(super) fn mpv_event_loop(
                     set_render_target_visible(&app_handle, false);
                     last_is_buffering = false;
                     last_download_speed_bps = 0.0;
+                    seek_speed_refresh_active = false;
+                    next_seek_speed_refresh_at = None;
                     update_hdr_content_state(&app_handle, &mut last_is_hdr_content, false);
                     let reason = if !(*event).data.is_null() {
                         let end_file = &*((*event).data as *const MpvEventEndFile);
@@ -1503,10 +1512,13 @@ pub(super) fn mpv_event_loop(
                         last_buffered_pos,
                         false,
                         false,
+                        false,
                         None,
                     );
                 }
                 mpv_event_id::MPV_EVENT_IDLE => {
+                    seek_speed_refresh_active = false;
+                    next_seek_speed_refresh_at = None;
                     starting_playback = None;
                     loaded_playback = None;
                     if let Err(error) = crate::flush_pending_play_history_entry(&app_handle) {
@@ -1521,7 +1533,16 @@ pub(super) fn mpv_event_loop(
                     update_snapshot(&app_handle, |snapshot| {
                         snapshot.tracks.clear();
                     });
-                    publish_playback_snapshot(&app_handle, 0.0, 0.0, 0.0, false, false, Some(None));
+                    publish_playback_snapshot(
+                        &app_handle,
+                        0.0,
+                        0.0,
+                        0.0,
+                        false,
+                        false,
+                        false,
+                        Some(None),
+                    );
                 }
                 _ => {}
             }

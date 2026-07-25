@@ -38,6 +38,21 @@ try {
     ),
     { type: "hello", protocolVersion: 3 },
   );
+  assert.equal(
+    protocol.parseWebSocketServerMessage(
+      JSON.stringify({ type: "state", state: { revision: 1 } }),
+    ).state.downloadSpeedBps,
+    0,
+  );
+  assert.equal(
+    protocol.parseWebSocketServerMessage(
+      JSON.stringify({
+        type: "state",
+        state: { revision: 2, downloadSpeedBps: 1_234_567.5 },
+      }),
+    ).state.downloadSpeedBps,
+    1_234_567.5,
+  );
   assert.deepEqual(
     protocol.parseWebSocketServerMessage(
       JSON.stringify({

@@ -7,7 +7,7 @@ use reqwest::header::{
 use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,6 +31,9 @@ const STREAM_BACKEND_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const STREAM_BACKEND_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const STREAM_BACKEND_MAX_ENTRIES: usize = 4096;
 const STREAM_BACKEND_TARGET_ENTRIES: usize = 3072;
+const DOWNLOAD_SPEED_WINDOW: Duration = Duration::from_secs(2);
+const DOWNLOAD_SPEED_STALE_AFTER: Duration = Duration::from_secs(2);
+const DOWNLOAD_SPEED_MIN_SAMPLE_DURATION: Duration = Duration::from_millis(250);
 
 type BasicAuth = (String, String);
 pub(crate) type ProxyHeaders = Vec<(String, String)>;
@@ -42,10 +45,234 @@ static STREAM_PROXY_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::ne
 static STREAM_PROXY_PARALLEL_RANGE_ENABLED: AtomicBool = AtomicBool::new(false);
 static STREAM_PROXY_BACKENDS: OnceLock<Mutex<StreamBackendRegistry>> =
     OnceLock::new();
+static ACTIVE_STREAM_PROXY_BACKEND: OnceLock<Mutex<Option<Arc<dyn StreamBackend>>>> =
+    OnceLock::new();
 
 struct CachedClient {
     proxy_key: Option<String>,
     client: Client,
+}
+
+#[derive(Clone)]
+struct DownloadSpeedSample {
+    // Attribute a completed read across its actual wall-clock interval so large range/SMB
+    // chunks do not quantize the two-second rolling rate into whole MiB/s steps.
+    started_at: Instant,
+    finished_at: Instant,
+    bytes: u64,
+}
+
+#[derive(Clone)]
+struct DownloadSpeedMeter {
+    generation: u64,
+    generation_started_at: Instant,
+    last_download_at: Option<Instant>,
+    samples: VecDeque<DownloadSpeedSample>,
+}
+
+type DownloadSpeedMeterHandle = Arc<Mutex<DownloadSpeedMeter>>;
+
+impl Default for DownloadSpeedMeter {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            generation_started_at: Instant::now(),
+            last_download_at: None,
+            samples: VecDeque::new(),
+        }
+    }
+}
+
+impl DownloadSpeedMeter {
+    fn record_transfer(
+        &mut self,
+        generation: u64,
+        bytes: usize,
+        started_at: Instant,
+        finished_at: Instant,
+    ) {
+        self.record_transfer_at(generation, bytes, started_at, finished_at);
+    }
+
+    fn record_transfer_at(
+        &mut self,
+        generation: u64,
+        bytes: usize,
+        started_at: Instant,
+        finished_at: Instant,
+    ) {
+        if generation != self.generation || bytes == 0 {
+            return;
+        }
+        let started_at = started_at.min(finished_at);
+        let starts_new_burst = self.last_download_at.is_none()
+            || self.last_download_at.is_some_and(|last_download_at| {
+                started_at
+                    .checked_duration_since(last_download_at)
+                    .is_some_and(|idle| idle > DOWNLOAD_SPEED_STALE_AFTER)
+            });
+        if starts_new_burst {
+            self.samples.clear();
+            self.generation_started_at = started_at;
+        } else {
+            self.generation_started_at = self.generation_started_at.min(started_at);
+        }
+        self.prune_samples(finished_at);
+        self.samples.push_back(DownloadSpeedSample {
+            started_at,
+            finished_at,
+            bytes: bytes as u64,
+        });
+        self.last_download_at = Some(
+            self.last_download_at
+                .map_or(finished_at, |last_download_at| last_download_at.max(finished_at)),
+        );
+    }
+
+    fn speed_bps(&self) -> f64 {
+        self.speed_bps_at(Instant::now())
+    }
+
+    fn speed_bps_at(&self, now: Instant) -> f64 {
+        let Some(last_download_at) = self.last_download_at else {
+            return 0.0;
+        };
+        if now.duration_since(last_download_at) > DOWNLOAD_SPEED_STALE_AFTER {
+            return 0.0;
+        }
+        let window_start = now
+            .checked_sub(DOWNLOAD_SPEED_WINDOW)
+            .unwrap_or(self.generation_started_at)
+            .max(self.generation_started_at);
+        let downloaded_bytes = self
+            .samples
+            .iter()
+            .map(|sample| sample.bytes_in_window(window_start, now))
+            .sum::<f64>();
+        let elapsed = now
+            .duration_since(window_start)
+            .max(DOWNLOAD_SPEED_MIN_SAMPLE_DURATION)
+            .as_secs_f64();
+        downloaded_bytes / elapsed
+    }
+
+    fn begin_generation(&mut self) -> u64 {
+        self.begin_generation_at(Instant::now())
+    }
+
+    fn begin_generation_at(&mut self, now: Instant) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation_started_at = now;
+        self.last_download_at = None;
+        self.samples.clear();
+        self.generation
+    }
+
+    fn prune_samples(&mut self, now: Instant) {
+        let cutoff = now.checked_sub(DOWNLOAD_SPEED_WINDOW);
+        while self
+            .samples
+            .front()
+            .is_some_and(|sample| {
+                cutoff.is_some_and(|cutoff| sample.finished_at < cutoff)
+            })
+        {
+            self.samples.pop_front();
+        }
+    }
+}
+
+impl DownloadSpeedSample {
+    fn bytes_in_window(&self, window_start: Instant, window_end: Instant) -> f64 {
+        if self.finished_at < window_start || self.started_at > window_end {
+            return 0.0;
+        }
+        let transfer_duration = self.finished_at.duration_since(self.started_at);
+        if transfer_duration.is_zero() {
+            return self.bytes as f64;
+        }
+        let overlap_start = self.started_at.max(window_start);
+        let overlap_end = self.finished_at.min(window_end);
+        let Some(overlap) = overlap_end.checked_duration_since(overlap_start) else {
+            return 0.0;
+        };
+        self.bytes as f64 * overlap.as_secs_f64() / transfer_duration.as_secs_f64()
+    }
+}
+
+pub(crate) struct DownloadSpeedActivation {
+    previous_backend: Option<Arc<dyn StreamBackend>>,
+    previous_meter: Option<(DownloadSpeedMeterHandle, DownloadSpeedMeter)>,
+    committed: bool,
+}
+
+impl DownloadSpeedActivation {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for DownloadSpeedActivation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some((meter, previous_meter)) = self.previous_meter.take() {
+            if let Ok(mut current_meter) = meter.lock() {
+                *current_meter = previous_meter;
+            }
+        }
+        if let Ok(mut active_backend) = ACTIVE_STREAM_PROXY_BACKEND
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+        {
+            *active_backend = self.previous_backend.take();
+        }
+    }
+}
+
+pub(crate) struct DownloadSpeedGeneration {
+    meter: DownloadSpeedMeterHandle,
+    previous_meter: Option<DownloadSpeedMeter>,
+    committed: bool,
+}
+
+impl DownloadSpeedGeneration {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for DownloadSpeedGeneration {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some(previous_meter) = self.previous_meter.take() {
+            if let Ok(mut current_meter) = self.meter.lock() {
+                *current_meter = previous_meter;
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DownloadSpeedRecorder {
+    meter: DownloadSpeedMeterHandle,
+    generation: u64,
+}
+
+impl DownloadSpeedRecorder {
+    fn new(meter: DownloadSpeedMeterHandle) -> Self {
+        let generation = meter.lock().map(|meter| meter.generation).unwrap_or(0);
+        Self { meter, generation }
+    }
+
+    fn record_transfer(&self, bytes: usize, started_at: Instant, finished_at: Instant) {
+        if let Ok(mut meter) = self.meter.lock() {
+            meter.record_transfer(self.generation, bytes, started_at, finished_at);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -163,6 +390,8 @@ trait StreamBackend: Send + Sync {
 
     fn origin(&self) -> &str;
 
+    fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle;
+
     fn handle<'a>(
         &'a self,
         app_handle: &'a AppHandle,
@@ -174,11 +403,19 @@ trait StreamBackend: Send + Sync {
 
 struct HttpStreamBackend {
     url: String,
+    download_speed_meter: DownloadSpeedMeterHandle,
 }
 
 impl HttpStreamBackend {
     fn new(url: String) -> Self {
-        Self { url }
+        Self::with_download_speed_meter(url, Arc::new(Mutex::new(DownloadSpeedMeter::default())))
+    }
+
+    fn with_download_speed_meter(url: String, download_speed_meter: DownloadSpeedMeterHandle) -> Self {
+        Self {
+            url,
+            download_speed_meter,
+        }
     }
 }
 
@@ -191,6 +428,10 @@ impl StreamBackend for HttpStreamBackend {
         &self.url
     }
 
+    fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle {
+        &self.download_speed_meter
+    }
+
     fn handle<'a>(
         &'a self,
         app_handle: &'a AppHandle,
@@ -199,7 +440,17 @@ impl StreamBackend for HttpStreamBackend {
         range: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            handle_http_stream_source(app_handle, stream, method, &self.url, range).await
+            let download_speed_recorder =
+                DownloadSpeedRecorder::new(self.download_speed_meter.clone());
+            handle_http_stream_source(
+                app_handle,
+                stream,
+                method,
+                &self.url,
+                range,
+                &download_speed_recorder,
+            )
+            .await
         })
     }
 }
@@ -208,6 +459,7 @@ struct SmbStreamBackend {
     url: String,
     open_url: String,
     file: Arc<Mutex<Option<crate::network::protocols::smb::SmbPlaybackFile>>>,
+    download_speed_meter: DownloadSpeedMeterHandle,
 }
 
 impl SmbStreamBackend {
@@ -216,6 +468,7 @@ impl SmbStreamBackend {
             url,
             open_url,
             file: Arc::new(Mutex::new(None)),
+            download_speed_meter: Arc::new(Mutex::new(DownloadSpeedMeter::default())),
         }
     }
 
@@ -351,6 +604,10 @@ impl StreamBackend for SmbStreamBackend {
 
     fn origin(&self) -> &str {
         &self.url
+    }
+
+    fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle {
+        &self.download_speed_meter
     }
 
     fn handle<'a>(
@@ -555,6 +812,71 @@ fn stream_backends() -> &'static Mutex<StreamBackendRegistry> {
     STREAM_PROXY_BACKENDS.get_or_init(|| Mutex::new(StreamBackendRegistry::new()))
 }
 
+pub(crate) fn download_speed_bps() -> f64 {
+    ACTIVE_STREAM_PROXY_BACKEND
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|backend| backend.as_ref().cloned())
+        .and_then(|backend| backend.download_speed_meter().lock().ok().map(|meter| meter.speed_bps()))
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn begin_download_speed_activation(url: &str) -> DownloadSpeedActivation {
+    let backend = proxy_stream_backend_for_url(url);
+    let previous_meter = backend.as_ref().and_then(|backend| {
+        let meter = backend.download_speed_meter().clone();
+        let previous_meter = meter.lock().ok().map(|mut current_meter| {
+            let previous_meter = current_meter.clone();
+            current_meter.begin_generation();
+            previous_meter
+        });
+        previous_meter.map(|previous_meter| (meter, previous_meter))
+    });
+    let previous_backend = ACTIVE_STREAM_PROXY_BACKEND
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut active_backend| std::mem::replace(&mut *active_backend, backend));
+    DownloadSpeedActivation {
+        previous_backend,
+        previous_meter,
+        committed: false,
+    }
+}
+
+pub(crate) fn begin_download_speed_generation() -> Option<DownloadSpeedGeneration> {
+    let backend = ACTIVE_STREAM_PROXY_BACKEND
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|backend| backend.as_ref().cloned());
+    let meter = backend?.download_speed_meter().clone();
+    let previous_meter = meter.lock().ok().map(|mut current_meter| {
+        let previous_meter = current_meter.clone();
+        current_meter.begin_generation();
+        previous_meter
+    })?;
+    Some(DownloadSpeedGeneration {
+        meter,
+        previous_meter: Some(previous_meter),
+        committed: false,
+    })
+}
+
+pub(crate) fn is_stream_proxy_url(url: &str) -> bool {
+    let Some(base_url) = STREAM_PROXY_BASE_URL.get() else {
+        return false;
+    };
+    let (Ok(base), Ok(candidate)) = (Url::parse(base_url), Url::parse(url)) else {
+        return false;
+    };
+    base.scheme() == candidate.scheme()
+        && base.host_str() == candidate.host_str()
+        && base.port_or_known_default() == candidate.port_or_known_default()
+        && candidate.path().starts_with("/stream/")
+}
+
 fn proxy_url_for(raw: &str) -> Option<String> {
     proxy_url_for_backend(Arc::new(HttpStreamBackend::new(raw.to_string())))
 }
@@ -570,6 +892,12 @@ fn proxy_url_for_existing_origin(origin: &str) -> Option<String> {
     let base = STREAM_PROXY_BASE_URL.get()?;
     let token = stream_backends().lock().ok()?.find_token_by_origin(origin)?;
     Some(format!("{base}/stream/{token}"))
+}
+
+fn proxy_stream_backend_for_url(url: &str) -> Option<Arc<dyn StreamBackend>> {
+    let target = Url::parse(url).ok()?.path().to_string();
+    let token = target.strip_prefix("/stream/")?.trim();
+    (!token.is_empty()).then(|| stream_backends().lock().ok()?.get(token))?
 }
 
 fn lookup_stream_backend(target: &str) -> Option<Arc<dyn StreamBackend>> {
@@ -671,6 +999,7 @@ async fn handle_http_stream_source(
     method: &str,
     remote_url: &str,
     range: Option<&str>,
+    download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(), String> {
     debug!("stream proxy: fetch {}", redact_url(remote_url));
 
@@ -697,10 +1026,22 @@ async fn handle_http_stream_source(
     if should_rewrite_playlist(remote_url, &response) {
         let content_type = content_type(&response);
         let reason = status.canonical_reason().unwrap_or("OK").to_string();
+        let read_started_at = Instant::now();
         let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+        download_speed_recorder.record_transfer(
+            bytes.len(),
+            read_started_at,
+            Instant::now(),
+        );
         let text = String::from_utf8_lossy(&bytes);
         let inherited_headers = lookup_headers(remote_url);
-        let body = rewrite_playlist(remote_url, &text, inherited_headers.as_deref()).into_bytes();
+        let body = rewrite_playlist(
+            remote_url,
+            &text,
+            inherited_headers.as_deref(),
+            &download_speed_recorder.meter,
+        )
+        .into_bytes();
         write_response(
             stream,
             status.as_u16(),
@@ -727,6 +1068,7 @@ async fn handle_http_stream_source(
         remote_url,
         range,
         response,
+        download_speed_recorder,
     )
     .await
 }
@@ -738,6 +1080,8 @@ async fn handle_smb_stream_source(
     remote_url: &str,
     range: Option<&str>,
 ) -> Result<(), String> {
+    let download_speed_recorder =
+        DownloadSpeedRecorder::new(backend.download_speed_meter.clone());
     debug!("stream proxy: fetch {}", redact_url(remote_url));
     let total_size = match backend.file_size().await {
         Ok(Some(size)) => size,
@@ -833,6 +1177,7 @@ async fn handle_smb_stream_source(
         if requests.len() <= 1 {
             // Single chunk: use the simpler read_range path
             let length = requests.first().map(|r| r.1 as usize).unwrap_or(0);
+            let read_started_at = Instant::now();
             let chunk = match backend.read_range(next, length).await {
                 Ok(chunk) => chunk,
                 Err(error) => {
@@ -848,6 +1193,11 @@ async fn handle_smb_stream_source(
             if chunk.data.is_empty() {
                 break;
             }
+            download_speed_recorder.record_transfer(
+                chunk.data.len(),
+                read_started_at,
+                Instant::now(),
+            );
             stream
                 .write_all(&chunk.data)
                 .await
@@ -855,6 +1205,7 @@ async fn handle_smb_stream_source(
             next = next.saturating_add(chunk.data.len() as u64);
         } else {
             // Multiple chunks: use pipeline read for better throughput
+            let read_started_at = Instant::now();
             let batch = match backend.read_pipeline(&requests).await {
                 Ok(batch) => batch,
                 Err(error) => {
@@ -870,6 +1221,11 @@ async fn handle_smb_stream_source(
             if batch.data.is_empty() {
                 break;
             }
+            download_speed_recorder.record_transfer(
+                batch.data.len(),
+                read_started_at,
+                Instant::now(),
+            );
             stream
                 .write_all(&batch.data)
                 .await
@@ -1117,10 +1473,18 @@ fn rewrite_playlist(
     base_url: &str,
     text: &str,
     inherited_headers: Option<&[(String, String)]>,
+    download_speed_meter: &DownloadSpeedMeterHandle,
 ) -> String {
     let base = Url::parse(base_url).ok();
     text.lines()
-        .map(|line| rewrite_playlist_line(base.as_ref(), line, inherited_headers))
+        .map(|line| {
+            rewrite_playlist_line(
+                base.as_ref(),
+                line,
+                inherited_headers,
+                download_speed_meter,
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1129,20 +1493,23 @@ fn rewrite_playlist_line(
     base: Option<&Url>,
     line: &str,
     inherited_headers: Option<&[(String, String)]>,
+    download_speed_meter: &DownloadSpeedMeterHandle,
 ) -> String {
     if line.trim().is_empty() {
         return line.to_string();
     }
     if line.starts_with('#') {
-        return rewrite_uri_attributes(base, line, inherited_headers);
+        return rewrite_uri_attributes(base, line, inherited_headers, download_speed_meter);
     }
-    rewrite_playlist_url(base, line, inherited_headers).unwrap_or_else(|| line.to_string())
+    rewrite_playlist_url(base, line, inherited_headers, download_speed_meter)
+        .unwrap_or_else(|| line.to_string())
 }
 
 fn rewrite_uri_attributes(
     base: Option<&Url>,
     line: &str,
     inherited_headers: Option<&[(String, String)]>,
+    download_speed_meter: &DownloadSpeedMeterHandle,
 ) -> String {
     let mut rewritten = String::with_capacity(line.len());
     let mut rest = line;
@@ -1157,7 +1524,8 @@ fn rewrite_uri_attributes(
         };
         let uri = &uri_start[..end];
         rewritten.push_str(
-            &rewrite_playlist_url(base, uri, inherited_headers).unwrap_or_else(|| uri.to_string()),
+            &rewrite_playlist_url(base, uri, inherited_headers, download_speed_meter)
+                .unwrap_or_else(|| uri.to_string()),
         );
         rest = &uri_start[end..];
     }
@@ -1169,6 +1537,7 @@ fn rewrite_playlist_url(
     base: Option<&Url>,
     value: &str,
     inherited_headers: Option<&[(String, String)]>,
+    download_speed_meter: &DownloadSpeedMeterHandle,
 ) -> Option<String> {
     let resolved = if let Ok(url) = Url::parse(value) {
         url
@@ -1179,7 +1548,12 @@ fn rewrite_playlist_url(
         register_headers(resolved.as_str(), headers);
     }
     match resolved.scheme() {
-        "http" | "https" => proxy_url_for(resolved.as_str()),
+        "http" | "https" => proxy_url_for_backend(Arc::new(
+            HttpStreamBackend::with_download_speed_meter(
+                resolved.to_string(),
+                download_speed_meter.clone(),
+            ),
+        )),
         _ => None,
     }
 }
@@ -1323,6 +1697,7 @@ async fn fetch_range_bytes(
     app_handle: &AppHandle,
     remote_url: &str,
     range: ByteRange,
+    download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(u64, Vec<u8>), String> {
     let client = build_client(app_handle)?;
     let mut request = client
@@ -1331,7 +1706,7 @@ async fn fetch_range_bytes(
         .header(RANGE, format!("bytes={}-{}", range.start, range.end));
     request = apply_basic_auth(request, remote_url);
     request = apply_headers(request, remote_url);
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let mut response = request.send().await.map_err(|error| error.to_string())?;
     if response.status() != StatusCode::PARTIAL_CONTENT {
         return Err(format!(
             "parallel range request failed: status={} range={}-{}",
@@ -1341,7 +1716,22 @@ async fn fetch_range_bytes(
         ));
     }
     let expected_len = range.end.saturating_sub(range.start).saturating_add(1) as usize;
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(expected_len);
+    loop {
+        let read_started_at = Instant::now();
+        let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? else {
+            break;
+        };
+        download_speed_recorder.record_transfer(
+            chunk.len(),
+            read_started_at,
+            Instant::now(),
+        );
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > expected_len {
+            break;
+        }
+    }
     if bytes.len() != expected_len {
         return Err(format!(
             "parallel range length mismatch: expected={} actual={} range={}-{}",
@@ -1351,7 +1741,7 @@ async fn fetch_range_bytes(
             range.end
         ));
     }
-    Ok((range.start, bytes.to_vec()))
+    Ok((range.start, bytes))
 }
 
 async fn stream_parallel_range_response(
@@ -1360,6 +1750,7 @@ async fn stream_parallel_range_response(
     remote_url: &str,
     plan: ParallelRangePlan,
     first_chunk: Vec<u8>,
+    download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(), String> {
     info!(
         "stream proxy: parallel range enabled url={} start={} end={} total={} chunk={} connections={}",
@@ -1382,7 +1773,12 @@ async fn stream_parallel_range_response(
         while pending.len() < PARALLEL_RANGE_CONNECTIONS && next_range_index < ranges.len() {
             let range = ranges[next_range_index].clone();
             next_range_index += 1;
-            pending.push(fetch_range_bytes(app_handle, remote_url, range));
+            pending.push(fetch_range_bytes(
+                app_handle,
+                remote_url,
+                range,
+                download_speed_recorder,
+            ));
         }
 
         if let Some(bytes) = completed.remove(&next_write_start) {
@@ -1423,6 +1819,7 @@ async fn stream_response(
     remote_url: &str,
     request_range: Option<&str>,
     mut response: Response,
+    download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(), String> {
     let status = response.status();
     let content_type = content_type(&response);
@@ -1462,7 +1859,7 @@ async fn stream_response(
                 .saturating_add(PARALLEL_RANGE_CHUNK_BYTES - 1)
                 .min(plan.response_end),
         };
-        match fetch_range_bytes(app_handle, remote_url, first_range).await {
+        match fetch_range_bytes(app_handle, remote_url, first_range, download_speed_recorder).await {
             Ok((start, bytes)) if start == plan.response_start => Some(bytes),
             Ok((start, _)) => {
                 warn!(
@@ -1503,11 +1900,27 @@ async fn stream_response(
 
     if let (Some(plan), Some(first_chunk)) = (parallel_plan, parallel_first_chunk) {
         drop(response);
-        return stream_parallel_range_response(app_handle, stream, remote_url, plan, first_chunk)
-            .await;
+        return stream_parallel_range_response(
+            app_handle,
+            stream,
+            remote_url,
+            plan,
+            first_chunk,
+            download_speed_recorder,
+        )
+        .await;
     }
 
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+    loop {
+        let read_started_at = Instant::now();
+        let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? else {
+            break;
+        };
+        download_speed_recorder.record_transfer(
+            chunk.len(),
+            read_started_at,
+            Instant::now(),
+        );
         stream
             .write_all(&chunk)
             .await
@@ -1564,4 +1977,108 @@ async fn write_response(
         .write_all(header.as_bytes())
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DownloadSpeedMeter;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn download_speed_meter_uses_a_bounded_rolling_window() {
+        let start = Instant::now();
+        let mut meter = DownloadSpeedMeter::default();
+        let generation = meter.begin_generation_at(start);
+        meter.record_transfer_at(
+            generation,
+            64 * 1024,
+            start,
+            start + Duration::from_millis(100),
+        );
+        assert_eq!(
+            meter.speed_bps_at(start + Duration::from_millis(100)),
+            256.0 * 1024.0,
+        );
+
+        meter.record_transfer_at(
+            generation,
+            64 * 1024,
+            start + Duration::from_millis(100),
+            start + Duration::from_millis(1100),
+        );
+        let speed = meter.speed_bps_at(start + Duration::from_millis(1100));
+        assert!(speed > 100.0 * 1024.0);
+        assert!(speed < 130.0 * 1024.0);
+        assert_eq!(meter.speed_bps_at(start + Duration::from_millis(3201)), 0.0);
+    }
+
+    #[test]
+    fn download_speed_meter_ignores_reads_from_an_old_generation() {
+        let start = Instant::now();
+        let mut meter = DownloadSpeedMeter::default();
+        let old_generation = meter.begin_generation_at(start);
+        let current_generation = meter.begin_generation_at(start + Duration::from_secs(1));
+        meter.record_transfer_at(
+            old_generation,
+            64 * 1024,
+            start + Duration::from_secs(1),
+            start + Duration::from_millis(1100),
+        );
+        assert_eq!(meter.speed_bps_at(start + Duration::from_millis(1100)), 0.0);
+
+        meter.record_transfer_at(
+            current_generation,
+            64 * 1024,
+            start + Duration::from_millis(1100),
+            start + Duration::from_millis(1200),
+        );
+        assert!(meter.speed_bps_at(start + Duration::from_millis(1200)) > 0.0);
+    }
+
+    #[test]
+    fn download_speed_meter_starts_a_new_burst_after_becoming_stale() {
+        let start = Instant::now();
+        let mut meter = DownloadSpeedMeter::default();
+        let generation = meter.begin_generation_at(start);
+        meter.record_transfer_at(
+            generation,
+            64 * 1024,
+            start,
+            start + Duration::from_millis(100),
+        );
+        meter.record_transfer_at(
+            generation,
+            64 * 1024,
+            start + Duration::from_millis(2101),
+            start + Duration::from_millis(2201),
+        );
+
+        assert_eq!(
+            meter.speed_bps_at(start + Duration::from_millis(2201)),
+            256.0 * 1024.0,
+        );
+    }
+
+    #[test]
+    fn download_speed_meter_weights_transfers_crossing_the_window_boundary() {
+        let start = Instant::now();
+        let mut meter = DownloadSpeedMeter::default();
+        let generation = meter.begin_generation_at(start);
+        meter.record_transfer_at(
+            generation,
+            2 * 1024 * 1024,
+            start + Duration::from_millis(400),
+            start + Duration::from_millis(1300),
+        );
+        meter.record_transfer_at(
+            generation,
+            2 * 1024 * 1024,
+            start + Duration::from_millis(1300),
+            start + Duration::from_millis(2100),
+        );
+
+        let speed = meter.speed_bps_at(start + Duration::from_millis(2800));
+        assert!(speed > 1.5 * 1024.0 * 1024.0);
+        assert!(speed < 1.6 * 1024.0 * 1024.0);
+    }
 }

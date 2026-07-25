@@ -131,6 +131,11 @@ export const useAppEventBindings = ({
                 : snapshot.position;
         player.state.playback.isPlaying = snapshot.isPlaying;
         player.state.playback.isBuffering = snapshot.isBuffering === true;
+        player.state.playback.downloadSpeedBps =
+            typeof snapshot.downloadSpeedBps === "number" &&
+            Number.isFinite(snapshot.downloadSpeedBps)
+                ? Math.max(0, snapshot.downloadSpeedBps)
+                : 0;
         player.state.playback.volume = snapshot.volume;
         onPlaybackSpeedChange?.(snapshot.speed);
         onSourceLoadState?.({

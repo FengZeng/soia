@@ -45,7 +45,17 @@ export const parseWebSocketServerMessage = (
             if (!state || typeof state.revision !== "number") {
                 throw new Error("received invalid playback snapshot");
             }
-            return { type, state: state as PlaybackSnapshotDto };
+            return {
+                type,
+                state: {
+                    ...state,
+                    downloadSpeedBps:
+                        typeof state.downloadSpeedBps === "number" &&
+                        Number.isFinite(state.downloadSpeedBps)
+                            ? Math.max(0, state.downloadSpeedBps)
+                            : 0,
+                } as PlaybackSnapshotDto,
+            };
         }
         case "pong":
             return {
