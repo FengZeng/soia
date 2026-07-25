@@ -147,13 +147,13 @@ pub(super) fn is_connection_active(
 }
 
 fn local_network_ip() -> Result<String, String> {
-    let mut candidates: Vec<(u8, std::net::Ipv4Addr)> = get_if_addrs::get_if_addrs()
+    let mut candidates: Vec<(u8, std::net::Ipv4Addr)> = if_addrs::get_if_addrs()
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|interface| !is_virtual_interface(&interface.name))
         .filter_map(|interface| match interface.addr {
-            get_if_addrs::IfAddr::V4(address) => Some(address.ip),
-            get_if_addrs::IfAddr::V6(_) => None,
+            if_addrs::IfAddr::V4(address) => Some(address.ip),
+            if_addrs::IfAddr::V6(_) => None,
         })
         .filter(|ip| is_usable_private_ipv4(*ip))
         .map(|ip| (private_ip_priority(ip), ip))

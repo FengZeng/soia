@@ -45,7 +45,7 @@ env_logger = "0.11"
 chrono = "0.4"
 uuid = { version = "1", features = ["v7"] }
 qrcode = "0.14"
-get_if_addrs = "0.5"
+if-addrs = "0.14"
 base64 = "0.22"
 flate2 = "1"
 rand = "0.9"
