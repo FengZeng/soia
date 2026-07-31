@@ -142,7 +142,7 @@ impl MpvHandle {
         window: *const c_void,
         display: Option<*const c_void>,
         app_handle: AppHandle,
-        auth_token: Option<SoiaAuthToken>,
+        _auth_token: Option<SoiaAuthToken>,
     ) -> Result<Self, String> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         ensure_numeric_locale_for_mpv();
@@ -203,7 +203,7 @@ impl MpvHandle {
 
         let display_ptr = display.unwrap_or(std::ptr::null());
         #[cfg(target_os = "macos")]
-        let auth_payload = auth_token
+        let auth_payload = _auth_token
             .as_ref()
             .map(|token| token.payload.clone())
             .or_else(|| std::env::var("SOIA_AUTH_PAYLOAD").ok())
@@ -214,7 +214,7 @@ impl MpvHandle {
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
         #[cfg(target_os = "macos")]
-        let auth_signature_hex = auth_token
+        let auth_signature_hex = _auth_token
             .as_ref()
             .map(|token| token.signature_hex.clone())
             .or_else(|| std::env::var("SOIA_AUTH_SIGNATURE_HEX").ok())

@@ -7,6 +7,8 @@ use tauri::AppHandle;
 use url::Url;
 
 const YTDLP_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DIRECT_STREAM_EXTENSIONS: &[&str] = &[
     "m3u8", "mp4", "m4v", "mov", "mkv", "webm", "flv", "avi", "ts", "mp3", "m4a", "aac", "flac",
     "wav", "ogg", "opus",
@@ -109,6 +111,7 @@ fn run_ytdlp_playlist_command(
     raw_url: &str,
 ) -> Result<std::process::Output, String> {
     let mut command = Command::new(ytdl_path);
+    hide_windows_console(&mut command);
     let mut log_args = vec![
         "--dump-single-json".to_string(),
         "--flat-playlist".to_string(),
@@ -330,6 +333,7 @@ fn run_ytdlp_command(
     raw_url: &str,
 ) -> Result<std::process::Output, String> {
     let mut command = Command::new(ytdl_path);
+    hide_windows_console(&mut command);
     let mut log_args = vec![
         "--dump-single-json".to_string(),
         "--no-playlist".to_string(),
@@ -426,6 +430,16 @@ fn run_ytdlp_command(
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[cfg(target_os = "windows")]
+fn hide_windows_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_windows_console(_: &mut Command) {}
 
 fn format_command_for_log(program: &str, args: &[String]) -> String {
     std::iter::once(program)

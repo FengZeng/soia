@@ -4,11 +4,13 @@ use std::sync::OnceLock;
 const MEDIA_EXTENSIONS_JSON: &str = include_str!("../../src/constants/mediaExtensions.json");
 
 static MEDIA_EXTENSIONS: OnceLock<Vec<String>> = OnceLock::new();
+#[cfg(target_os = "macos")]
 static MEDIA_ASSOCIATION_EXTENSIONS: OnceLock<Vec<String>> = OnceLock::new();
 
 #[derive(serde::Deserialize)]
 struct MediaExtensionEntry {
     ext: String,
+    #[cfg(target_os = "macos")]
     kind: String,
 }
 
@@ -32,6 +34,7 @@ pub(crate) fn all() -> &'static [String] {
         .as_slice()
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn media_association_extensions() -> &'static [String] {
     MEDIA_ASSOCIATION_EXTENSIONS
         .get_or_init(|| {

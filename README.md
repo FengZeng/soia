@@ -52,7 +52,14 @@
 
 Download from the [release page](https://github.com/FengZeng/soia/releases).
 
-On Windows, you can also install it with WinGet:
+On macOS, you can install it with Homebrew:
+
+```bash
+brew tap FengZeng/soia
+brew install --cask soia
+```
+
+On Windows, you can install it with WinGet:
 
 ```powershell
 winget install soia

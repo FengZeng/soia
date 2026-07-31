@@ -428,7 +428,7 @@ pub(crate) fn check_update(app_handle: tauri::AppHandle) -> Option<SoiaAuthToken
     result
 }
 
-#[cfg(desktop)]
+#[cfg(target_os = "macos")]
 pub(crate) fn check_update_now(app_handle: tauri::AppHandle) {
     set_update_available_state(false);
     tauri::async_runtime::spawn(async move {
