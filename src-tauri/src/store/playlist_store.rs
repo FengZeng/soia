@@ -28,6 +28,12 @@ pub struct PlaylistPersistenceState {
     pub playlist_sort_mode: Option<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct PlaylistNavigationPreferences {
+    pub playlist_loop_mode: Option<String>,
+    pub playlist_sort_mode: Option<String>,
+}
+
 pub fn migrate_legacy_state(
     app: &tauri::AppHandle,
     state: &PlaylistPersistenceState,
@@ -41,6 +47,25 @@ pub fn migrate_legacy_state(
 pub fn load_state(app: &tauri::AppHandle) -> Result<PlaylistPersistenceState, String> {
     let conn = media_db::open_db(app)?;
     load_state_from_connection(&conn)
+}
+
+pub fn load_navigation_preferences(
+    app: &tauri::AppHandle,
+) -> Result<PlaylistNavigationPreferences, String> {
+    let conn = media_db::open_db(app)?;
+    let (loop_mode, sort_mode) = conn
+        .query_row(
+            "SELECT loop_mode, sort_mode FROM playlist_state WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .unwrap_or(("list".to_string(), "added".to_string()));
+    Ok(PlaylistNavigationPreferences {
+        playlist_loop_mode: Some(loop_mode),
+        playlist_sort_mode: Some(sort_mode),
+    })
 }
 
 pub fn save_state(

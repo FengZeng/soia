@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 pub const MAX_PLAY_HISTORY: i64 = 100;
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 pub fn now_millis() -> i64 {
     Utc::now().timestamp_millis()
@@ -60,10 +60,16 @@ fn ensure_schema(conn: &mut Connection) -> Result<(), String> {
     if version == 2 {
         migrate_schema_v2_to_v3(conn)?;
         migrate_schema_v3_to_v4(conn)?;
+        migrate_schema_v4_to_v5(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
     } else if version == 3 {
         migrate_schema_v3_to_v4(conn)?;
+        migrate_schema_v4_to_v5(conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+            .map_err(|e| e.to_string())?;
+    } else if version == 4 {
+        migrate_schema_v4_to_v5(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
     } else if version != SCHEMA_VERSION {
@@ -200,6 +206,9 @@ fn reset_schema(conn: &Connection) -> Result<(), String> {
 
          CREATE INDEX idx_playlist_entries_order
          ON playlist_entries(playlist_id, order_index ASC);
+
+         CREATE INDEX idx_playlist_entries_navigation_added
+         ON playlist_entries(playlist_id, added_at DESC, order_index ASC);
 
          CREATE INDEX idx_playlist_entries_key
          ON playlist_entries(playlist_id, path);
@@ -375,6 +384,15 @@ fn migrate_schema_v3_to_v4(conn: &mut Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn migrate_schema_v4_to_v5(conn: &mut Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_playlist_entries_navigation_added
+         ON playlist_entries(playlist_id, added_at DESC, order_index ASC);",
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -592,6 +610,7 @@ mod tests {
 
         migrate_schema_v3_to_v4(&mut conn).expect("migrate v3 schema");
         migrate_schema_v3_to_v4(&mut conn).expect("resume partially applied v3 migration");
+        migrate_schema_v4_to_v5(&mut conn).expect("migrate v4 navigation index");
 
         let (path, title, artwork_ref): (String, Option<String>, Option<String>) = conn
             .query_row(
@@ -621,6 +640,16 @@ mod tests {
             )
             .expect("read playlist state");
         assert_eq!(collection_revision, 1);
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_playlist_entries_navigation_added'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read navigation index");
+        assert_eq!(index_count, 1);
     }
 
     #[test]

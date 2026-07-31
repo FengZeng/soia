@@ -147,7 +147,6 @@ const playbackNavigation = usePlaybackNavigation({
 });
 
 useNavigationStateSync({
-    playlists,
     activePlaylistId,
     loopMode,
     sortMode,

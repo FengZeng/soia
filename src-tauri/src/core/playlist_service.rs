@@ -35,6 +35,34 @@ pub(crate) struct PlaylistEntryPage {
     pub offset: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlaylistLoopMode {
+    List,
+    Shuffle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlaylistSortMode {
+    Name,
+    Added,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PlaylistNavigationContext {
+    pub active_playlist_id: Option<String>,
+    pub playback_playlist_id: Option<String>,
+    pub loop_mode: PlaylistLoopMode,
+    pub sort_mode: PlaylistSortMode,
+    pub is_loop_one: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaylistNavigationResult {
+    pub playlist_id: String,
+    pub path: String,
+    pub title: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PreparedPlaylistEntry {
     pub path: String,
@@ -79,6 +107,28 @@ impl PlaylistService {
     ) -> Result<PlaylistEntryPage, String> {
         let conn = media_db::open_db(app)?;
         list_entries_from_connection(&conn, playlist_id, offset, limit)
+    }
+
+    pub(crate) fn resolve_navigation(
+        &self,
+        app: &tauri::AppHandle,
+        current_path: &str,
+        direction: i32,
+        context: &PlaylistNavigationContext,
+        is_end_of_file: bool,
+    ) -> Result<Option<PlaylistNavigationResult>, String> {
+        let conn = media_db::open_db(app)?;
+        resolve_navigation_from_connection(&conn, current_path, direction, context, is_end_of_file)
+    }
+
+    pub(crate) fn title_for_path(
+        &self,
+        app: &tauri::AppHandle,
+        path: &str,
+        context: &PlaylistNavigationContext,
+    ) -> Result<Option<String>, String> {
+        let conn = media_db::open_db(app)?;
+        title_for_path_from_connection(&conn, path, context)
     }
 
     pub(crate) fn create_playlist(
@@ -283,6 +333,303 @@ fn list_entries_from_connection(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok(PlaylistEntryPage { entries, total, offset: offset as u32 })
+}
+
+fn resolve_navigation_from_connection(
+    conn: &Connection,
+    current_path: &str,
+    direction: i32,
+    context: &PlaylistNavigationContext,
+    is_end_of_file: bool,
+) -> Result<Option<PlaylistNavigationResult>, String> {
+    let current_path = current_path.trim();
+    if current_path.is_empty() || (is_end_of_file && context.is_loop_one) {
+        return Ok(None);
+    }
+    let Some(playlist_id) = resolve_playlist_id_from_connection(conn, current_path, context)? else {
+        return Ok(None);
+    };
+    let entry = match (context.loop_mode, context.sort_mode) {
+        (PlaylistLoopMode::Shuffle, _) => {
+            random_entry_from_connection(conn, &playlist_id, current_path)?
+        }
+        (PlaylistLoopMode::List, PlaylistSortMode::Added) => {
+            adjacent_added_entry_from_connection(conn, &playlist_id, current_path, direction)?
+        }
+        // Name mode preserves the existing natural-sort behavior. Its durable sort-key migration
+        // is intentionally deferred until measurement justifies the additional schema surface.
+        (PlaylistLoopMode::List, PlaylistSortMode::Name) => {
+            adjacent_name_entry_from_connection(conn, &playlist_id, current_path, direction)?
+        }
+    };
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    Ok(Some(PlaylistNavigationResult {
+        playlist_id,
+        path: entry.path,
+        title: entry.title,
+    }))
+}
+
+fn adjacent_added_entry_from_connection(
+    conn: &Connection,
+    playlist_id: &str,
+    current_path: &str,
+    direction: i32,
+) -> Result<Option<PlaylistEntry>, String> {
+    let current: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT added_at, order_index FROM playlist_entries
+             WHERE playlist_id = ?1 AND path = ?2",
+            params![playlist_id, current_path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let sql = match (current, direction > 0) {
+        (Some((added_at, order_index)), true) => (
+            "SELECT id, path, title, artwork_ref, added_at, order_index
+             FROM playlist_entries
+             WHERE playlist_id = ?1
+               AND (added_at < ?2 OR (added_at = ?2 AND order_index > ?3))
+             ORDER BY added_at DESC, order_index ASC LIMIT 1",
+            Some((added_at, order_index)),
+        ),
+        (Some((added_at, order_index)), false) => (
+            "SELECT id, path, title, artwork_ref, added_at, order_index
+             FROM playlist_entries
+             WHERE playlist_id = ?1
+               AND (added_at > ?2 OR (added_at = ?2 AND order_index < ?3))
+             ORDER BY added_at ASC, order_index DESC LIMIT 1",
+            Some((added_at, order_index)),
+        ),
+        (None, true) => (
+            "SELECT id, path, title, artwork_ref, added_at, order_index
+             FROM playlist_entries WHERE playlist_id = ?1
+             ORDER BY added_at DESC, order_index ASC LIMIT 1",
+            None,
+        ),
+        (None, false) => (
+            "SELECT id, path, title, artwork_ref, added_at, order_index
+             FROM playlist_entries WHERE playlist_id = ?1
+             ORDER BY added_at ASC, order_index DESC LIMIT 1",
+            None,
+        ),
+    };
+    let entry = match sql.1 {
+        Some((added_at, order_index)) => conn
+            .query_row(sql.0, params![playlist_id, added_at, order_index], playlist_entry_from_row)
+            .optional(),
+        None => conn.query_row(sql.0, [playlist_id], playlist_entry_from_row).optional(),
+    }
+    .map_err(|error| error.to_string())?;
+    if entry.is_some() {
+        return Ok(entry);
+    }
+    let wrap_sql = if direction > 0 {
+        "SELECT id, path, title, artwork_ref, added_at, order_index
+         FROM playlist_entries WHERE playlist_id = ?1
+         ORDER BY added_at DESC, order_index ASC LIMIT 1"
+    } else {
+        "SELECT id, path, title, artwork_ref, added_at, order_index
+         FROM playlist_entries WHERE playlist_id = ?1
+         ORDER BY added_at ASC, order_index DESC LIMIT 1"
+    };
+    conn.query_row(wrap_sql, [playlist_id], playlist_entry_from_row)
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+fn random_entry_from_connection(
+    conn: &Connection,
+    playlist_id: &str,
+    current_path: &str,
+) -> Result<Option<PlaylistEntry>, String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM playlist_entries WHERE playlist_id = ?1",
+            [playlist_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if count == 0 {
+        return Ok(None);
+    }
+    let sql = if count == 1 {
+        "SELECT id, path, title, artwork_ref, added_at, order_index
+         FROM playlist_entries WHERE playlist_id = ?1 LIMIT 1"
+    } else {
+        "SELECT id, path, title, artwork_ref, added_at, order_index
+         FROM playlist_entries WHERE playlist_id = ?1 AND path != ?2
+         ORDER BY RANDOM() LIMIT 1"
+    };
+    let entry = if count == 1 {
+        conn.query_row(sql, [playlist_id], playlist_entry_from_row).optional()
+    } else {
+        conn.query_row(sql, params![playlist_id, current_path], playlist_entry_from_row).optional()
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(entry)
+}
+
+fn adjacent_name_entry_from_connection(
+    conn: &Connection,
+    playlist_id: &str,
+    current_path: &str,
+    direction: i32,
+) -> Result<Option<PlaylistEntry>, String> {
+    let mut entries = entries_for_navigation(conn, playlist_id)?;
+    sort_entries_for_navigation(&mut entries, PlaylistSortMode::Name);
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let entry = match entries.iter().position(|entry| entry.path == current_path) {
+        Some(index) if direction > 0 => entries[(index + 1) % entries.len()].clone(),
+        Some(index) => entries[(index + entries.len() - 1) % entries.len()].clone(),
+        None if direction > 0 => entries[0].clone(),
+        None => entries.last().expect("entries is non-empty").clone(),
+    };
+    Ok(Some(entry))
+}
+
+fn title_for_path_from_connection(
+    conn: &Connection,
+    path: &str,
+    context: &PlaylistNavigationContext,
+) -> Result<Option<String>, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let Some(playlist_id) = resolve_playlist_id_from_connection(conn, path, context)? else {
+        return Ok(None);
+    };
+    conn.query_row(
+        "SELECT title FROM playlist_entries WHERE playlist_id = ?1 AND path = ?2",
+        params![playlist_id, path],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|title| title.flatten().and_then(|title| non_empty(Some(&title))))
+    .map_err(|error| error.to_string())
+}
+
+fn resolve_playlist_id_from_connection(
+    conn: &Connection,
+    path: &str,
+    context: &PlaylistNavigationContext,
+) -> Result<Option<String>, String> {
+    for playlist_id in [
+        context.playback_playlist_id.as_deref(),
+        context.active_playlist_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM playlist_entries WHERE playlist_id = ?1 AND path = ?2)",
+                params![playlist_id, path],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists {
+            return Ok(Some(playlist_id.to_string()));
+        }
+    }
+    conn.query_row(
+        "SELECT p.id
+         FROM playlists p
+         JOIN playlist_entries e ON e.playlist_id = p.id
+         WHERE e.path = ?1
+         ORDER BY p.order_index DESC, p.created_at DESC
+         LIMIT 1",
+        [path],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+fn entries_for_navigation(conn: &Connection, playlist_id: &str) -> Result<Vec<PlaylistEntry>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, path, title, artwork_ref, added_at, order_index
+             FROM playlist_entries WHERE playlist_id = ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let entries = statement
+        .query_map([playlist_id], |row| {
+            Ok(PlaylistEntry {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                title: row.get(2)?,
+                artwork_ref: row.get(3)?,
+                added_at: row.get(4)?,
+                order_index: row.get(5)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(entries)
+}
+
+fn playlist_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistEntry> {
+    Ok(PlaylistEntry {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        title: row.get(2)?,
+        artwork_ref: row.get(3)?,
+        added_at: row.get(4)?,
+        order_index: row.get(5)?,
+    })
+}
+
+fn sort_entries_for_navigation(entries: &mut [PlaylistEntry], mode: PlaylistSortMode) {
+    match mode {
+        PlaylistSortMode::Name => entries.sort_by(|left, right| {
+            let left_name = left.title.as_deref().unwrap_or_else(|| path_display_name(&left.path));
+            let right_name = right.title.as_deref().unwrap_or_else(|| path_display_name(&right.path));
+            natural_sort_key(left_name).cmp(&natural_sort_key(right_name))
+        }),
+        PlaylistSortMode::Added => entries.sort_by(|left, right| right.added_at.cmp(&left.added_at)),
+    }
+}
+
+fn path_display_name(path: &str) -> &str {
+    path.rsplit(&['/', '\\'][..])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+}
+
+fn natural_sort_key(input: &str) -> Vec<NaturalSegment> {
+    let lower = input.to_lowercase();
+    let mut chars = lower.chars().peekable();
+    let mut segments = Vec::new();
+    while chars.peek().is_some() {
+        if chars.peek().is_some_and(|character| character.is_ascii_digit()) {
+            let mut number = String::new();
+            while chars.peek().is_some_and(|character| character.is_ascii_digit()) {
+                number.push(chars.next().expect("peeked character exists"));
+            }
+            segments.push(NaturalSegment::Number(number.parse().unwrap_or(0)));
+        } else {
+            let mut text = String::new();
+            while chars.peek().is_some_and(|character| !character.is_ascii_digit()) {
+                text.push(chars.next().expect("peeked character exists"));
+            }
+            segments.push(NaturalSegment::Text(text));
+        }
+    }
+    segments
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NaturalSegment {
+    Text(String),
+    Number(u64),
 }
 
 fn create_playlist_in_transaction(
@@ -832,5 +1179,89 @@ mod tests {
         let error = rename_playlist_in_transaction(&tx, FAVORITES_PLAYLIST_ID, "Other", 2)
             .expect_err("favorites rename rejected");
         assert!(error.contains("cannot be renamed"));
+    }
+
+    #[test]
+    fn navigation_uses_sqlite_entries_with_natural_sort_and_loop_one() {
+        let mut conn = connection();
+        let tx = conn.transaction().expect("begin create");
+        let summary = create_playlist_in_transaction(&tx, "Navigation").expect("create playlist");
+        add_entries_in_transaction(
+            &tx,
+            &summary.id,
+            &[
+                PreparedPlaylistEntry { path: "/track10.mp4".to_string(), added_at: 3, ..Default::default() },
+                PreparedPlaylistEntry { path: "/track2.mp4".to_string(), added_at: 2, ..Default::default() },
+                PreparedPlaylistEntry { path: "/track1.mp4".to_string(), added_at: 1, ..Default::default() },
+            ],
+            1,
+        )
+        .expect("add entries");
+        tx.commit().expect("commit entries");
+
+        let context = PlaylistNavigationContext {
+            active_playlist_id: Some(summary.id.clone()),
+            playback_playlist_id: None,
+            loop_mode: PlaylistLoopMode::List,
+            sort_mode: PlaylistSortMode::Name,
+            is_loop_one: false,
+        };
+        let result = resolve_navigation_from_connection(
+            &conn,
+            "/track1.mp4",
+            1,
+            &context,
+            false,
+        )
+        .expect("resolve navigation")
+        .expect("next item");
+        assert_eq!(result.path, "/track2.mp4");
+        assert_eq!(result.playlist_id, summary.id);
+
+        let loop_one = PlaylistNavigationContext { is_loop_one: true, ..context };
+        assert!(resolve_navigation_from_connection(
+            &conn,
+            "/track1.mp4",
+            1,
+            &loop_one,
+            true,
+        )
+        .expect("resolve eof navigation")
+        .is_none());
+    }
+
+    #[test]
+    fn added_navigation_reads_only_the_adjacent_entry_and_wraps() {
+        let mut conn = connection();
+        let tx = conn.transaction().expect("begin create");
+        let summary = create_playlist_in_transaction(&tx, "Added navigation").expect("create playlist");
+        add_entries_in_transaction(
+            &tx,
+            &summary.id,
+            &[
+                PreparedPlaylistEntry { path: "/newest.mp4".to_string(), added_at: 30, ..Default::default() },
+                PreparedPlaylistEntry { path: "/middle.mp4".to_string(), added_at: 20, ..Default::default() },
+                PreparedPlaylistEntry { path: "/oldest.mp4".to_string(), added_at: 10, ..Default::default() },
+            ],
+            1,
+        )
+        .expect("add entries");
+        tx.commit().expect("commit entries");
+        let context = PlaylistNavigationContext {
+            active_playlist_id: Some(summary.id),
+            playback_playlist_id: None,
+            loop_mode: PlaylistLoopMode::List,
+            sort_mode: PlaylistSortMode::Added,
+            is_loop_one: false,
+        };
+
+        let next = resolve_navigation_from_connection(&conn, "/newest.mp4", 1, &context, false)
+            .expect("resolve next")
+            .expect("next entry");
+        assert_eq!(next.path, "/middle.mp4");
+        let wrapped = resolve_navigation_from_connection(&conn, "/oldest.mp4", 1, &context, false)
+            .expect("resolve wrapped next")
+            .expect("wrapped entry");
+        assert_eq!(wrapped.path, "/newest.mp4");
     }
 }

@@ -444,46 +444,27 @@ pub fn reset_ui_state(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Load playlist/navigation state from persistence for Core's NavigationService.
-/// Returns the navigation state that Core needs to resolve previous/next without
-/// depending on the Desktop Vue application being mounted.
+/// Load compact navigation preferences. Playlist entries stay in SQLite and are queried by
+/// PlaylistService at navigation execution time.
 pub fn load_navigation_state(
     app: &tauri::AppHandle,
 ) -> Result<crate::core::navigation::NavigationState, String> {
     let path = ui_state_file_path(app)?;
     let legacy_path = legacy_ui_state_file_path(app)?;
     let ui_state = load_state_from_disk(&path, &legacy_path)?;
-    let state = playlist_store::load_state(app)?;
+    let preferences = playlist_store::load_navigation_preferences(app)?;
 
-    let playlists = state
-        .playlists
-        .into_iter()
-        .map(|pl| crate::core::navigation::Playlist {
-            id: pl.id,
-            entries: pl
-                .entries
-                .into_iter()
-                .map(|e| crate::core::navigation::PlaylistEntry {
-                    path: e.path,
-                    title: e.title,
-                    added_at: e.added_at as f64,
-                })
-                .collect(),
-        })
-        .collect();
-
-    let loop_mode = match state.playlist_loop_mode.as_deref() {
+    let loop_mode = match preferences.playlist_loop_mode.as_deref() {
         Some("shuffle") => crate::core::navigation::LoopMode::Shuffle,
         _ => crate::core::navigation::LoopMode::List,
     };
 
-    let sort_mode = match state.playlist_sort_mode.as_deref() {
+    let sort_mode = match preferences.playlist_sort_mode.as_deref() {
         Some("name") => crate::core::navigation::SortMode::Name,
         _ => crate::core::navigation::SortMode::Added,
     };
 
     Ok(crate::core::navigation::NavigationState {
-        playlists,
         active_playlist_id: ui_state.active_playlist_id,
         playback_playlist_id: None,
         loop_mode,

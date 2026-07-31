@@ -1,9 +1,8 @@
 import { watch, type Ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { Playlist, PlaylistLoopMode, PlaylistSortMode } from "../types/playlist";
+import type { PlaylistLoopMode, PlaylistSortMode } from "../types/playlist";
 
 type NavigationStateSyncOptions = {
-    playlists: Ref<Playlist[]>;
     activePlaylistId: Ref<string | null>;
     loopMode: Ref<PlaylistLoopMode>;
     sortMode: Ref<PlaylistSortMode>;
@@ -11,7 +10,6 @@ type NavigationStateSyncOptions = {
 };
 
 type NavigationStatePayload = {
-    playlists: { id: string; entries: { path: string; title?: string; addedAt: number }[] }[];
     activePlaylistId: string | null;
     playbackPlaylistId: string | null;
     loopMode: "list" | "shuffle";
@@ -20,12 +18,10 @@ type NavigationStatePayload = {
 };
 
 /**
- * Syncs playlist/navigation state from the frontend to Rust Core.
- * Core uses this state to resolve previous/next navigation without requiring
- * the Desktop Vue application as an intermediary.
+ * Syncs only compact UI navigation preferences. Rust Core resolves playlist
+ * entries from SQLite at command execution time.
  */
 export const useNavigationStateSync = ({
-    playlists,
     activePlaylistId,
     loopMode,
     sortMode,
@@ -33,14 +29,6 @@ export const useNavigationStateSync = ({
 }: NavigationStateSyncOptions) => {
     const syncToCore = () => {
         const payload: NavigationStatePayload = {
-            playlists: playlists.value.map((pl) => ({
-                id: pl.id,
-                entries: pl.entries.map((entry) => ({
-                    path: entry.path,
-                    title: entry.title,
-                    addedAt: entry.addedAt,
-                })),
-            })),
             activePlaylistId: activePlaylistId.value,
             playbackPlaylistId: null,
             loopMode: loopMode.value,
@@ -54,7 +42,7 @@ export const useNavigationStateSync = ({
     };
 
     watch(
-        [playlists, activePlaylistId, loopMode, sortMode, isLoopOne],
+        [activePlaylistId, loopMode, sortMode, isLoopOne],
         syncToCore,
         { deep: true, immediate: true },
     );

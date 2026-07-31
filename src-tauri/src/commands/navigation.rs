@@ -172,10 +172,18 @@ async fn execute_direction(
         }
     }
 
-    // Step 1: Try playlist resolution (synchronous)
+    // Step 1: resolve playlist navigation from the SQLite authority. NavigationService supplies
+    // only the current UI/runtime context; it no longer supplies playlist entries for this path.
+    let playlist_context = state.navigation_service.playlist_navigation_context();
     let playlist_result = state
-        .navigation_service
-        .resolve_playlist_path(&current_key, direction);
+        .playlist_service
+        .resolve_navigation(app, &current_key, direction, &playlist_context, false)
+        .map_err(|message| CoreErrorDto::NavigationFailed { message })?;
+    if let Some(result) = &playlist_result {
+        state
+            .navigation_service
+            .set_playback_playlist_id(Some(result.playlist_id.clone()));
+    }
 
     // Step 2: Fallback to directory adjacency if no playlist match
     let (target_key, title) = if let Some(nav_result) = playlist_result {
@@ -203,8 +211,13 @@ async fn execute_direction(
         match adjacent {
             Some(source) => {
                 let title = state
-                    .navigation_service
-                    .get_title_for_path(&source.playback_key)
+                    .playlist_service
+                    .title_for_path(
+                        app,
+                        &source.playback_key,
+                        &state.navigation_service.playlist_navigation_context(),
+                    )
+                    .unwrap_or(None)
                     .or(source.title);
                 (source.playback_key, title)
             }
@@ -296,8 +309,23 @@ pub(crate) async fn handle_end_of_file(
         }
     }
 
-    // Try playlist resolution for end-of-track (respects loop-one)
-    let playlist_result = state.navigation_service.resolve_path_for_end(ended_key);
+    // Resolve from the SQLite playlist authority (including loop-one semantics).
+    let playlist_context = state.navigation_service.playlist_navigation_context();
+    let playlist_result = match state
+        .playlist_service
+        .resolve_navigation(app, ended_key, 1, &playlist_context, true)
+    {
+        Ok(result) => result,
+        Err(error) => {
+            log::warn!("failed to resolve playlist EOF navigation: {error}");
+            None
+        }
+    };
+    if let Some(result) = &playlist_result {
+        state
+            .navigation_service
+            .set_playback_playlist_id(Some(result.playlist_id.clone()));
+    }
 
     let (target_key, title) = if let Some(nav_result) = playlist_result {
         (nav_result.path, nav_result.title)
@@ -313,8 +341,13 @@ pub(crate) async fn handle_end_of_file(
         match adjacent {
             Some(source) => {
                 let title = state
-                    .navigation_service
-                    .get_title_for_path(&source.playback_key)
+                    .playlist_service
+                    .title_for_path(
+                        app,
+                        &source.playback_key,
+                        &state.navigation_service.playlist_navigation_context(),
+                    )
+                    .unwrap_or(None)
                     .or(source.title);
                 (source.playback_key, title)
             }

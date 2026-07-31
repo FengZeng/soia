@@ -37,6 +37,7 @@ pub struct AppState {
     pub(crate) playback_service: core::playback_service::PlaybackService,
     pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
     pub(crate) navigation_service: core::navigation::NavigationService,
+    pub(crate) playlist_service: core::playlist_service::PlaylistService,
     pub(crate) shader_pipeline: shader_pipeline::ShaderPipeline,
 }
 
