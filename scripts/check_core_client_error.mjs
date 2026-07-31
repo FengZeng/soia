@@ -33,6 +33,18 @@ try {
     toCoreClientTransportError(coreError, "fallback"),
     { type: "core", error: coreError },
   );
+  const playlistConflict = {
+    type: "playlistVersionConflict",
+    message: "playlist changed",
+    entityType: "playlist",
+    entityId: "pl-1",
+    expectedRevision: 4,
+    currentRevision: 5,
+  };
+  assert.deepEqual(
+    toCoreClientTransportError(playlistConflict, "fallback"),
+    { type: "core", error: playlistConflict },
+  );
   assert.deepEqual(
     toCoreClientTransportError(new Error("Tauri unavailable"), "fallback"),
     { type: "transport", message: "Tauri unavailable" },

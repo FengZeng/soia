@@ -49,3 +49,4 @@ src-tauri/libs/mpv/MoltenVK_icd.json
 src-tauri/libs/mpv/android/**/*.so
 
 src-tauri/gen/android
+src-tauri/protocol/bindings/

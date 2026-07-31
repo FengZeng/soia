@@ -6,6 +6,10 @@ const coreErrorTypes = new Set<CoreErrorDto["type"]>([
     "executionFailed",
     "navigationFailed",
     "stalePlaybackSession",
+    "playlistNotFound",
+    "invalidPlaylistMutation",
+    "protectedPlaylist",
+    "playlistVersionConflict",
 ]);
 
 const errorMessage = (error: unknown, fallback: string) => {
