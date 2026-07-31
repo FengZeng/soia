@@ -5,13 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 pub const MAX_PLAY_HISTORY: i64 = 100;
-const SCHEMA_VERSION: i32 = 3;
-
-struct PreservedInstallationState {
-    install_id: String,
-    device_id: String,
-    install_id_updated_at: i64,
-}
+const SCHEMA_VERSION: i32 = 4;
 
 pub fn now_millis() -> i64 {
     Utc::now().timestamp_millis()
@@ -65,25 +59,24 @@ fn ensure_schema(conn: &mut Connection) -> Result<(), String> {
 
     if version == 2 {
         migrate_schema_v2_to_v3(conn)?;
+        migrate_schema_v3_to_v4(conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+            .map_err(|e| e.to_string())?;
+    } else if version == 3 {
+        migrate_schema_v3_to_v4(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
     } else if version != SCHEMA_VERSION {
         warn!("media db schema version mismatch: found={version}, expected={SCHEMA_VERSION}");
-        let preserved_installation = if is_brand_new_db {
-            info!("media db: initializing new database");
-            None
-        } else {
-            Some(read_existing_installation_state(conn)?.ok_or_else(|| {
-                "Refusing to rebuild existing media.db without an installation UUID".to_string()
-            })?)
-        };
+        if !is_brand_new_db {
+            return Err(format!(
+                "Unsupported media.db schema version {version}; refusing to rebuild an existing database"
+            ));
+        }
+        info!("media db: initializing new database");
 
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         reset_schema(&tx)?;
-        if let Some(state) = preserved_installation {
-            restore_installation_state(&tx, &state)?;
-            info!("media db: preserved installation UUID during schema rebuild");
-        }
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -92,6 +85,7 @@ fn ensure_schema(conn: &mut Connection) -> Result<(), String> {
     ensure_installation_state(conn, is_brand_new_db)?;
     ensure_local_device_record(conn)?;
     ensure_sync_state_rows(conn)?;
+    ensure_playlist_state(conn)?;
     Ok(())
 }
 
@@ -105,6 +99,8 @@ fn has_known_media_tables(conn: &Connection) -> Result<bool, String> {
                    'app_installation_state',
                    'sync_devices',
                    'sync_accounts',
+                   'playlists',
+                   'playlist_state',
                    'playlist_entries',
                    'play_history',
                    'sync_state',
@@ -117,79 +113,12 @@ fn has_known_media_tables(conn: &Connection) -> Result<bool, String> {
     Ok(count > 0)
 }
 
-fn read_existing_installation_state(
-    conn: &Connection,
-) -> Result<Option<PreservedInstallationState>, String> {
-    let has_table = conn
-        .query_row(
-            "SELECT 1
-             FROM sqlite_master
-             WHERE type = 'table' AND name = 'app_installation_state'",
-            [],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .is_some();
-    if !has_table {
-        return Ok(None);
-    }
-
-    conn.query_row(
-        "SELECT install_id, device_id, install_id_updated_at
-         FROM app_installation_state
-         WHERE singleton = 1",
-        [],
-        |row| {
-            Ok(PreservedInstallationState {
-                install_id: row.get(0)?,
-                device_id: row.get(1)?,
-                install_id_updated_at: row.get(2)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| e.to_string())
-}
-
-fn restore_installation_state(
-    conn: &Connection,
-    state: &PreservedInstallationState,
-) -> Result<(), String> {
-    let now = now_millis();
-    conn.execute(
-        "INSERT INTO app_installation_state (
-             singleton,
-             install_id,
-             device_id,
-             install_id_updated_at,
-             uuid_update_data,
-             updated_at
-         )
-         VALUES (1, ?1, ?2, ?3, '{}', ?4)
-         ON CONFLICT(singleton) DO NOTHING",
-        params![
-            validate_uuid(&state.install_id)?,
-            validate_uuid(&state.device_id)?,
-            state.install_id_updated_at,
-            now
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn validate_uuid(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    Uuid::parse_str(trimmed)
-        .map(|_| trimmed.to_string())
-        .map_err(|_| "Refusing to restore an invalid installation UUID".to_string())
-}
-
 fn reset_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS sync_tombstones;
          DROP TABLE IF EXISTS sync_state;
+         DROP TABLE IF EXISTS playlist_state;
+         DROP TABLE IF EXISTS playlists;
          DROP TABLE IF EXISTS playlist_entries;
          DROP TABLE IF EXISTS play_history;
          DROP TABLE IF EXISTS app_installation_state;
@@ -226,10 +155,36 @@ fn reset_schema(conn: &Connection) -> Result<(), String> {
          CREATE INDEX idx_sync_devices_account
          ON sync_devices(account_id);
 
+         CREATE TABLE playlists (
+             id TEXT PRIMARY KEY,
+             name TEXT NOT NULL,
+             created_at INTEGER NOT NULL,
+             updated_at INTEGER NOT NULL,
+             order_index INTEGER NOT NULL,
+             revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+             is_protected INTEGER NOT NULL DEFAULT 0 CHECK (is_protected IN (0, 1))
+         ) STRICT;
+
+         CREATE INDEX idx_playlists_order
+         ON playlists(order_index ASC, created_at ASC);
+
+         CREATE TABLE playlist_state (
+             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+             collection_revision INTEGER NOT NULL DEFAULT 1 CHECK (collection_revision > 0),
+             playback_playlist_id TEXT,
+             loop_mode TEXT NOT NULL DEFAULT 'list' CHECK (loop_mode IN ('list', 'shuffle')),
+             sort_mode TEXT NOT NULL DEFAULT 'added' CHECK (sort_mode IN ('name', 'added')),
+             is_loop_one INTEGER NOT NULL DEFAULT 0 CHECK (is_loop_one IN (0, 1)),
+             updated_at INTEGER NOT NULL,
+             FOREIGN KEY(playback_playlist_id) REFERENCES playlists(id) ON DELETE SET NULL
+         ) STRICT;
+
          CREATE TABLE playlist_entries (
              id TEXT PRIMARY KEY,
              playlist_id TEXT NOT NULL DEFAULT 'default',
              path TEXT NOT NULL,
+             title TEXT,
+             artwork_ref TEXT,
              order_index INTEGER NOT NULL,
              added_at INTEGER NOT NULL,
              created_at INTEGER NOT NULL,
@@ -245,6 +200,9 @@ fn reset_schema(conn: &Connection) -> Result<(), String> {
 
          CREATE INDEX idx_playlist_entries_order
          ON playlist_entries(playlist_id, order_index ASC);
+
+         CREATE INDEX idx_playlist_entries_key
+         ON playlist_entries(playlist_id, path);
 
          CREATE INDEX idx_playlist_entries_sync
          ON playlist_entries(sync_status, updated_at ASC);
@@ -327,6 +285,111 @@ fn migrate_schema_v2_to_v3(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn migrate_schema_v3_to_v4(conn: &mut Connection) -> Result<(), String> {
+    let now = now_millis();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    if !table_has_column(&tx, "playlist_entries", "title")? {
+        tx.execute("ALTER TABLE playlist_entries ADD COLUMN title TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    if !table_has_column(&tx, "playlist_entries", "artwork_ref")? {
+        tx.execute("ALTER TABLE playlist_entries ADD COLUMN artwork_ref TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS playlists (
+             id TEXT PRIMARY KEY,
+             name TEXT NOT NULL,
+             created_at INTEGER NOT NULL,
+             updated_at INTEGER NOT NULL,
+             order_index INTEGER NOT NULL,
+             revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+             is_protected INTEGER NOT NULL DEFAULT 0 CHECK (is_protected IN (0, 1))
+         ) STRICT;
+
+         CREATE INDEX IF NOT EXISTS idx_playlists_order
+         ON playlists(order_index ASC, created_at ASC);
+
+         CREATE TABLE IF NOT EXISTS playlist_state (
+             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+             collection_revision INTEGER NOT NULL DEFAULT 1 CHECK (collection_revision > 0),
+             playback_playlist_id TEXT,
+             loop_mode TEXT NOT NULL DEFAULT 'list' CHECK (loop_mode IN ('list', 'shuffle')),
+             sort_mode TEXT NOT NULL DEFAULT 'added' CHECK (sort_mode IN ('name', 'added')),
+             is_loop_one INTEGER NOT NULL DEFAULT 0 CHECK (is_loop_one IN (0, 1)),
+             updated_at INTEGER NOT NULL,
+             FOREIGN KEY(playback_playlist_id) REFERENCES playlists(id) ON DELETE SET NULL
+         ) STRICT;
+
+         CREATE INDEX IF NOT EXISTS idx_playlist_entries_key
+         ON playlist_entries(playlist_id, path);",
+    )
+    .map_err(|e| e.to_string())?;
+    if !table_has_column(&tx, "playlists", "updated_at")? {
+        tx.execute(
+            "ALTER TABLE playlists ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if !table_has_column(&tx, "playlist_state", "updated_at")? {
+        tx.execute(
+            "ALTER TABLE playlist_state ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let has_default_entries: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlist_entries WHERE playlist_id = 'default')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if has_default_entries {
+        let default_order_index: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(order_index), -1) + 1 FROM playlists",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO playlists (
+                 id, name, created_at, updated_at, order_index, revision, is_protected
+             ) VALUES ('default', 'Playlist', ?1, ?1, ?2, 1, 0)
+             ON CONFLICT(id) DO NOTHING",
+            params![now, default_order_index],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.execute(
+        "INSERT INTO playlist_state (
+             singleton, collection_revision, loop_mode, sort_mode, is_loop_one, updated_at
+         ) VALUES (1, 1, 'list', 'added', 0, ?1)
+         ON CONFLICT(singleton) DO NOTHING",
+        [now],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut statement = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    for name in columns {
+        if name.map_err(|e| e.to_string())? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn ensure_installation_state(conn: &Connection, allow_create: bool) -> Result<(), String> {
@@ -430,6 +493,18 @@ fn ensure_sync_state_rows(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_playlist_state(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO playlist_state (
+             singleton, collection_revision, loop_mode, sort_mode, is_loop_one, updated_at
+         ) VALUES (1, 1, 'list', 'added', 0, ?1)
+         ON CONFLICT(singleton) DO NOTHING",
+        [now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn local_device_name() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
@@ -473,10 +548,167 @@ mod tests {
             .expect("read installation state");
         Uuid::parse_str(&install_id).expect("valid install id");
         Uuid::parse_str(&device_id).expect("valid device id");
+
+        let state_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM playlist_state WHERE singleton = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read playlist state");
+        assert_eq!(state_count, 1);
     }
 
     #[test]
-    fn schema_rebuild_preserves_existing_installation_state() {
+    fn schema_v3_migration_preserves_default_playlist_entries() {
+        let mut conn = memory_conn();
+        conn.execute_batch(
+            "CREATE TABLE playlist_entries (
+                 id TEXT PRIMARY KEY,
+                 playlist_id TEXT NOT NULL DEFAULT 'default',
+                 path TEXT NOT NULL,
+                 order_index INTEGER NOT NULL,
+                 added_at INTEGER NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 record_version INTEGER NOT NULL DEFAULT 1,
+                 last_modified_by_device_id TEXT NOT NULL,
+                 sync_status INTEGER NOT NULL DEFAULT 0,
+                 remote_record_id TEXT,
+                 remote_updated_at INTEGER,
+                 UNIQUE(playlist_id, path),
+                 UNIQUE(playlist_id, order_index)
+             ) STRICT;
+             CREATE INDEX idx_playlist_entries_order
+             ON playlist_entries(playlist_id, order_index ASC);",
+        )
+        .expect("create v3 playlist entries");
+        conn.execute(
+            "INSERT INTO playlist_entries (
+                 id, playlist_id, path, order_index, added_at, created_at, updated_at,
+                 record_version, last_modified_by_device_id, sync_status
+             ) VALUES ('entry-1', 'default', '/media/one.mp4', 0, 1, 1, 1, 1, 'device-1', 0)",
+            [],
+        )
+        .expect("insert v3 playlist entry");
+
+        migrate_schema_v3_to_v4(&mut conn).expect("migrate v3 schema");
+        migrate_schema_v3_to_v4(&mut conn).expect("resume partially applied v3 migration");
+
+        let (path, title, artwork_ref): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT path, title, artwork_ref FROM playlist_entries WHERE id = 'entry-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated entry");
+        assert_eq!(path, "/media/one.mp4");
+        assert_eq!(title, None);
+        assert_eq!(artwork_ref, None);
+
+        let default_playlist_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM playlists WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read default playlist");
+        assert_eq!(default_playlist_count, 1);
+
+        let collection_revision: i64 = conn
+            .query_row(
+                "SELECT collection_revision FROM playlist_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read playlist state");
+        assert_eq!(collection_revision, 1);
+    }
+
+    #[test]
+    fn schema_v3_migration_resumes_legacy_playlist_tables() {
+        let mut conn = memory_conn();
+        conn.execute_batch(
+            "CREATE TABLE playlist_entries (
+                 id TEXT PRIMARY KEY,
+                 playlist_id TEXT NOT NULL DEFAULT 'default',
+                 path TEXT NOT NULL,
+                 order_index INTEGER NOT NULL,
+                 added_at INTEGER NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 record_version INTEGER NOT NULL DEFAULT 1,
+                 last_modified_by_device_id TEXT NOT NULL,
+                 sync_status INTEGER NOT NULL DEFAULT 0,
+                 remote_record_id TEXT,
+                 remote_updated_at INTEGER,
+                 UNIQUE(playlist_id, path),
+                 UNIQUE(playlist_id, order_index)
+             ) STRICT;
+             CREATE TABLE playlists (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 order_index INTEGER NOT NULL,
+                 revision INTEGER NOT NULL DEFAULT 1,
+                 is_protected INTEGER NOT NULL DEFAULT 0,
+                 UNIQUE(order_index)
+             ) STRICT;
+             CREATE TABLE playlist_state (
+                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 active_playlist_id TEXT,
+                 playback_playlist_id TEXT,
+                 loop_mode TEXT NOT NULL DEFAULT 'list',
+                 sort_mode TEXT NOT NULL DEFAULT 'added',
+                 is_loop_one INTEGER NOT NULL DEFAULT 0,
+                 collection_revision INTEGER NOT NULL DEFAULT 1
+             ) STRICT;
+             INSERT INTO playlist_state (
+                 singleton, loop_mode, sort_mode, is_loop_one, collection_revision
+             ) VALUES (1, 'list', 'added', 0, 7);
+             INSERT INTO playlists (
+                 id, name, created_at, order_index, revision, is_protected
+             ) VALUES ('favorites', 'Favorites', 1, 0, 1, 1);
+             INSERT INTO playlist_entries (
+                 id, playlist_id, path, order_index, added_at, created_at, updated_at,
+                 record_version, last_modified_by_device_id, sync_status
+             ) VALUES ('default-entry', 'default', '/media/default.mp4', 0, 1, 1, 1, 1, 'device-1', 0);",
+        )
+        .expect("create legacy playlist tables");
+
+        migrate_schema_v3_to_v4(&mut conn).expect("resume legacy playlist migration");
+
+        let (playlist_updated, state_updated): (i64, i64) = conn
+            .query_row(
+                "SELECT
+                     (SELECT COUNT(*) FROM pragma_table_info('playlists') WHERE name = 'updated_at'),
+                     (SELECT COUNT(*) FROM pragma_table_info('playlist_state') WHERE name = 'updated_at')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated columns");
+        assert_eq!(playlist_updated, 1);
+        assert_eq!(state_updated, 1);
+
+        let collection_revision: i64 = conn
+            .query_row(
+                "SELECT collection_revision FROM playlist_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserve collection state");
+        assert_eq!(collection_revision, 7);
+
+        let default_order_index: i64 = conn
+            .query_row(
+                "SELECT order_index FROM playlists WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated default playlist order");
+        assert_eq!(default_order_index, 1);
+    }
+
+    #[test]
+    fn unsupported_existing_schema_is_not_rebuilt() {
         let mut conn = memory_conn();
         reset_schema(&conn).expect("create old schema");
         conn.execute(
@@ -495,7 +727,11 @@ mod tests {
         conn.execute_batch("PRAGMA user_version = 1;")
             .expect("set old user version");
 
-        ensure_schema(&mut conn).expect("ensure schema");
+        let error = ensure_schema(&mut conn).expect_err("unsupported schema should fail");
+        assert!(
+            error.contains("refusing to rebuild an existing database"),
+            "unexpected error: {error}"
+        );
 
         let (install_id, device_id, install_id_updated_at): (String, String, i64) = conn
             .query_row(
@@ -505,14 +741,14 @@ mod tests {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .expect("read installation state");
+            .expect("read preserved installation state");
         assert_eq!(install_id, INSTALL_ID);
         assert_eq!(device_id, DEVICE_ID);
         assert_eq!(install_id_updated_at, 123);
     }
 
     #[test]
-    fn existing_db_without_installation_state_does_not_create_new_uuid() {
+    fn existing_db_without_installation_state_is_not_rebuilt() {
         let mut conn = memory_conn();
         reset_schema(&conn).expect("create old schema");
         conn.execute_batch("PRAGMA user_version = 1;")
@@ -520,7 +756,7 @@ mod tests {
 
         let error = ensure_schema(&mut conn).expect_err("ensure schema should fail");
         assert!(
-            error.contains("without an installation UUID"),
+            error.contains("refusing to rebuild an existing database"),
             "unexpected error: {error}"
         );
 
