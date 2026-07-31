@@ -126,6 +126,102 @@ impl PlaylistService {
         delete_playlist_in_transaction(&tx, playlist_id, expected_revision)?;
         tx.commit().map_err(|error| error.to_string())
     }
+
+    pub(crate) fn rename_playlist(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        name: &str,
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        rename_playlist_in_transaction(&tx, playlist_id, name, expected_revision)?;
+        let summary = playlist_summary_in_transaction(&tx, playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
+    pub(crate) fn add_entries(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        entries: &[PreparedPlaylistEntry],
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        add_entries_in_transaction(&tx, playlist_id, entries, expected_revision)?;
+        let summary = playlist_summary_in_transaction(&tx, playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
+    pub(crate) fn remove_entry(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        entry_id: &str,
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        remove_entry_in_transaction(&tx, playlist_id, entry_id, expected_revision)?;
+        let summary = playlist_summary_in_transaction(&tx, playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
+    pub(crate) fn clear_entries(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        clear_entries_in_transaction(&tx, playlist_id, expected_revision)?;
+        let summary = playlist_summary_in_transaction(&tx, playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
+    pub(crate) fn reorder_entries(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        entry_ids: &[String],
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        reorder_entries_in_transaction(&tx, playlist_id, entry_ids, expected_revision)?;
+        let summary = playlist_summary_in_transaction(&tx, playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
+    pub(crate) fn move_entry(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        entry_id: &str,
+        target_index: u32,
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        move_entry_in_transaction(&tx, playlist_id, entry_id, target_index, expected_revision)?;
+        let summary = playlist_summary_in_transaction(&tx, playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
 }
 
 fn list_summaries_from_connection(conn: &Connection) -> Result<Vec<PlaylistSummary>, String> {
@@ -271,6 +367,219 @@ fn delete_playlist_in_transaction(
     tx.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])
         .map_err(|error| error.to_string())?;
     bump_collection_revision(tx)
+}
+
+fn rename_playlist_in_transaction(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    name: &str,
+    expected_revision: i64,
+) -> Result<(), String> {
+    let playlist_id = require_editable_playlist(tx, playlist_id, expected_revision)?;
+    tx.execute(
+        "UPDATE playlists SET name = ?2 WHERE id = ?1",
+        params![playlist_id, normalized_name(name)?],
+    )
+    .map_err(|error| error.to_string())?;
+    finish_playlist_mutation(tx, &playlist_id)
+}
+
+fn add_entries_in_transaction(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    entries: &[PreparedPlaylistEntry],
+    expected_revision: i64,
+) -> Result<(), String> {
+    let playlist_id = require_playlist_revision(tx, playlist_id, expected_revision)?;
+    let mut seen_paths = HashSet::new();
+    let mut order_index: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(order_index) + 1, 0) FROM playlist_entries WHERE playlist_id = ?1",
+            [&playlist_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let now = media_db::now_millis();
+    for entry in entries {
+        let path = entry.path.trim();
+        if path.is_empty() || !seen_paths.insert(path.to_string()) {
+            continue;
+        }
+        let inserted = tx.execute(
+            "INSERT INTO playlist_entries (
+                 id, playlist_id, path, title, artwork_ref, order_index, added_at,
+                 created_at, updated_at, record_version, last_modified_by_device_id, sync_status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1, 'playlist-service', 0)
+             ON CONFLICT(playlist_id, path) DO NOTHING",
+            params![
+                media_db::new_uuid(), &playlist_id, path, non_empty(entry.title.as_deref()),
+                non_empty(entry.artwork_ref.as_deref()), order_index, entry.added_at, now,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        if inserted != 0 {
+            order_index += 1;
+        }
+    }
+    finish_playlist_mutation(tx, &playlist_id)
+}
+
+fn remove_entry_in_transaction(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    entry_id: &str,
+    expected_revision: i64,
+) -> Result<(), String> {
+    let playlist_id = require_playlist_revision(tx, playlist_id, expected_revision)?;
+    let entry_id = normalized_id(entry_id)?;
+    let deleted = tx
+        .execute(
+            "DELETE FROM playlist_entries WHERE playlist_id = ?1 AND id = ?2",
+            params![&playlist_id, entry_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if deleted == 0 {
+        return Err("playlist entry not found".to_string());
+    }
+    compact_entry_order(tx, &playlist_id)?;
+    finish_playlist_mutation(tx, &playlist_id)
+}
+
+fn clear_entries_in_transaction(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    expected_revision: i64,
+) -> Result<(), String> {
+    let playlist_id = require_playlist_revision(tx, playlist_id, expected_revision)?;
+    tx.execute("DELETE FROM playlist_entries WHERE playlist_id = ?1", [&playlist_id])
+        .map_err(|error| error.to_string())?;
+    finish_playlist_mutation(tx, &playlist_id)
+}
+
+fn reorder_entries_in_transaction(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    entry_ids: &[String],
+    expected_revision: i64,
+) -> Result<(), String> {
+    let playlist_id = require_playlist_revision(tx, playlist_id, expected_revision)?;
+    let current_ids = entry_ids_in_order(tx, &playlist_id)?;
+    if entry_ids.len() != current_ids.len()
+        || entry_ids.iter().collect::<HashSet<_>>().len() != entry_ids.len()
+        || entry_ids.iter().collect::<HashSet<_>>() != current_ids.iter().collect::<HashSet<_>>()
+    {
+        return Err("entry reorder must contain every playlist entry exactly once".to_string());
+    }
+    apply_entry_order(tx, &playlist_id, entry_ids)?;
+    finish_playlist_mutation(tx, &playlist_id)
+}
+
+fn move_entry_in_transaction(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    entry_id: &str,
+    target_index: u32,
+    expected_revision: i64,
+) -> Result<(), String> {
+    let playlist_id = require_playlist_revision(tx, playlist_id, expected_revision)?;
+    let entry_id = normalized_id(entry_id)?;
+    let mut entry_ids = entry_ids_in_order(tx, &playlist_id)?;
+    let Some(current_index) = entry_ids.iter().position(|id| id == &entry_id) else {
+        return Err("playlist entry not found".to_string());
+    };
+    let entry_id = entry_ids.remove(current_index);
+    let target_index = (target_index as usize).min(entry_ids.len());
+    entry_ids.insert(target_index, entry_id);
+    apply_entry_order(tx, &playlist_id, &entry_ids)?;
+    finish_playlist_mutation(tx, &playlist_id)
+}
+
+fn apply_entry_order(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    entry_ids: &[String],
+) -> Result<(), String> {
+    // A temporary negative range avoids the UNIQUE(playlist_id, order_index) collision while
+    // shifting a large list; this remains one database transaction.
+    for (index, entry_id) in entry_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE playlist_entries SET order_index = ?3 WHERE playlist_id = ?1 AND id = ?2",
+            params![&playlist_id, entry_id, -(index as i64) - 1],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    for (index, entry_id) in entry_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE playlist_entries SET order_index = ?3, updated_at = ?4,
+                 record_version = record_version + 1, last_modified_by_device_id = 'playlist-service',
+                 sync_status = 1 WHERE playlist_id = ?1 AND id = ?2",
+            params![&playlist_id, entry_id, index as i64, media_db::now_millis()],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn require_editable_playlist(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    expected_revision: i64,
+) -> Result<String, String> {
+    let playlist_id = require_playlist_revision(tx, playlist_id, expected_revision)?;
+    if playlist_id == FAVORITES_PLAYLIST_ID {
+        return Err("favorites playlist cannot be renamed".to_string());
+    }
+    let is_protected: i64 = tx
+        .query_row("SELECT is_protected FROM playlists WHERE id = ?1", [&playlist_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if is_protected != 0 {
+        return Err("protected playlist cannot be renamed".to_string());
+    }
+    Ok(playlist_id)
+}
+
+fn require_playlist_revision(
+    tx: &Transaction<'_>,
+    playlist_id: &str,
+    expected_revision: i64,
+) -> Result<String, String> {
+    let playlist_id = normalized_id(playlist_id)?;
+    let revision: Option<i64> = tx
+        .query_row("SELECT revision FROM playlists WHERE id = ?1", [&playlist_id], |row| row.get(0))
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(revision) = revision else {
+        return Err("playlist not found".to_string());
+    };
+    if revision != expected_revision {
+        return Err(format!("playlist revision conflict: expected {expected_revision}, found {revision}"));
+    }
+    Ok(playlist_id)
+}
+
+fn finish_playlist_mutation(tx: &Transaction<'_>, playlist_id: &str) -> Result<(), String> {
+    bump_playlist_revision(tx, playlist_id)?;
+    bump_collection_revision(tx)
+}
+
+fn compact_entry_order(tx: &Transaction<'_>, playlist_id: &str) -> Result<(), String> {
+    let entry_ids = entry_ids_in_order(tx, playlist_id)?;
+    apply_entry_order(tx, playlist_id, &entry_ids)
+}
+
+fn entry_ids_in_order(tx: &Transaction<'_>, playlist_id: &str) -> Result<Vec<String>, String> {
+    let mut statement = tx
+        .prepare(
+            "SELECT id FROM playlist_entries WHERE playlist_id = ?1
+             ORDER BY order_index ASC, added_at ASC, id ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let entry_ids = statement
+        .query_map([playlist_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(entry_ids)
 }
 
 fn playlist_summary_in_transaction(
@@ -445,5 +754,83 @@ mod tests {
         let error = delete_playlist_in_transaction(&tx, FAVORITES_PLAYLIST_ID, 1)
             .expect_err("favorites are protected");
         assert!(error.contains("cannot be deleted"));
+    }
+
+    #[test]
+    fn entry_mutations_are_revision_checked_and_keep_order_compact() {
+        let mut conn = connection();
+        let tx = conn.transaction().expect("begin create");
+        let summary = create_playlist_in_transaction(&tx, "Editable").expect("create playlist");
+        add_entries_in_transaction(
+            &tx,
+            &summary.id,
+            &[
+                PreparedPlaylistEntry { path: "one".to_string(), added_at: 1, ..Default::default() },
+                PreparedPlaylistEntry { path: "two".to_string(), added_at: 2, ..Default::default() },
+                PreparedPlaylistEntry { path: "three".to_string(), added_at: 3, ..Default::default() },
+            ],
+            1,
+        )
+        .expect("add entries");
+        tx.commit().expect("commit entries");
+
+        let entries = list_entries_from_connection(&conn, &summary.id, 0, 10).expect("read entries");
+        let reordered = vec![
+            entries.entries[2].id.clone(),
+            entries.entries[0].id.clone(),
+            entries.entries[1].id.clone(),
+        ];
+        let tx = conn.transaction().expect("begin reorder");
+        reorder_entries_in_transaction(&tx, &summary.id, &reordered, 2).expect("reorder entries");
+        tx.commit().expect("commit reorder");
+
+        let entries = list_entries_from_connection(&conn, &summary.id, 0, 10).expect("read reordered entries");
+        assert_eq!(
+            entries.entries.iter().map(|entry| entry.path.as_str()).collect::<Vec<_>>(),
+            vec!["three", "one", "two"]
+        );
+        let tx = conn.transaction().expect("begin remove");
+        remove_entry_in_transaction(&tx, &summary.id, &reordered[1], 3).expect("remove entry");
+        tx.commit().expect("commit remove");
+
+        let entries = list_entries_from_connection(&conn, &summary.id, 0, 10).expect("read compacted entries");
+        assert_eq!(entries.entries.len(), 2);
+        assert_eq!(entries.entries[0].order_index, 0);
+        assert_eq!(entries.entries[1].order_index, 1);
+        let tx = conn.transaction().expect("begin move");
+        move_entry_in_transaction(&tx, &summary.id, &entries.entries[1].id, 0, 4)
+            .expect("move entry");
+        tx.commit().expect("commit move");
+        let entries = list_entries_from_connection(&conn, &summary.id, 0, 10).expect("read moved entries");
+        assert_eq!(entries.entries[0].path, "two");
+        let tx = conn.transaction().expect("begin stale rename");
+        let error = rename_playlist_in_transaction(&tx, &summary.id, "Renamed", 4)
+            .expect_err("stale revision should fail");
+        assert!(error.contains("revision conflict"));
+    }
+
+    #[test]
+    fn favorites_allow_entry_edits_but_not_rename() {
+        let mut conn = connection();
+        conn.execute(
+            "INSERT INTO playlists (id, name, created_at, updated_at, order_index, revision, is_protected)
+             VALUES ('favorites', 'Favorites', 1, 1, 0, 1, 1)",
+            [],
+        )
+        .expect("insert favorites");
+        let tx = conn.transaction().expect("begin entry add");
+        add_entries_in_transaction(
+            &tx,
+            FAVORITES_PLAYLIST_ID,
+            &[PreparedPlaylistEntry { path: "favorite-item".to_string(), added_at: 1, ..Default::default() }],
+            1,
+        )
+        .expect("favorites allow entries");
+        tx.commit().expect("commit entry add");
+
+        let tx = conn.transaction().expect("begin rename");
+        let error = rename_playlist_in_transaction(&tx, FAVORITES_PLAYLIST_ID, "Other", 2)
+            .expect_err("favorites rename rejected");
+        assert!(error.contains("cannot be renamed"));
     }
 }
