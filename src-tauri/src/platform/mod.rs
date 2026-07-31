@@ -265,6 +265,21 @@ pub(crate) fn enforce_native_pip_aspect(
     }
 }
 
+pub(crate) async fn prepare_window_for_fullscreen(
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return windows::prepare_window_for_fullscreen(window).await;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        Ok(false)
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_mpv_metal_layer_geometry(window: &tauri::WebviewWindow, utils: usize) {
     macos::sync_mpv_metal_layer_geometry(window, utils);

@@ -562,6 +562,7 @@ pub fn run() {
             commands::window::apply_window_appearance,
             commands::window::set_window_vibrancy_visible,
             commands::window::sync_mpv_render_target,
+            commands::window::prepare_window_for_fullscreen,
             commands::platform::is_native_pip_enabled,
             commands::platform::set_native_pip_enabled,
             commands::playback::get_runtime_versions,

@@ -1,10 +1,16 @@
 #[cfg(target_os = "windows")]
 mod imp {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::sync::mpsc;
     use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
     use tauri::{Emitter, Manager};
+    use tokio::time::sleep;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
 
     const MAIN_WINDOW_LABEL: &str = "main";
+    const WINDOW_STATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+    const WINDOW_STATE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
     const PIP_DEFAULT_ASPECT: f64 = 16.0 / 9.0;
     const PIP_MIN_WIDTH: u32 = 300;
     const PIP_MAX_WIDTH: u32 = 720;
@@ -52,6 +58,36 @@ mod imp {
 
     fn as_i32(value: u32) -> i32 {
         i32::try_from(value).unwrap_or(i32::MAX)
+    }
+
+    fn is_native_window_maximized(window: &tauri::WebviewWindow) -> Result<bool, String> {
+        let handle = window.window_handle().map_err(|error| error.to_string())?;
+        let hwnd = match handle.as_raw() {
+            RawWindowHandle::Win32(handle) => handle.hwnd.get() as usize as *mut std::ffi::c_void,
+            _ => return Err("Main window does not expose a Win32 window handle".into()),
+        };
+        Ok(unsafe { IsZoomed(hwnd) != 0 })
+    }
+
+    async fn wait_for_window_to_unmaximize(window: &tauri::WebviewWindow) -> Result<(), String> {
+        let deadline = Instant::now() + WINDOW_STATE_SETTLE_TIMEOUT;
+        let mut settled_samples = 0;
+        loop {
+            let native_maximized = is_native_window_maximized(window)?;
+            let tauri_maximized = window.is_maximized().map_err(|error| error.to_string())?;
+            if !native_maximized && !tauri_maximized {
+                settled_samples += 1;
+                if settled_samples >= 2 {
+                    return Ok(());
+                }
+            } else {
+                settled_samples = 0;
+            }
+            if Instant::now() >= deadline {
+                return Err("Timed out waiting for the maximized window to restore".into());
+            }
+            sleep(WINDOW_STATE_POLL_INTERVAL).await;
+        }
     }
 
     fn current_aspect_ratio() -> f64 {
@@ -257,6 +293,25 @@ mod imp {
             .unwrap_or(false)
     }
 
+    pub(crate) async fn prepare_window_for_fullscreen(
+        window: tauri::WebviewWindow,
+    ) -> Result<bool, String> {
+        // Tauri updates its cached maximize flag from WM_SIZE, which can lag
+        // behind the real Win32 state during a maximize/restore transition.
+        let was_maximized =
+            is_native_window_maximized(&window)? || window.is_maximized().unwrap_or(false);
+        if !was_maximized {
+            return Ok(false);
+        }
+
+        window.unmaximize().map_err(|error| error.to_string())?;
+        if let Err(error) = wait_for_window_to_unmaximize(&window).await {
+            let _ = window.maximize();
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     pub(crate) fn set_native_pip_enabled(
         app_handle: &tauri::AppHandle,
         enabled: bool,
@@ -329,5 +384,5 @@ mod imp {
 #[cfg(target_os = "windows")]
 pub(crate) use imp::{
     enforce_native_pip_aspect, is_native_pip_enabled, set_native_pip_enabled,
-    update_native_pip_state,
+    prepare_window_for_fullscreen, update_native_pip_state,
 };

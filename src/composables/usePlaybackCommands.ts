@@ -18,6 +18,7 @@ type PlayerEffectState = {
 
 type CurrentWindow = {
   isFullscreen: () => Promise<boolean>;
+  maximize: () => Promise<void>;
   setFullscreen: (value: boolean) => Promise<void>;
 };
 
@@ -60,10 +61,12 @@ export const usePlaybackCommands = (
   state: PlayerEffectState,
   currentWindow: CurrentWindow,
   coreClient: CoreClient,
+  isWindowsPlatform = false,
 ) => {
   let lastAudibleVolume = 100;
   let volumeApplyQueue: Promise<void> = Promise.resolve();
   let volumeRequestId = 0;
+  let restoreMaximizedAfterFullscreen = false;
 
   const MEDIA_FILES_FILTER = [
     {
@@ -155,8 +158,36 @@ export const usePlaybackCommands = (
 
   const toggleFullscreen = async (): Promise<void> => {
     const isFull = await currentWindow.isFullscreen();
-    await currentWindow.setFullscreen(!isFull);
-    state.window.isFullscreen = !isFull;
+    if (isFull) {
+      const shouldRestoreMaximized = restoreMaximizedAfterFullscreen;
+      restoreMaximizedAfterFullscreen = false;
+      try {
+        await currentWindow.setFullscreen(false);
+      } catch (error) {
+        restoreMaximizedAfterFullscreen = shouldRestoreMaximized;
+        throw error;
+      }
+      state.window.isFullscreen = false;
+      if (shouldRestoreMaximized) {
+        await currentWindow.maximize();
+      }
+      return;
+    }
+
+    const wasMaximized =
+      isWindowsPlatform &&
+      (await invoke<boolean>("prepare_window_for_fullscreen"));
+    restoreMaximizedAfterFullscreen = wasMaximized;
+    try {
+      await currentWindow.setFullscreen(true);
+    } catch (error) {
+      restoreMaximizedAfterFullscreen = false;
+      if (wasMaximized) {
+        await currentWindow.maximize().catch(() => {});
+      }
+      throw error;
+    }
+    state.window.isFullscreen = true;
   };
 
   type MpvArg = string | number | boolean;
@@ -169,7 +200,17 @@ export const usePlaybackCommands = (
   };
 
   const syncFullscreen = async (): Promise<void> => {
-    state.window.isFullscreen = await currentWindow.isFullscreen();
+    const isFullscreen = await currentWindow.isFullscreen();
+    const exitedFullscreen = state.window.isFullscreen && !isFullscreen;
+    state.window.isFullscreen = isFullscreen;
+    if (
+      isWindowsPlatform &&
+      exitedFullscreen &&
+      restoreMaximizedAfterFullscreen
+    ) {
+      restoreMaximizedAfterFullscreen = false;
+      await currentWindow.maximize();
+    }
   };
 
   const syncMpvRenderTarget = async (): Promise<void> => {
