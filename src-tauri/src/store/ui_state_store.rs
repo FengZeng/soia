@@ -1,4 +1,4 @@
-use crate::store::{json_io, playback_store, storage_paths};
+use crate::store::{json_io, playlist_store, storage_paths};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -172,6 +172,8 @@ pub struct PlaylistEntry {
     pub path: String,
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
     pub added_at: i64,
 }
 
@@ -235,32 +237,93 @@ fn legacy_ui_state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> 
 fn strip_playlist(state: &UiState) -> UiState {
     let mut stripped = state.clone();
     stripped.playlist = None;
+    stripped.playlists = None;
+    stripped.playlist_loop_mode = None;
+    stripped.playlist_sort_mode = None;
     stripped
 }
 
-fn from_default_playlist_entries(
-    entries: Vec<playback_store::DefaultPlaylistEntry>,
-) -> Vec<PlaylistEntry> {
-    entries
+fn playlist_state_from_ui(state: &UiState) -> Option<playlist_store::PlaylistPersistenceState> {
+    let has_playlist_domain = state.playlist.is_some()
+        || state.playlists.is_some()
+        || state.playlist_loop_mode.is_some()
+        || state.playlist_sort_mode.is_some();
+    if !has_playlist_domain {
+        return None;
+    }
+    let mut playlists = state
+        .playlists
+        .clone()
+        .unwrap_or_default()
         .into_iter()
-        .map(|entry| PlaylistEntry {
-            path: entry.path,
-            title: None,
-            added_at: entry.added_at,
+        .map(|playlist| playlist_store::PersistedPlaylist {
+            id: playlist.id,
+            name: playlist.name,
+            entries: playlist
+                .entries
+                .into_iter()
+                .map(|entry| playlist_store::PersistedPlaylistEntry {
+                    path: entry.path,
+                    title: entry.title,
+                    artwork_ref: entry.icon_url,
+                    added_at: entry.added_at,
+                })
+                .collect(),
+            created_at: playlist.created_at,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if let Some(entries) = &state.playlist {
+        if !playlists.iter().any(|playlist| playlist.id == "default") {
+            playlists.push(playlist_store::PersistedPlaylist {
+                id: "default".to_string(),
+                name: "Default Playlist".to_string(),
+                entries: entries
+                    .iter()
+                    .map(|entry| playlist_store::PersistedPlaylistEntry {
+                        path: entry.path.clone(),
+                        title: entry.title.clone(),
+                        artwork_ref: entry.icon_url.clone(),
+                        added_at: entry.added_at,
+                    })
+                    .collect(),
+                created_at: 0,
+            });
+        }
+    }
+    Some(playlist_store::PlaylistPersistenceState {
+        playlists,
+        playlist_loop_mode: state.playlist_loop_mode.clone(),
+        playlist_sort_mode: state.playlist_sort_mode.clone(),
+    })
 }
 
-fn into_default_playlist_entries(
-    entries: Vec<PlaylistEntry>,
-) -> Vec<playback_store::DefaultPlaylistEntry> {
-    entries
-        .into_iter()
-        .map(|entry| playback_store::DefaultPlaylistEntry {
-            path: entry.path,
-            added_at: entry.added_at,
-        })
-        .collect()
+fn apply_playlist_state_to_ui(
+    state: &mut UiState,
+    playlist_state: playlist_store::PlaylistPersistenceState,
+) {
+    state.playlists = Some(
+        playlist_state
+            .playlists
+            .into_iter()
+            .map(|playlist| Playlist {
+                id: playlist.id,
+                name: playlist.name,
+                entries: playlist
+                    .entries
+                    .into_iter()
+                    .map(|entry| PlaylistEntry {
+                        path: entry.path,
+                        title: entry.title,
+                        icon_url: entry.artwork_ref,
+                        added_at: entry.added_at,
+                    })
+                    .collect(),
+                created_at: playlist.created_at,
+            })
+            .collect(),
+    );
+    state.playlist_loop_mode = playlist_state.playlist_loop_mode;
+    state.playlist_sort_mode = playlist_state.playlist_sort_mode;
 }
 
 fn load_state_from_disk(path: &Path, legacy_path: &Path) -> Result<UiState, String> {
@@ -293,13 +356,15 @@ pub fn load_ui_state(app: &tauri::AppHandle) -> Result<UiState, String> {
     let legacy_path = legacy_ui_state_file_path(app)?;
     let mut state = load_state_from_disk(&path, &legacy_path)?;
 
-    let playlist = playback_store::load_playlist(app)?;
-    let legacy_playlist = state.playlist.take();
-    if legacy_playlist.is_some() && path.exists() {
-        json_io::write_json(&path, &state)?;
+    if let Some(legacy_playlist_state) = playlist_state_from_ui(&state) {
+        playlist_store::migrate_legacy_state(app, &legacy_playlist_state)?;
+        state = strip_playlist(&state);
+        if path.exists() {
+            json_io::write_json(&path, &state)?;
+        }
     }
     store_ui_state_cache(&state);
-    state.playlist = Some(from_default_playlist_entries(playlist));
+    apply_playlist_state_to_ui(&mut state, playlist_store::load_state(app)?);
     Ok(state)
 }
 
@@ -351,10 +416,10 @@ pub fn load_ytdl_max_height(app: &tauri::AppHandle) -> u32 {
 pub fn save_ui_state(app: &tauri::AppHandle, state: UiState) -> Result<(), String> {
     let path = ui_state_file_path(app)?;
     let legacy_path = legacy_ui_state_file_path(app)?;
-    let mut state = state;
-    if let Some(playlist) = state.playlist.take() {
-        playback_store::save_playlist(app, into_default_playlist_entries(playlist))?;
+    if let Some(playlist_state) = playlist_state_from_ui(&state) {
+        playlist_store::save_state(app, &playlist_state)?;
     }
+    let state = strip_playlist(&state);
     let existing = load_state_from_disk(&path, &legacy_path)?;
     let merged = existing.merge(state);
     json_io::write_json(&path, &merged)?;
@@ -387,11 +452,11 @@ pub fn load_navigation_state(
 ) -> Result<crate::core::navigation::NavigationState, String> {
     let path = ui_state_file_path(app)?;
     let legacy_path = legacy_ui_state_file_path(app)?;
-    let state = load_state_from_disk(&path, &legacy_path)?;
+    let ui_state = load_state_from_disk(&path, &legacy_path)?;
+    let state = playlist_store::load_state(app)?;
 
     let playlists = state
         .playlists
-        .unwrap_or_default()
         .into_iter()
         .map(|pl| crate::core::navigation::Playlist {
             id: pl.id,
@@ -419,7 +484,7 @@ pub fn load_navigation_state(
 
     Ok(crate::core::navigation::NavigationState {
         playlists,
-        active_playlist_id: state.active_playlist_id,
+        active_playlist_id: ui_state.active_playlist_id,
         playback_playlist_id: None,
         loop_mode,
         sort_mode,
@@ -440,6 +505,7 @@ mod tests {
                 entries: vec![PlaylistEntry {
                     path: "https://example.test/live.m3u8".to_string(),
                     title: Some("News Channel".to_string()),
+                    icon_url: None,
                     added_at: 123,
                 }],
                 created_at: 100,
