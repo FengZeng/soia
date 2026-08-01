@@ -135,6 +135,7 @@ pnpm bundle:win:release
 - `Left / Right`: seek backward/forward (step from settings)
 - `I`: toggle playback info panel
 - Double-click video area: toggle fullscreen
+- Middle-click during playback: hide or show controls; mouse movement stays suppressed for 3 seconds after hiding
 
 ## Data Storage
 

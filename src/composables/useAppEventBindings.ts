@@ -43,6 +43,8 @@ type TracksApi = {
 type UiApi = {
     showControls: { value: boolean };
     onUserInteraction: () => void;
+    onMouseMove: () => void;
+    toggleControlsFromMiddleClick: () => void;
     resetInactivityTimer: () => void;
     cleanup: () => void;
 };
@@ -111,11 +113,43 @@ export const useAppEventBindings = ({
     let unlistenHwdecCurrent: UnlistenFn | null = null;
 
     const windowEventHandlers: Array<[keyof WindowEventMap, EventListener]> = [
-        ["mousemove", () => ui.onUserInteraction()],
-        ["mousedown", () => ui.onUserInteraction()],
+        ["mousemove", () => ui.onMouseMove()],
+        [
+            "mousedown",
+            (event) => {
+                const mouseEvent = event as MouseEvent;
+                if (
+                    mouseEvent.button === 1 &&
+                    player.state.media.isFileLoaded
+                ) {
+                    mouseEvent.preventDefault();
+                    ui.toggleControlsFromMiddleClick();
+                    return;
+                }
+                ui.onUserInteraction();
+            },
+        ],
+        [
+            "auxclick",
+            (event) => {
+                const mouseEvent = event as MouseEvent;
+                if (
+                    mouseEvent.button === 1 &&
+                    player.state.media.isFileLoaded
+                ) {
+                    mouseEvent.preventDefault();
+                }
+            },
+        ],
         ["click", (event) => onCloseAllMenus(event as MouseEvent)],
         ["keydown", (event) => onKeydown(event as KeyboardEvent)],
-        ["dblclick", (event) => onDoubleClick(event as MouseEvent)],
+        [
+            "dblclick",
+            (event) => {
+                const mouseEvent = event as MouseEvent;
+                if (mouseEvent.button === 0) onDoubleClick(mouseEvent);
+            },
+        ],
     ];
 
     let latestPlaybackSnapshotRevision = -1;
