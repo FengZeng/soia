@@ -2,6 +2,7 @@ use crate::core::playlist_service::{PlaylistEntry, PlaylistSummary};
 use crate::protocol::{
     CommandEnvelopeDto, CommandResultDto, GetPlaylistEntriesPageDto, PlayPlaylistEntryDto,
     PlaybackCommandDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto,
+    PlaylistSnapshotDto,
 };
 use crate::AppState;
 
@@ -14,6 +15,14 @@ pub(crate) fn get_playlist_summaries(
         .playlist_service
         .list_summaries(&app)
         .map(|summaries| summaries.iter().map(to_summary_dto).collect())
+}
+
+#[tauri::command]
+pub(crate) fn get_playlist_snapshot(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<PlaylistSnapshotDto, String> {
+    state.playlist_service.snapshot(&app)
 }
 
 #[tauri::command]

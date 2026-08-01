@@ -1,4 +1,5 @@
 use crate::store::media_db;
+use crate::protocol::{PlaylistLoopModeDto, PlaylistSnapshotDto, PlaylistSortModeDto, PlaylistSummaryDto};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -117,6 +118,42 @@ impl PlaylistService {
     ) -> Result<Option<PlaylistSummary>, String> {
         let conn = media_db::open_db(app)?;
         playlist_summary_from_connection(&conn, playlist_id)
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Result<PlaylistSnapshotDto, String> {
+        let conn = media_db::open_db(app)?;
+        let (collection_revision, playback_playlist_id, loop_mode, sort_mode, is_loop_one):
+            (i64, Option<String>, String, String, i64) = conn
+            .query_row(
+                "SELECT collection_revision, playback_playlist_id, loop_mode, sort_mode, is_loop_one
+                 FROM playlist_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(PlaylistSnapshotDto {
+            collection_revision: u64::try_from(collection_revision)
+                .map_err(|_| "invalid negative collection revision".to_string())?,
+            playlists: list_summaries_from_connection(&conn)?
+                .iter()
+                .map(playlist_summary_to_dto)
+                .collect(),
+            playback_playlist_id,
+            loop_mode: if loop_mode == "shuffle" {
+                PlaylistLoopModeDto::Shuffle
+            } else {
+                PlaylistLoopModeDto::List
+            },
+            sort_mode: if sort_mode == "added" {
+                PlaylistSortModeDto::Added
+            } else {
+                PlaylistSortModeDto::Name
+            },
+            is_loop_one: is_loop_one != 0,
+        })
     }
 
     pub(crate) fn get_entry(
@@ -337,6 +374,18 @@ fn playlist_summary_from_connection(
     )
     .optional()
     .map_err(|error| error.to_string())
+}
+
+fn playlist_summary_to_dto(summary: &PlaylistSummary) -> PlaylistSummaryDto {
+    PlaylistSummaryDto {
+        id: summary.id.clone(),
+        name: summary.name.clone(),
+        created_at: summary.created_at,
+        order_index: summary.order_index,
+        revision: summary.revision.max(0) as u64,
+        entry_count: summary.entry_count,
+        is_protected: summary.is_protected,
+    }
 }
 
 fn list_entries_from_connection(
