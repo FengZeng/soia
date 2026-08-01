@@ -1,24 +1,33 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { CoreClientError } from "../core-client/CoreClient";
+import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlaylistEntryDto } from "../core-client/generated/PlaylistEntryDto";
 import type { PlaylistSnapshotDto } from "../core-client/generated/PlaylistSnapshotDto";
-import { remotePlaylistClient } from "./remoteCoreClient";
+import { remoteCoreClient, remotePlaylistClient } from "./remoteCoreClient";
 
 const PAGE_SIZE = 100;
+
+const props = defineProps<{
+    active: boolean;
+}>();
 
 const snapshot = ref<PlaylistSnapshotDto | null>(null);
 const selectedPlaylistId = ref<string | null>(null);
 const entries = ref<PlaylistEntryDto[]>([]);
 const entriesTotal = ref(0);
 const entriesLoading = ref(false);
-const importing = ref(false);
 const deletingPlaylistId = ref<string | null>(null);
-const source = ref("");
+const playbackKey = ref<string | null>(null);
+const playbackPlaylistId = ref<string | null>(null);
+const playbackSnapshotReceived = ref(false);
 const error = ref("");
 const requestClientId = createId("playlist-client");
 let entriesRequestRevision = 0;
-let unsubscribe: (() => void) | null = null;
+let preferredSelectionRevision = 0;
+let preferredSelectionPending = false;
+let unsubscribePlaylist: (() => void) | null = null;
+let unsubscribePlayback: (() => void) | null = null;
 
 const playlists = computed(() => snapshot.value?.playlists ?? []);
 const selectedPlaylist = computed(() =>
@@ -48,12 +57,79 @@ function entryName(entry: PlaylistEntryDto) {
     return path.split(/[\\/]/).pop() || playbackKey;
 }
 
+function isPlayingEntry(entry: PlaylistEntryDto) {
+    return playbackPlaylistId.value === selectedPlaylistId.value
+        && playbackKey.value !== null
+        && entry.playbackKey === playbackKey.value;
+}
+
 function applySnapshot(nextSnapshot: PlaylistSnapshotDto) {
     snapshot.value = nextSnapshot;
     if (selectedPlaylistId.value && playlists.value.some((playlist) => playlist.id === selectedPlaylistId.value)) {
+        void selectPreferredPlaylist();
         return;
     }
     selectedPlaylistId.value = playlists.value[0]?.id ?? null;
+    void selectPreferredPlaylist();
+}
+
+function applyPlaybackSnapshot(nextSnapshot: PlaybackSnapshotDto) {
+    playbackKey.value = nextSnapshot.playbackKey;
+    playbackPlaylistId.value = nextSnapshot.playbackPlaylistId;
+    playbackSnapshotReceived.value = true;
+    void selectPreferredPlaylist();
+}
+
+async function findPlaylistContainingPlaybackKey(key: string) {
+    for (const playlist of playlists.value) {
+        if (!playlist.entryCount) continue;
+        for (let offset = 0; offset < playlist.entryCount; offset += PAGE_SIZE) {
+            const page = await remotePlaylistClient.getEntriesPage({
+                playlistId: playlist.id,
+                offset,
+                limit: PAGE_SIZE,
+            });
+            if (page.entries.some((entry) => entry.playbackKey === key)) return playlist.id;
+            if (!page.entries.length) break;
+        }
+    }
+    return null;
+}
+
+async function selectPreferredPlaylist() {
+    if (!preferredSelectionPending || !props.active || !snapshot.value || !playbackSnapshotReceived.value) {
+        return;
+    }
+    const requestRevision = ++preferredSelectionRevision;
+    const firstNonEmptyPlaylistId = playlists.value.find((playlist) => playlist.entryCount > 0)?.id
+        ?? playlists.value[0]?.id
+        ?? null;
+    const currentPlaybackPlaylistId = playbackPlaylistId.value;
+    let matchingPlaylistId = currentPlaybackPlaylistId
+        && playlists.value.some((playlist) => playlist.id === currentPlaybackPlaylistId)
+        ? currentPlaybackPlaylistId
+        : null;
+    if (!matchingPlaylistId && playbackKey.value) {
+        try {
+            matchingPlaylistId = await findPlaylistContainingPlaybackKey(playbackKey.value);
+        } catch (nextError) {
+            error.value = message(nextError);
+        }
+    }
+    if (
+        requestRevision !== preferredSelectionRevision
+        || !preferredSelectionPending
+        || !props.active
+    ) {
+        return;
+    }
+    preferredSelectionPending = false;
+    selectedPlaylistId.value = matchingPlaylistId ?? firstNonEmptyPlaylistId;
+}
+
+function requestPreferredPlaylistSelection() {
+    preferredSelectionPending = true;
+    void selectPreferredPlaylist();
 }
 
 async function loadEntries(reset: boolean) {
@@ -83,7 +159,7 @@ function selectPlaylist(playlistId: string) {
     selectedPlaylistId.value = playlistId;
 }
 
-async function playEntry(entryId: string) {
+async function playEntry(entry: PlaylistEntryDto) {
     const playlist = selectedPlaylist.value;
     if (!playlist) return;
     error.value = "";
@@ -92,8 +168,10 @@ async function playEntry(entryId: string) {
             commandId: createId("playlist-play"),
             clientId: requestClientId,
             playlistId: playlist.id,
-            entryId,
+            entryId: entry.id,
         });
+        playbackKey.value = entry.playbackKey;
+        playbackPlaylistId.value = playlist.id;
     } catch (nextError) {
         error.value = message(nextError);
     }
@@ -117,28 +195,19 @@ async function deletePlaylist() {
     }
 }
 
-async function importPlaylist() {
-    const value = source.value.trim();
-    if (!value || importing.value) return;
-    importing.value = true;
-    error.value = "";
-    try {
-        const result = await remotePlaylistClient.importFromSource({ source: value });
-        source.value = "";
-        selectedPlaylistId.value = result.playlist?.summary.id ?? selectedPlaylistId.value;
-    } catch (nextError) {
-        error.value = message(nextError);
-    } finally {
-        importing.value = false;
-    }
-}
-
 watch(selectedPlaylistId, () => {
     entriesRequestRevision += 1;
     entries.value = [];
     entriesTotal.value = 0;
     void loadEntries(true);
 });
+
+watch(
+    () => props.active,
+    (active) => {
+        if (active) requestPreferredPlaylistSelection();
+    },
+);
 
 watch(
     () => selectedPlaylist.value?.revision,
@@ -150,13 +219,17 @@ watch(
 );
 
 onMounted(() => {
-    unsubscribe = remotePlaylistClient.subscribe(applySnapshot);
+    unsubscribePlaylist = remotePlaylistClient.subscribe(applySnapshot);
+    unsubscribePlayback = remoteCoreClient.subscribe(applyPlaybackSnapshot);
     void remotePlaylistClient.getSnapshot().then(applySnapshot).catch((nextError) => {
         error.value = message(nextError);
     });
 });
 
-onBeforeUnmount(() => unsubscribe?.());
+onBeforeUnmount(() => {
+    unsubscribePlaylist?.();
+    unsubscribePlayback?.();
+});
 </script>
 
 <template>
@@ -202,10 +275,17 @@ onBeforeUnmount(() => unsubscribe?.());
                     </button>
                 </div>
                 <ol class="remote-playlists__entry-list">
-                    <li v-for="entry in entries" :key="entry.id">
-                        <button @click="playEntry(entry.id)">
+                    <li
+                        v-for="entry in entries"
+                        :key="entry.id"
+                        :class="{ 'remote-playlists__entry--playing': isPlayingEntry(entry) }"
+                    >
+                        <button
+                            :aria-current="isPlayingEntry(entry) ? 'true' : undefined"
+                            @click="playEntry(entry)"
+                        >
                             <span>{{ entryName(entry) }}</span>
-                            <small>Play</small>
+                            <small v-if="isPlayingEntry(entry)">Playing</small>
                         </button>
                     </li>
                 </ol>
@@ -222,22 +302,5 @@ onBeforeUnmount(() => unsubscribe?.());
             </div>
         </div>
         <p v-else class="remote-playlists__empty">No playlists available.</p>
-
-        <form class="remote-playlists__import" @submit.prevent="importPlaylist">
-            <label for="remote-playlist-source">Import a supported playlist source</label>
-            <div>
-                <input
-                    id="remote-playlist-source"
-                    v-model="source"
-                    type="url"
-                    inputmode="url"
-                    autocomplete="url"
-                    placeholder="https://example.com/playlist.m3u"
-                >
-                <button :disabled="!source.trim() || importing" type="submit">
-                    {{ importing ? "Importing…" : "Import" }}
-                </button>
-            </div>
-        </form>
     </section>
 </template>

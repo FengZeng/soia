@@ -10,7 +10,7 @@ import { formatLanguageCodeTitle } from "../utils/trackDisplay";
 import { remoteConnectionState } from "./remoteCoreClient";
 
 const state = ref<PlaybackSnapshotDto>({
-    protocolVersion: 3, revision: 0, playbackSessionId: null, title: null,
+    protocolVersion: 6, revision: 0, playbackSessionId: null, playbackKey: null, playbackPlaylistId: null, title: null,
     duration: 0, position: 0, bufferedPosition: 0, isPlaying: false,
     isBuffering: false, downloadSpeedBps: 0, sourceLoading: false,
     sourceLoadingKey: null, sourceLoadError: null, speed: 1, volume: 100,

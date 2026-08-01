@@ -8,6 +8,8 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub(crate) struct PlaybackSnapshot {
     pub playback_session_id: Option<String>,
+    pub playback_key: Option<String>,
+    pub playback_playlist_id: Option<String>,
     pub title: Option<String>,
     pub duration: f64,
     pub position: f64,
@@ -30,6 +32,8 @@ impl Default for PlaybackSnapshot {
     fn default() -> Self {
         Self {
             playback_session_id: None,
+            playback_key: None,
+            playback_playlist_id: None,
             title: None,
             duration: 0.0,
             position: 0.0,
@@ -56,6 +60,8 @@ impl PlaybackSnapshot {
             protocol_version: PROTOCOL_VERSION,
             revision,
             playback_session_id: self.playback_session_id.clone(),
+            playback_key: self.playback_key.clone(),
+            playback_playlist_id: self.playback_playlist_id.clone(),
             title: self.title.clone(),
             duration: self.duration,
             position: self.position,

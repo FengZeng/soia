@@ -50,6 +50,6 @@ const connectionState = computed(() => connectionLabels[remoteConnectionState.va
             </button>
         </nav>
         <RemotePlaybackPanel v-show="activeView === 'playback'" />
-        <RemotePlaylistPanel v-show="activeView === 'playlists'" />
+        <RemotePlaylistPanel :active="activeView === 'playlists'" v-show="activeView === 'playlists'" />
     </main>
 </template>

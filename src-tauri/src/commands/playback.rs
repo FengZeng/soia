@@ -312,8 +312,14 @@ pub(crate) async fn load_source(
                     // Use preferred_title (from playlist) if available, otherwise
                     // fall back to the title resolved by the source preparer.
                     let effective_title = preferred_title.clone().or(prepared.title);
+                    let playback_playlist_id = state
+                        .navigation_service
+                        .playlist_navigation_context()
+                        .playback_playlist_id;
                     let snapshot = state.playback_state.update(|snapshot| {
                         snapshot.playback_session_id = Some(playback_session_id);
+                        snapshot.playback_key = Some(source_key.clone());
+                        snapshot.playback_playlist_id = playback_playlist_id;
                         snapshot.source_loading = false;
                         snapshot.source_loading_key = None;
                         snapshot.source_load_error = None;

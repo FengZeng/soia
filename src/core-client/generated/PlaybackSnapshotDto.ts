@@ -4,4 +4,4 @@ import type { MediaTrackDto } from "./MediaTrackDto";
 /**
  * Stable, transport-safe playback state sent to Tauri and WebSocket clients.
  */
-export type PlaybackSnapshotDto = { protocolVersion: number, revision: number, playbackSessionId: string | null, title: string | null, duration: number, position: number, bufferedPosition: number, isPlaying: boolean, isBuffering: boolean, downloadSpeedBps: number, sourceLoading: boolean, sourceLoadingKey: string | null, sourceLoadError: string | null, speed: number, volume: number, muted: boolean, tracks: Array<MediaTrackDto>, playlistPosition: number, playlistCount: number, };
+export type PlaybackSnapshotDto = { protocolVersion: number, revision: number, playbackSessionId: string | null, playbackKey: string | null, playbackPlaylistId: string | null, title: string | null, duration: number, position: number, bufferedPosition: number, isPlaying: boolean, isBuffering: boolean, downloadSpeedBps: number, sourceLoading: boolean, sourceLoadingKey: string | null, sourceLoadError: string | null, speed: number, volume: number, muted: boolean, tracks: Array<MediaTrackDto>, playlistPosition: number, playlistCount: number, };

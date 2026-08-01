@@ -6,7 +6,7 @@ import type { PlaylistSnapshotDto } from "./generated/PlaylistSnapshotDto";
 import type { PlaylistEntriesPageDto } from "./generated/PlaylistEntriesPageDto";
 import type { PlaylistSummaryDto } from "./generated/PlaylistSummaryDto";
 
-export const WEBSOCKET_PROTOCOL_VERSION = 4;
+export const WEBSOCKET_PROTOCOL_VERSION = 6;
 
 export type WebSocketServerMessage =
     | { type: "hello"; protocolVersion: number }

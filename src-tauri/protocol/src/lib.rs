@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Playback ordering mode owned by the playlist domain.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -281,6 +281,8 @@ pub struct PlaybackSnapshotDto {
     #[ts(type = "number")]
     pub revision: u64,
     pub playback_session_id: Option<String>,
+    pub playback_key: Option<String>,
+    pub playback_playlist_id: Option<String>,
     pub title: Option<String>,
     pub duration: f64,
     pub position: f64,
