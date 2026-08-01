@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CoreClientError } from "./CoreClient";
+import type { DesktopPlaylistEditor } from "./PlaylistClient";
 import type { CreatePlaylistDto } from "./generated/CreatePlaylistDto";
 import type { GetPlaylistEntriesPageDto } from "./generated/GetPlaylistEntriesPageDto";
 import type { PlaylistEntriesPageDto } from "./generated/PlaylistEntriesPageDto";
@@ -18,7 +19,7 @@ export type PlaylistSnapshotListener = (snapshot: PlaylistSnapshotDto) => void;
 export type PlaylistSnapshotErrorListener = (error: CoreClientError) => void;
 
 /** Desktop transport adapter for the Core-owned playlist read/play boundary. */
-export class TauriPlaylistClient {
+export class TauriPlaylistClient implements DesktopPlaylistEditor {
     async getSnapshot(): Promise<PlaylistSnapshotDto> {
         try {
             return await invoke<PlaylistSnapshotDto>("get_playlist_snapshot");

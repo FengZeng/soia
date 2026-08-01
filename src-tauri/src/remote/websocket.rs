@@ -20,6 +20,7 @@ enum WebSocketClientMessage {
     Command { envelope: CommandEnvelopeDto },
     Navigation { id: Option<String>, action: String },
     PlaylistSummaries { id: Option<String> },
+    PlaylistSnapshot { id: Option<String> },
     PlaylistEntriesPage { id: Option<String>, request: GetPlaylistEntriesPageDto },
     PlayPlaylistEntry { request: PlayPlaylistEntryDto },
     DeletePlaylist { id: Option<String>, request: DeletePlaylistDto },
@@ -37,9 +38,10 @@ enum WebSocketServerMessage {
     CommandResult { result: CommandResultDto },
     NavigationResult { id: Option<String>, ok: bool },
     PlaylistSummaries { id: Option<String>, playlists: Vec<PlaylistSummaryDto> },
+    PlaylistSnapshot { id: Option<String>, snapshot: crate::protocol::PlaylistSnapshotDto },
     PlaylistEntriesPage { id: Option<String>, page: PlaylistEntriesPageDto },
-    PlaylistDeleted { id: Option<String>, playlist_id: String },
-    PlaylistImported { id: Option<String>, playlist: PlaylistSummaryDto },
+    PlaylistDeleted { id: Option<String>, playlist_id: String, collection_revision: u64 },
+    PlaylistImported { id: Option<String>, playlist: PlaylistSummaryDto, collection_revision: u64 },
     Error { id: Option<String>, error: CoreErrorDto },
 }
 
@@ -80,6 +82,10 @@ async fn handle_websocket(
         let app_state: tauri::State<'_, AppState> = state.app_handle.state();
         app_state.playback_state.subscribe()
     };
+    let mut playlist_snapshots = {
+        let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+        app_state.playlist_service.subscribe()
+    };
     let initial_state = playback_state.borrow().clone();
     if send_ws_json(
         &mut sender,
@@ -104,6 +110,20 @@ async fn handle_websocket(
                 }
                 let next_state = playback_state.borrow().clone();
                 if send_ws_json(&mut sender, &WebSocketServerMessage::State { state: next_state }).await.is_err() {
+                    return;
+                }
+            }
+            changed = playlist_snapshots.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                if !is_connection_active(&state, session.as_deref()) {
+                    return;
+                }
+                let Some(snapshot) = playlist_snapshots.borrow().clone() else {
+                    continue;
+                };
+                if send_ws_json(&mut sender, &WebSocketServerMessage::PlaylistSnapshot { id: None, snapshot }).await.is_err() {
                     return;
                 }
             }
@@ -160,6 +180,13 @@ async fn handle_websocket_text(
                         entry_count: playlist.entry_count, is_protected: playlist.is_protected,
                     }).collect(),
                 },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
+        Ok(WebSocketClientMessage::PlaylistSnapshot { id }) => {
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            match app_state.playlist_service.snapshot(&state.app_handle) {
+                Ok(snapshot) => WebSocketServerMessage::PlaylistSnapshot { id, snapshot },
                 Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
             }
         }
@@ -251,8 +278,17 @@ async fn handle_websocket_text(
                 request.expected_playlist_revision as i64,
             ) {
                 Ok(()) => {
-                    emit_playlist_snapshot(&state.app_handle, &app_state);
-                    WebSocketServerMessage::PlaylistDeleted { id, playlist_id: request.playlist_id }
+                    match publish_playlist_snapshot(&state.app_handle, &app_state) {
+                        Ok(snapshot) => WebSocketServerMessage::PlaylistDeleted {
+                            id,
+                            playlist_id: request.playlist_id,
+                            collection_revision: snapshot.collection_revision,
+                        },
+                        Err(message) => WebSocketServerMessage::Error {
+                            id,
+                            error: CoreErrorDto::ExecutionFailed { message },
+                        },
+                    }
                 }
                 Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
             }
@@ -263,8 +299,25 @@ async fn handle_websocket_text(
                 .and_then(|prepared| app_state.playlist_service.import_prepared_playlist(&state.app_handle, prepared));
             match result {
                 Ok(playlist) => {
-                    emit_playlist_snapshot(&state.app_handle, &app_state);
-                    WebSocketServerMessage::PlaylistImported { id, playlist: PlaylistSummaryDto { id: playlist.id, name: playlist.name, created_at: playlist.created_at, order_index: playlist.order_index, revision: playlist.revision.max(0) as u64, entry_count: playlist.entry_count, is_protected: playlist.is_protected } }
+                    match publish_playlist_snapshot(&state.app_handle, &app_state) {
+                        Ok(snapshot) => WebSocketServerMessage::PlaylistImported {
+                            id,
+                            playlist: PlaylistSummaryDto {
+                                id: playlist.id,
+                                name: playlist.name,
+                                created_at: playlist.created_at,
+                                order_index: playlist.order_index,
+                                revision: playlist.revision.max(0) as u64,
+                                entry_count: playlist.entry_count,
+                                is_protected: playlist.is_protected,
+                            },
+                            collection_revision: snapshot.collection_revision,
+                        },
+                        Err(message) => WebSocketServerMessage::Error {
+                            id,
+                            error: CoreErrorDto::ExecutionFailed { message },
+                        },
+                    }
                 }
                 Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
             }
@@ -345,10 +398,14 @@ async fn handle_websocket_text(
     }
 }
 
-fn emit_playlist_snapshot(app: &tauri::AppHandle, state: &AppState) {
-    if let Ok(snapshot) = state.playlist_service.snapshot(app) {
-        let _ = app.emit("playlist-snapshot", snapshot);
-    }
+fn publish_playlist_snapshot(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<crate::protocol::PlaylistSnapshotDto, String> {
+    let snapshot = state.playlist_service.publish_snapshot(app)?;
+    app.emit("playlist-snapshot", &snapshot)
+        .map_err(|error| error.to_string())?;
+    Ok(snapshot)
 }
 
 fn navigation_action_to_envelope(

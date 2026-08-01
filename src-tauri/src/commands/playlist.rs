@@ -204,7 +204,7 @@ fn publish_playlist_snapshot(
     state: &AppState,
     playlist: Option<crate::protocol::PlaylistDto>,
 ) -> Result<PlaylistMutationResultDto, String> {
-    let snapshot = state.playlist_service.snapshot(app)?;
+    let snapshot = state.playlist_service.publish_snapshot(app)?;
     app.emit("playlist-snapshot", &snapshot)
         .map_err(|error| error.to_string())?;
     Ok(PlaylistMutationResultDto {

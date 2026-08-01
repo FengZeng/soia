@@ -2,12 +2,20 @@ import { isCoreErrorDto } from "./coreClientError";
 import type { CommandResultDto } from "./generated/CommandResultDto";
 import type { CoreErrorDto } from "./generated/CoreErrorDto";
 import type { PlaybackSnapshotDto } from "./generated/PlaybackSnapshotDto";
+import type { PlaylistSnapshotDto } from "./generated/PlaylistSnapshotDto";
+import type { PlaylistEntriesPageDto } from "./generated/PlaylistEntriesPageDto";
+import type { PlaylistSummaryDto } from "./generated/PlaylistSummaryDto";
 
-export const WEBSOCKET_PROTOCOL_VERSION = 3;
+export const WEBSOCKET_PROTOCOL_VERSION = 4;
 
 export type WebSocketServerMessage =
     | { type: "hello"; protocolVersion: number }
     | { type: "state"; state: PlaybackSnapshotDto }
+    | { type: "playlistSnapshot"; id?: string | null; snapshot: PlaylistSnapshotDto }
+    | { type: "playlistSummaries"; id?: string | null; playlists: PlaylistSummaryDto[] }
+    | { type: "playlistEntriesPage"; id?: string | null; page: PlaylistEntriesPageDto }
+    | { type: "playlistDeleted"; id?: string | null; playlistId: string; collectionRevision: number }
+    | { type: "playlistImported"; id?: string | null; playlist: PlaylistSummaryDto; collectionRevision: number }
     | { type: "pong"; id?: string | null }
     | { type: "commandResult"; result: CommandResultDto }
     | { type: "navigationResult"; id?: string | null; ok: boolean }
@@ -55,6 +63,60 @@ export const parseWebSocketServerMessage = (
                             ? Math.max(0, state.downloadSpeedBps)
                             : 0,
                 } as PlaybackSnapshotDto,
+            };
+        }
+        case "playlistSnapshot": {
+            const snapshot = asRecord(message.snapshot);
+            if (!snapshot || typeof snapshot.collectionRevision !== "number") {
+                throw new Error("received invalid playlist snapshot");
+            }
+            return {
+                type,
+                id: typeof message.id === "string" ? message.id : null,
+                snapshot: snapshot as PlaylistSnapshotDto,
+            };
+        }
+        case "playlistSummaries": {
+            if (!Array.isArray(message.playlists)) {
+                throw new Error("received invalid playlist summaries");
+            }
+            return {
+                type,
+                id: typeof message.id === "string" ? message.id : null,
+                playlists: message.playlists as PlaylistSummaryDto[],
+            };
+        }
+        case "playlistEntriesPage": {
+            const page = asRecord(message.page);
+            if (!page || typeof page.playlistId !== "string" || typeof page.playlistRevision !== "number") {
+                throw new Error("received invalid playlist entries page");
+            }
+            return {
+                type,
+                id: typeof message.id === "string" ? message.id : null,
+                page: page as PlaylistEntriesPageDto,
+            };
+        }
+        case "playlistDeleted":
+            if (typeof message.playlist_id !== "string" || typeof message.collection_revision !== "number") {
+                throw new Error("received invalid playlist deletion result");
+            }
+            return {
+                type,
+                id: typeof message.id === "string" ? message.id : null,
+                playlistId: message.playlist_id,
+                collectionRevision: message.collection_revision,
+            };
+        case "playlistImported": {
+            const playlist = asRecord(message.playlist);
+            if (!playlist || typeof playlist.id !== "string" || typeof message.collection_revision !== "number") {
+                throw new Error("received invalid playlist import result");
+            }
+            return {
+                type,
+                id: typeof message.id === "string" ? message.id : null,
+                playlist: playlist as PlaylistSummaryDto,
+                collectionRevision: message.collection_revision,
             };
         }
         case "pong":

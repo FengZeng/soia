@@ -8,6 +8,13 @@ import type {
 import type { CommandResultDto } from "./generated/CommandResultDto";
 import type { PlaybackCommandDto } from "./generated/PlaybackCommandDto";
 import type { PlaybackSnapshotDto } from "./generated/PlaybackSnapshotDto";
+import type { PlaylistSnapshotDto } from "./generated/PlaylistSnapshotDto";
+import type { PlaylistEntriesPageDto } from "./generated/PlaylistEntriesPageDto";
+import type { GetPlaylistEntriesPageDto } from "./generated/GetPlaylistEntriesPageDto";
+import type { DeletePlaylistDto } from "./generated/DeletePlaylistDto";
+import type { ImportPlaylistFromSourceDto } from "./generated/ImportPlaylistFromSourceDto";
+import type { PlayPlaylistEntryDto } from "./generated/PlayPlaylistEntryDto";
+import type { PlaylistMutationResultDto } from "./generated/PlaylistMutationResultDto";
 import { PlaybackCommandContext } from "./playbackCommandContext";
 import {
     isNewerSnapshot,
@@ -46,6 +53,20 @@ type PendingCommand = {
 type SnapshotWaiter = {
     resolve: (snapshot: PlaybackSnapshotDto) => void;
     reject: (error: CoreClientError) => void;
+};
+
+type PendingPlaylistSnapshot = {
+    resolve: (snapshot: PlaylistSnapshotDto) => void;
+    reject: (error: CoreClientError) => void;
+    sent: boolean;
+};
+
+type PendingPlaylistRequest<T> = {
+    message: Record<string, unknown>;
+    resolve: (result: T) => void;
+    reject: (error: CoreClientError) => void;
+    sent: boolean;
+    retryOnReconnect: boolean;
 };
 
 const DEFAULT_RECONNECT_DELAY_MS = 1500;
@@ -88,6 +109,13 @@ export class WebSocketCoreClient implements CoreClient {
     >();
     private readonly pendingCommands = new Map<string, PendingCommand>();
     private readonly snapshotWaiters: SnapshotWaiter[] = [];
+    private readonly pendingPlaylistSnapshots = new Map<string, PendingPlaylistSnapshot>();
+    private readonly playlistSubscriptions = new Set<(snapshot: PlaylistSnapshotDto) => void>();
+    private readonly pendingPlaylistEntries = new Map<string, PendingPlaylistRequest<PlaylistEntriesPageDto>>();
+    private readonly pendingPlaylistDeletes = new Map<string, PendingPlaylistRequest<PlaylistMutationResultDto>>();
+    private readonly pendingPlaylistImports = new Map<string, PendingPlaylistRequest<PlaylistMutationResultDto>>();
+    private readonly pendingPlaylistPlays = new Map<string, PendingPlaylistRequest<CommandResultDto>>();
+    private playlistSnapshot: PlaylistSnapshotDto | null = null;
 
     constructor(options: WebSocketCoreClientOptions = {}) {
         this.commandContext = new PlaybackCommandContext(
@@ -152,6 +180,64 @@ export class WebSocketCoreClient implements CoreClient {
         });
     }
 
+    getPlaylistSnapshot(): Promise<PlaylistSnapshotDto> {
+        if (this.disposed) {
+            return Promise.reject(this.transportError("WebSocket client is disposed"));
+        }
+        const requestId = `playlist-${createClientId()}`;
+        return new Promise<PlaylistSnapshotDto>((resolve, reject) => {
+            this.pendingPlaylistSnapshots.set(requestId, {
+                resolve,
+                reject,
+                sent: false,
+            });
+            this.sendPendingPlaylistSnapshots();
+            void this.connect().catch(() => {});
+        });
+    }
+
+    subscribePlaylist(listener: (snapshot: PlaylistSnapshotDto) => void): () => void {
+        this.playlistSubscriptions.add(listener);
+        if (this.playlistSnapshot) {
+            listener(this.playlistSnapshot);
+        } else {
+            void this.getPlaylistSnapshot().catch((error) => {
+                this.notifyError(error as CoreClientError);
+            });
+        }
+        return () => this.playlistSubscriptions.delete(listener);
+    }
+
+    getPlaylistEntriesPage(request: GetPlaylistEntriesPageDto): Promise<PlaylistEntriesPageDto> {
+        return this.sendPlaylistRequest("playlistEntriesPage", { request }, this.pendingPlaylistEntries, true);
+    }
+
+    deletePlaylist(request: DeletePlaylistDto): Promise<PlaylistMutationResultDto> {
+        return this.sendPlaylistRequest("deletePlaylist", { request }, this.pendingPlaylistDeletes, false);
+    }
+
+    importPlaylistFromSource(request: ImportPlaylistFromSourceDto): Promise<PlaylistMutationResultDto> {
+        return this.sendPlaylistRequest("importPlaylistFromSource", { request }, this.pendingPlaylistImports, false);
+    }
+
+    playPlaylistEntry(request: PlayPlaylistEntryDto): Promise<CommandResultDto> {
+        if (this.disposed) return Promise.reject(this.transportError("WebSocket client is disposed"));
+        if (this.pendingPlaylistPlays.has(request.commandId)) {
+            return Promise.reject(this.protocolError("duplicate playlist playback command id"));
+        }
+        return new Promise<CommandResultDto>((resolve, reject) => {
+            this.pendingPlaylistPlays.set(request.commandId, {
+                message: { type: "playPlaylistEntry", request },
+                resolve,
+                reject,
+                sent: false,
+                retryOnReconnect: true,
+            });
+            this.sendPendingPlaylistRequests();
+            void this.connect().catch(() => {});
+        });
+    }
+
     connect(): Promise<void> {
         if (this.disposed) {
             return Promise.reject(this.transportError("WebSocket client is disposed"));
@@ -180,6 +266,10 @@ export class WebSocketCoreClient implements CoreClient {
         this.protocolReady = false;
         this.setConnectionState("closed");
         this.rejectPending(this.transportError("WebSocket client is disposed"));
+        this.rejectPendingPlaylistSnapshots(
+            this.transportError("WebSocket client is disposed"),
+        );
+        this.rejectPendingPlaylistRequests(this.transportError("WebSocket client is disposed"));
         this.rejectSnapshotWaiters(this.transportError("WebSocket client is disposed"));
         this.subscriptions.clear();
     }
@@ -209,6 +299,8 @@ export class WebSocketCoreClient implements CoreClient {
             );
             this.setConnectionState("failed");
             this.rejectPending(clientError);
+            this.rejectPendingPlaylistSnapshots(clientError);
+            this.rejectPendingPlaylistRequests(clientError);
             this.rejectSnapshotWaiters(clientError);
             throw clientError;
         }
@@ -244,6 +336,10 @@ export class WebSocketCoreClient implements CoreClient {
                 this.pendingCommands.forEach((command) => {
                     command.sent = false;
                 });
+                this.pendingPlaylistSnapshots.forEach((request) => {
+                    request.sent = false;
+                });
+                this.resetPendingPlaylistRequests();
                 if (!opened || !wasProtocolReady) {
                     reject(this.transportError("Could not connect to Soia."));
                 }
@@ -269,6 +365,8 @@ export class WebSocketCoreClient implements CoreClient {
             );
             this.setConnectionState("incompatible");
             this.rejectPending(clientError);
+            this.rejectPendingPlaylistSnapshots(clientError);
+            this.rejectPendingPlaylistRequests(clientError);
             this.rejectSnapshotWaiters(clientError);
             rejectConnection(clientError);
             socket.close();
@@ -282,6 +380,8 @@ export class WebSocketCoreClient implements CoreClient {
                 );
                 this.setConnectionState("incompatible");
                 this.rejectPending(clientError);
+                this.rejectPendingPlaylistSnapshots(clientError);
+                this.rejectPendingPlaylistRequests(clientError);
                 this.rejectSnapshotWaiters(clientError);
                 rejectConnection(clientError);
                 socket.close();
@@ -291,6 +391,8 @@ export class WebSocketCoreClient implements CoreClient {
             this.setConnectionState("connected");
             resolveConnection();
             this.sendPendingCommands();
+            this.sendPendingPlaylistSnapshots();
+            this.sendPendingPlaylistRequests();
             return;
         }
 
@@ -298,6 +400,8 @@ export class WebSocketCoreClient implements CoreClient {
             const clientError = this.protocolError("received a message before protocol hello");
             this.setConnectionState("incompatible");
             this.rejectPending(clientError);
+            this.rejectPendingPlaylistSnapshots(clientError);
+            this.rejectPendingPlaylistRequests(clientError);
             this.rejectSnapshotWaiters(clientError);
             rejectConnection(clientError);
             socket.close();
@@ -308,11 +412,40 @@ export class WebSocketCoreClient implements CoreClient {
             case "state":
                 this.handleSnapshot(message.state);
                 break;
+            case "playlistSnapshot": {
+                this.handlePlaylistSnapshot(message.snapshot);
+                if (!message.id) break;
+                const pending = this.pendingPlaylistSnapshots.get(message.id);
+                if (!pending) break;
+                this.pendingPlaylistSnapshots.delete(message.id);
+                pending.resolve(message.snapshot);
+                break;
+            }
+            case "playlistSummaries":
+                break;
+            case "playlistEntriesPage":
+                this.resolvePlaylistRequest(this.pendingPlaylistEntries, message.id, message.page);
+                break;
+            case "playlistDeleted":
+                this.resolvePlaylistRequest(this.pendingPlaylistDeletes, message.id, {
+                    playlist: null,
+                    collectionRevision: message.collectionRevision,
+                });
+                break;
+            case "playlistImported":
+                this.resolvePlaylistRequest(this.pendingPlaylistImports, message.id, {
+                    playlist: { summary: message.playlist, entries: [] },
+                    collectionRevision: message.collectionRevision,
+                });
+                break;
             case "commandResult": {
                 const pending = this.pendingCommands.get(message.result.commandId);
-                if (!pending) break;
-                this.pendingCommands.delete(message.result.commandId);
-                pending.resolve(message.result);
+                if (pending) {
+                    this.pendingCommands.delete(message.result.commandId);
+                    pending.resolve(message.result);
+                    break;
+                }
+                this.resolvePlaylistRequest(this.pendingPlaylistPlays, message.result.commandId, message.result);
                 break;
             }
             case "error": {
@@ -321,9 +454,17 @@ export class WebSocketCoreClient implements CoreClient {
                     break;
                 }
                 const pending = this.pendingCommands.get(message.id);
-                if (!pending) break;
-                this.pendingCommands.delete(message.id);
-                pending.reject({ type: "core", error: message.error });
+                if (pending) {
+                    this.pendingCommands.delete(message.id);
+                    pending.reject({ type: "core", error: message.error });
+                    break;
+                }
+                if (this.rejectPlaylistRequest(message.id, { type: "core", error: message.error })) break;
+                const snapshotRequest = this.pendingPlaylistSnapshots.get(message.id);
+                if (snapshotRequest) {
+                    this.pendingPlaylistSnapshots.delete(message.id);
+                    snapshotRequest.reject({ type: "core", error: message.error });
+                }
                 break;
             }
             case "pong":
@@ -341,6 +482,12 @@ export class WebSocketCoreClient implements CoreClient {
         this.subscriptions.forEach((_onError, listener) => listener(snapshot));
     }
 
+    private handlePlaylistSnapshot(snapshot: PlaylistSnapshotDto) {
+        if (this.playlistSnapshot && snapshot.collectionRevision < this.playlistSnapshot.collectionRevision) return;
+        this.playlistSnapshot = snapshot;
+        this.playlistSubscriptions.forEach((listener) => listener(snapshot));
+    }
+
     private sendPendingCommands() {
         if (!this.protocolReady || this.socket?.readyState !== WebSocket.OPEN) return;
         this.pendingCommands.forEach((command) => {
@@ -350,6 +497,90 @@ export class WebSocketCoreClient implements CoreClient {
             );
             command.sent = true;
         });
+    }
+
+    private sendPendingPlaylistSnapshots() {
+        if (!this.protocolReady || this.socket?.readyState !== WebSocket.OPEN) return;
+        this.pendingPlaylistSnapshots.forEach((request, id) => {
+            if (request.sent) return;
+            this.socket?.send(JSON.stringify({ type: "playlistSnapshot", id }));
+            request.sent = true;
+        });
+    }
+
+    private sendPlaylistRequest<T>(
+        type: string,
+        body: Record<string, unknown>,
+        pending: Map<string, PendingPlaylistRequest<T>>,
+        retryOnReconnect: boolean,
+    ): Promise<T> {
+        if (this.disposed) return Promise.reject(this.transportError("WebSocket client is disposed"));
+        const id = `playlist-${createClientId()}`;
+        return new Promise<T>((resolve, reject) => {
+            pending.set(id, {
+                message: { type, id, ...body },
+                resolve,
+                reject,
+                sent: false,
+                retryOnReconnect,
+            });
+            this.sendPendingPlaylistRequests();
+            void this.connect().catch(() => {});
+        });
+    }
+
+    private sendPendingPlaylistRequests() {
+        if (!this.protocolReady || this.socket?.readyState !== WebSocket.OPEN) return;
+        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays]
+            .forEach((pending) => pending.forEach((request) => {
+                if (request.sent) return;
+                this.socket?.send(JSON.stringify(request.message));
+                request.sent = true;
+            }));
+    }
+
+    private resolvePlaylistRequest<T>(
+        pendingRequests: Map<string, PendingPlaylistRequest<T>>,
+        id: string | null | undefined,
+        result: T,
+    ) {
+        if (!id) return;
+        const pending = pendingRequests.get(id);
+        if (!pending) return;
+        pendingRequests.delete(id);
+        pending.resolve(result);
+    }
+
+    private rejectPlaylistRequest(id: string, error: CoreClientError) {
+        const pendingRequests = [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays];
+        for (const pending of pendingRequests) {
+            const request = pending.get(id);
+            if (!request) continue;
+            pending.delete(id);
+            request.reject(error);
+            return true;
+        }
+        return false;
+    }
+
+    private resetPendingPlaylistRequests() {
+        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays]
+            .forEach((pending) => pending.forEach((request, id) => {
+                if (request.retryOnReconnect) {
+                    request.sent = false;
+                    return;
+                }
+                pending.delete(id);
+                request.reject(this.transportError("playlist mutation connection was interrupted"));
+            }));
+    }
+
+    private rejectPendingPlaylistRequests(error: CoreClientError) {
+        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays]
+            .forEach((pending) => {
+                pending.forEach((request) => request.reject(error));
+                pending.clear();
+            });
     }
 
     private scheduleReconnect() {
@@ -376,6 +607,12 @@ export class WebSocketCoreClient implements CoreClient {
         const pending = Array.from(this.pendingCommands.values());
         this.pendingCommands.clear();
         pending.forEach((command) => command.reject(error));
+    }
+
+    private rejectPendingPlaylistSnapshots(error: CoreClientError) {
+        const pending = Array.from(this.pendingPlaylistSnapshots.values());
+        this.pendingPlaylistSnapshots.clear();
+        pending.forEach((request) => request.reject(error));
     }
 
     private rejectSnapshotWaiters(error: CoreClientError) {

@@ -3,6 +3,7 @@ use crate::protocol::{PlaylistLoopModeDto, PlaylistSnapshotDto, PlaylistSortMode
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::HashSet;
 use std::sync::Mutex;
+use tokio::sync::watch;
 
 pub(crate) const FAVORITES_PLAYLIST_ID: &str = "favorites";
 const MAX_ENTRY_PAGE_SIZE: u32 = 200;
@@ -83,13 +84,31 @@ pub(crate) struct PreparedPlaylist {
 /// callers read summaries or a bounded entry page, and every structural write is serialized.
 pub(crate) struct PlaylistService {
     mutation_lock: Mutex<()>,
+    snapshot_sender: watch::Sender<Option<PlaylistSnapshotDto>>,
 }
 
 impl PlaylistService {
     pub(crate) fn new() -> Self {
+        let (snapshot_sender, _) = watch::channel(None);
         Self {
             mutation_lock: Mutex::new(()),
+            snapshot_sender,
         }
+    }
+
+    /// Publishes the latest summary-only snapshot after a successful Core mutation.
+    /// Entry collections remain paged reads and are never retained in the subscription state.
+    pub(crate) fn publish_snapshot(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Result<PlaylistSnapshotDto, String> {
+        let snapshot = self.snapshot(app)?;
+        self.snapshot_sender.send_replace(Some(snapshot.clone()));
+        Ok(snapshot)
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<PlaylistSnapshotDto>> {
+        self.snapshot_sender.subscribe()
     }
 
     pub(crate) fn list_summaries(
