@@ -146,13 +146,6 @@ const playbackNavigation = usePlaybackNavigation({
     coreClient: tauriCoreClient,
 });
 
-useNavigationStateSync({
-    activePlaylistId,
-    loopMode,
-    sortMode,
-    isLoopOne,
-});
-
 const isWindowsPlatform =
     typeof navigator !== "undefined" && /\bwindows\b/i.test(navigator.userAgent);
 const isLinuxPlatform =
@@ -355,6 +348,14 @@ const { hasLoadedPanel, loadActivePanel } = useAppUiPersistence({
     playlistState,
     schedulePointerRefresh,
     normalizeStoredPanel,
+});
+
+useNavigationStateSync({
+    isHydrated: hasLoadedPanel,
+    activePlaylistId,
+    loopMode,
+    sortMode,
+    isLoopOne,
 });
 
 const {

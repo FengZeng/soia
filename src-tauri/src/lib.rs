@@ -563,6 +563,8 @@ pub fn run() {
             commands::playlist::get_playlist_summaries,
             commands::playlist::get_playlist_entries_page,
             commands::playlist::play_playlist_entry,
+            commands::playlist::create_playlist,
+            commands::playlist::mutate_playlist,
             commands::window::set_window_controls_visible,
             commands::window::apply_window_appearance,
             commands::window::set_window_vibrancy_visible,

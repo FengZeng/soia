@@ -75,6 +75,30 @@ impl NavigationService {
         state.playback_playlist_id = playlist_id;
     }
 
+    pub(crate) fn set_loop_mode(&self, loop_mode: LoopMode) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.loop_mode = loop_mode;
+    }
+
+    pub(crate) fn set_sort_mode(&self, sort_mode: SortMode) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.sort_mode = sort_mode;
+    }
+
+    pub(crate) fn set_loop_one(&self, is_loop_one: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.is_loop_one = is_loop_one;
+    }
+
     pub(crate) fn playlist_navigation_context(&self) -> PlaylistNavigationContext {
         let state = self
             .state

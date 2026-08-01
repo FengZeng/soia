@@ -21,6 +21,7 @@ type StoredSettingGroup = {
 const PLAYLIST_STATE_STORAGE_KEY = "soia.playlists.v2";
 
 type PlaylistPersistApi = {
+    loadFromCore: () => Promise<void>;
     applyPersistedState: (stored: {
         playlists?: Playlist[];
         playlistLoopMode?: "list" | "shuffle";
@@ -161,17 +162,15 @@ export const useAppUiPersistence = <PanelId extends string>({
         if (stored?.activePanel) {
             activePanel.value = normalizeStoredPanel(stored.activePanel);
         }
+        await playlistState.loadFromCore();
         const localPlaylistState = loadPlaylistStateFromLocal();
         const playlistStateFromStorage = {
-            playlists: hasOwn(stored, "playlists")
-                ? stored?.playlists
-                : localPlaylistState?.playlists,
-            playlistLoopMode: hasOwn(stored, "playlistLoopMode")
-                ? stored?.playlistLoopMode
-                : localPlaylistState?.playlistLoopMode,
-            playlistSortMode: hasOwn(stored, "playlistSortMode")
-                ? stored?.playlistSortMode
-                : localPlaylistState?.playlistSortMode,
+            // Playlist domain data is loaded from Core/SQLite, never from UI persistence.
+            playlists: undefined,
+            // Playback ordering belongs to Core with the playlist snapshot; local persistence
+            // must not overwrite it during Desktop startup.
+            playlistLoopMode: undefined,
+            playlistSortMode: undefined,
             activePlaylistId: hasOwn(stored, "activePlaylistId")
                 ? normalizePersistedActivePlaylistId(stored?.activePlaylistId)
                 : normalizePersistedActivePlaylistId(

@@ -209,6 +209,22 @@ impl PlaylistService {
         Ok(summary)
     }
 
+    pub(crate) fn create_playlist_checked(
+        &self,
+        app: &tauri::AppHandle,
+        name: &str,
+        expected_collection_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        require_collection_revision(&tx, expected_collection_revision)?;
+        let summary = create_playlist_in_transaction(&tx, name)?;
+        bump_collection_revision(&tx)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
     /// Persists one already-prepared playlist as a single transaction. Source recognition and
     /// parsing belong to the caller; this method only normalizes and stores domain data.
     pub(crate) fn import_prepared_playlist(
@@ -238,6 +254,124 @@ impl PlaylistService {
         let mut conn = media_db::open_db(app)?;
         let tx = conn.transaction().map_err(|error| error.to_string())?;
         delete_playlist_in_transaction(&tx, playlist_id, expected_revision)?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn delete_playlist_checked(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        expected_playlist_revision: i64,
+        expected_collection_revision: i64,
+    ) -> Result<(), String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        require_collection_revision(&tx, expected_collection_revision)?;
+        delete_playlist_in_transaction(&tx, playlist_id, expected_playlist_revision)?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn remove_entries(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        entry_ids: &[String],
+        expected_revision: i64,
+    ) -> Result<PlaylistSummary, String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        let playlist_id = require_playlist_revision(&tx, playlist_id, expected_revision)?;
+        let entry_ids = entry_ids
+            .iter()
+            .map(|entry_id| normalized_id(entry_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        if entry_ids.is_empty() || entry_ids.iter().collect::<HashSet<_>>().len() != entry_ids.len() {
+            return Err("remove entries requires unique entry ids".to_string());
+        }
+        for entry_id in &entry_ids {
+            let deleted = tx.execute(
+                "DELETE FROM playlist_entries WHERE playlist_id = ?1 AND id = ?2",
+                params![&playlist_id, entry_id],
+            ).map_err(|error| error.to_string())?;
+            if deleted == 0 {
+                return Err("playlist entry not found".to_string());
+            }
+        }
+        compact_entry_order(&tx, &playlist_id)?;
+        finish_playlist_mutation(&tx, &playlist_id)?;
+        let summary = playlist_summary_in_transaction(&tx, &playlist_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(summary)
+    }
+
+    pub(crate) fn reorder_playlists(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_ids: &[String],
+        expected_collection_revision: i64,
+    ) -> Result<(), String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        require_collection_revision(&tx, expected_collection_revision)?;
+        let current_ids = playlist_ids_in_order(&tx)?;
+        if playlist_ids.len() != current_ids.len()
+            || playlist_ids.iter().collect::<HashSet<_>>().len() != playlist_ids.len()
+            || playlist_ids.iter().collect::<HashSet<_>>() != current_ids.iter().collect::<HashSet<_>>() {
+            return Err("playlist reorder must contain every playlist exactly once".to_string());
+        }
+        for (index, playlist_id) in playlist_ids.iter().enumerate() {
+            tx.execute("UPDATE playlists SET order_index = ?2 WHERE id = ?1", params![playlist_id, -(index as i64) - 1])
+                .map_err(|error| error.to_string())?;
+        }
+        for (index, playlist_id) in playlist_ids.iter().enumerate() {
+            tx.execute("UPDATE playlists SET order_index = ?2, updated_at = ?3 WHERE id = ?1", params![playlist_id, index as i64, media_db::now_millis()])
+                .map_err(|error| error.to_string())?;
+        }
+        bump_collection_revision(&tx)?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn set_playback_preferences(
+        &self,
+        app: &tauri::AppHandle,
+        playback_playlist_id: Option<Option<&str>>,
+        loop_mode: Option<PlaylistLoopModeDto>,
+        sort_mode: Option<PlaylistSortModeDto>,
+        is_loop_one: Option<bool>,
+    ) -> Result<(), String> {
+        let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
+        let mut conn = media_db::open_db(app)?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        if let Some(playback_playlist_id) = playback_playlist_id {
+            if let Some(playlist_id) = playback_playlist_id {
+                let playlist_id = normalized_id(playlist_id)?;
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)", [&playlist_id], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                if !exists { return Err("playlist not found".to_string()); }
+                tx.execute("UPDATE playlist_state SET playback_playlist_id = ?1, updated_at = ?2 WHERE singleton = 1", params![playlist_id, media_db::now_millis()])
+                    .map_err(|error| error.to_string())?;
+            } else {
+                tx.execute("UPDATE playlist_state SET playback_playlist_id = NULL, updated_at = ?1 WHERE singleton = 1", [media_db::now_millis()])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        if let Some(loop_mode) = loop_mode {
+            let value = if matches!(loop_mode, PlaylistLoopModeDto::Shuffle) { "shuffle" } else { "list" };
+            tx.execute("UPDATE playlist_state SET loop_mode = ?1, updated_at = ?2 WHERE singleton = 1", params![value, media_db::now_millis()])
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(sort_mode) = sort_mode {
+            let value = if matches!(sort_mode, PlaylistSortModeDto::Added) { "added" } else { "name" };
+            tx.execute("UPDATE playlist_state SET sort_mode = ?1, updated_at = ?2 WHERE singleton = 1", params![value, media_db::now_millis()])
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(is_loop_one) = is_loop_one {
+            tx.execute("UPDATE playlist_state SET is_loop_one = ?1, updated_at = ?2 WHERE singleton = 1", params![i64::from(is_loop_one), media_db::now_millis()])
+                .map_err(|error| error.to_string())?;
+        }
         tx.commit().map_err(|error| error.to_string())
     }
 
@@ -1024,6 +1158,37 @@ fn require_playlist_revision(
         return Err(format!("playlist revision conflict: expected {expected_revision}, found {revision}"));
     }
     Ok(playlist_id)
+}
+
+fn require_collection_revision(
+    tx: &Transaction<'_>,
+    expected_revision: i64,
+) -> Result<(), String> {
+    let revision: i64 = tx
+        .query_row(
+            "SELECT collection_revision FROM playlist_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if revision != expected_revision {
+        return Err(format!(
+            "collection revision conflict: expected {expected_revision}, found {revision}"
+        ));
+    }
+    Ok(())
+}
+
+fn playlist_ids_in_order(tx: &Transaction<'_>) -> Result<Vec<String>, String> {
+    let mut statement = tx
+        .prepare("SELECT id FROM playlists ORDER BY order_index ASC, created_at ASC, id ASC")
+        .map_err(|error| error.to_string())?;
+    let playlist_ids = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(playlist_ids)
 }
 
 fn finish_playlist_mutation(tx: &Transaction<'_>, playlist_id: &str) -> Result<(), String> {

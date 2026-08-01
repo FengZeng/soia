@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { PlaylistLoopMode, PlaylistSortMode } from "../types/playlist";
 
 type NavigationStateSyncOptions = {
+    isHydrated: Ref<boolean>;
     activePlaylistId: Ref<string | null>;
     loopMode: Ref<PlaylistLoopMode>;
     sortMode: Ref<PlaylistSortMode>;
@@ -22,6 +23,7 @@ type NavigationStatePayload = {
  * entries from SQLite at command execution time.
  */
 export const useNavigationStateSync = ({
+    isHydrated,
     activePlaylistId,
     loopMode,
     sortMode,
@@ -42,8 +44,11 @@ export const useNavigationStateSync = ({
     };
 
     watch(
-        [activePlaylistId, loopMode, sortMode, isLoopOne],
-        syncToCore,
+        [isHydrated, activePlaylistId, loopMode, sortMode, isLoopOne],
+        () => {
+            if (!isHydrated.value) return;
+            syncToCore();
+        },
         { deep: true, immediate: true },
     );
 };

@@ -1,4 +1,5 @@
 import { computed, ref } from "vue";
+import { tauriPlaylistClient } from "../core-client/tauriPlaylistClient";
 import {
     FAVORITES_PLAYLIST_ID,
     FAVORITES_PLAYLIST_NAME,
@@ -385,6 +386,30 @@ export const usePlaylistState = () => {
         syncSelectionAfterMutation();
     };
 
+    const loadFromCore = async () => {
+        const snapshot = await tauriPlaylistClient.getSnapshot();
+        const summaries = snapshot.playlists;
+        loopMode.value = snapshot.loopMode === "shuffle" ? "shuffle" : "list";
+        sortMode.value = snapshot.sortMode === "added" ? "added" : "name";
+        isLoopOne.value = snapshot.isLoopOne;
+        const loaded = await Promise.all(summaries.map(async (summary) => {
+            const entries = [] as PlaylistEntry[];
+            for (let offset = 0; offset < summary.entryCount; offset += 200) {
+                const page = await tauriPlaylistClient.getEntriesPage({ playlistId: summary.id, offset, limit: 200 });
+                entries.push(...page.entries.map((entry) => ({
+                    path: entry.playbackKey, title: entry.title ?? undefined,
+                    iconUrl: entry.artworkRef ?? undefined, addedAt: entry.addedAt,
+                })));
+            }
+            return { id: summary.id, name: summary.name, entries, createdAt: summary.createdAt };
+        }));
+        playlists.value = normalizePlaylists(loaded);
+        playbackPlaylistId.value = hasPlaylist(snapshot.playbackPlaylistId)
+            ? snapshot.playbackPlaylistId
+            : null;
+        syncSelectionAfterMutation();
+    };
+
     const toPersistedState = () => ({
         playlists: playlists.value,
         playlistLoopMode: loopMode.value,
@@ -592,6 +617,7 @@ export const usePlaylistState = () => {
         isLoopOne,
         orderedPlaylist,
         applyPersistedState,
+        loadFromCore,
         toPersistedState,
         createPlaylistWithPaths,
         createPlaylistWithEntries,
