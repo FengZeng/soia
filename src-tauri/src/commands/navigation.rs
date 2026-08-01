@@ -1,4 +1,3 @@
-use crate::core::navigation::NavigationState;
 use crate::protocol::{CommandEnvelopeDto, CommandResultDto, CoreErrorDto, PlaybackCommandDto};
 use crate::AppState;
 use std::collections::VecDeque;
@@ -39,14 +38,6 @@ fn store_cached(client_id: &str, command_id: &str, result: Result<CommandResultD
         command_id: command_id.to_string(),
         result,
     });
-}
-
-#[tauri::command]
-pub(crate) fn sync_navigation_state(
-    state: tauri::State<'_, AppState>,
-    payload: NavigationState,
-) {
-    state.navigation_service.sync_state(payload);
 }
 
 /// Tauri command for Desktop to execute navigation through Core.

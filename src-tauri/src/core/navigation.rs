@@ -1,27 +1,22 @@
 use crate::core::playlist_service::{
     PlaylistLoopMode, PlaylistNavigationContext, PlaylistSortMode,
 };
-use serde::Deserialize;
 use std::sync::Mutex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LoopMode {
     List,
     Shuffle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SortMode {
     Name,
     Added,
 }
 
-/// Compact navigation context synced from Desktop. SQLite, via PlaylistService, owns playlist
-/// membership and entries, so this intentionally contains no playlist collection.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Core-initialized navigation context. SQLite owns playlist membership and entries.
+#[derive(Clone, Debug)]
 pub(crate) struct NavigationState {
     pub active_playlist_id: Option<String>,
     pub playback_playlist_id: Option<String>,
@@ -54,17 +49,12 @@ impl NavigationService {
         }
     }
 
-    /// Preserve the Core-selected playback playlist across frontend context refreshes.
-    pub(crate) fn sync_state(&self, new_state: NavigationState) {
+    pub(crate) fn initialize(&self, new_state: NavigationState) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let preserved_playback_id = state.playback_playlist_id.take();
         *state = new_state;
-        if state.playback_playlist_id.is_none() {
-            state.playback_playlist_id = preserved_playback_id;
-        }
     }
 
     pub(crate) fn set_playback_playlist_id(&self, playlist_id: Option<String>) {
@@ -125,10 +115,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frontend_sync_cannot_clear_core_playback_playlist() {
+    fn initialization_uses_the_core_playback_playlist() {
         let service = NavigationService::new();
         service.set_playback_playlist_id(Some("pl_1".to_string()));
-        service.sync_state(NavigationState {
+        service.initialize(NavigationState {
             active_playlist_id: Some("pl_2".to_string()),
             playback_playlist_id: None,
             loop_mode: LoopMode::Shuffle,
@@ -138,7 +128,7 @@ mod tests {
 
         let context = service.playlist_navigation_context();
         assert_eq!(context.active_playlist_id.as_deref(), Some("pl_2"));
-        assert_eq!(context.playback_playlist_id.as_deref(), Some("pl_1"));
+        assert_eq!(context.playback_playlist_id.as_deref(), Some("pl_2"));
         assert_eq!(context.loop_mode, PlaylistLoopMode::Shuffle);
         assert_eq!(context.sort_mode, PlaylistSortMode::Added);
     }

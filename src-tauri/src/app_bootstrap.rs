@@ -72,7 +72,7 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
     app.manage(build_app_state(mpv_player_handle));
     app.manage(crate::platform::new_platform_state());
 
-    load_navigation_state_from_persistence(app);
+    initialize_navigation_state_from_core(app);
 
     configure_mpv_startup(app)?;
     start_event_listener(app)?;
@@ -103,15 +103,30 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
     }
 }
 
-fn load_navigation_state_from_persistence(app: &tauri::App) {
+fn initialize_navigation_state_from_core(app: &tauri::App) {
     let app_handle = app.handle();
-    match ui_state_store::load_navigation_state(app_handle) {
-        Ok(nav_state) => {
-            let state: tauri::State<'_, AppState> = app.state();
-            state.navigation_service.sync_state(nav_state);
+    let state: tauri::State<'_, AppState> = app.state();
+    match state.playlist_service.snapshot(app_handle) {
+        Ok(snapshot) => {
+            let nav_state = crate::core::navigation::NavigationState {
+                active_playlist_id: None,
+                playback_playlist_id: snapshot.playback_playlist_id,
+                loop_mode: if matches!(snapshot.loop_mode, crate::protocol::PlaylistLoopModeDto::Shuffle) {
+                    crate::core::navigation::LoopMode::Shuffle
+                } else {
+                    crate::core::navigation::LoopMode::List
+                },
+                sort_mode: if matches!(snapshot.sort_mode, crate::protocol::PlaylistSortModeDto::Added) {
+                    crate::core::navigation::SortMode::Added
+                } else {
+                    crate::core::navigation::SortMode::Name
+                },
+                is_loop_one: snapshot.is_loop_one,
+            };
+            state.navigation_service.initialize(nav_state);
         }
         Err(error) => {
-            warn!("failed to load navigation state from persistence: {error}");
+            warn!("failed to initialize navigation state from playlist core: {error}");
         }
     }
 }

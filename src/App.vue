@@ -34,7 +34,6 @@ import { usePlaybackNavigation } from "./composables/usePlaybackNavigation";
 import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePersistence";
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
-import { useNavigationStateSync } from "./composables/useNavigationStateSync";
 import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
 
@@ -345,14 +344,6 @@ const { hasLoadedPanel, loadActivePanel } = useAppUiPersistence({
     playlistState,
     schedulePointerRefresh,
     normalizeStoredPanel,
-});
-
-useNavigationStateSync({
-    isHydrated: hasLoadedPanel,
-    activePlaylistId,
-    loopMode,
-    sortMode,
-    isLoopOne,
 });
 
 const {

@@ -596,7 +596,6 @@ pub fn run() {
             remote_control::get_remote_control_status,
             remote_control::set_remote_control_enabled,
             remote_control::disconnect_remote_control_devices,
-            commands::navigation::sync_navigation_state,
             commands::navigation::execute_navigation_command,
             commands::persistence::load_play_history,
             commands::persistence::save_play_history,
