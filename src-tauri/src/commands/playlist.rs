@@ -34,12 +34,19 @@ pub(crate) fn create_playlist(
     state: tauri::State<'_, AppState>,
     request: CreatePlaylistDto,
 ) -> Result<PlaylistMutationResultDto, String> {
-    state.playlist_service.create_playlist_checked(
+    let playlist = state.playlist_service.create_playlist_checked(
         &app,
         &request.name,
         revision_to_i64(request.expected_collection_revision)?,
     )?;
-    publish_playlist_snapshot(&app, &state)
+    publish_playlist_snapshot(
+        &app,
+        &state,
+        Some(crate::protocol::PlaylistDto {
+            summary: to_summary_dto(&playlist),
+            entries: Vec::new(),
+        }),
+    )
 }
 
 #[tauri::command]
@@ -99,7 +106,7 @@ pub(crate) fn mutate_playlist(
             state.navigation_service.set_loop_one(is_loop_one);
         }
     }
-    publish_playlist_snapshot(&app, &state)
+    publish_playlist_snapshot(&app, &state, None)
 }
 
 #[tauri::command]
@@ -195,12 +202,13 @@ fn revision_to_i64(revision: u64) -> Result<i64, String> {
 fn publish_playlist_snapshot(
     app: &tauri::AppHandle,
     state: &AppState,
+    playlist: Option<crate::protocol::PlaylistDto>,
 ) -> Result<PlaylistMutationResultDto, String> {
     let snapshot = state.playlist_service.snapshot(app)?;
     app.emit("playlist-snapshot", &snapshot)
         .map_err(|error| error.to_string())?;
     Ok(PlaylistMutationResultDto {
-        playlist: None,
+        playlist,
         collection_revision: snapshot.collection_revision,
     })
 }

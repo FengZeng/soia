@@ -53,7 +53,7 @@ type PlaylistApi = {
             openInDrawer?: boolean;
             setAsPlayback?: boolean;
         },
-    ) => string | null;
+    ) => Promise<string | null>;
     createPlaylistWithEntries: (
         entries: Array<{ path: string; title?: string; iconUrl?: string }>,
         options?: {
@@ -61,7 +61,7 @@ type PlaylistApi = {
             openInDrawer?: boolean;
             setAsPlayback?: boolean;
         },
-    ) => string | null;
+    ) => Promise<string | null>;
     getDefaultPlaylistNameForPaths: (paths: string[], fallback?: string) => string;
     getDefaultPlaylistNameForEntries: (
         entries: Array<{ path: string; title?: string; iconUrl?: string }>,
@@ -451,7 +451,7 @@ export const usePlaybackFlow = ({
                 getPlaylistSourceLabel(source),
             );
             if (confirmation.shouldCreate) {
-                const playlistId = playlistState.createPlaylistWithEntries(
+                const playlistId = await playlistState.createPlaylistWithEntries(
                     playlistEntries,
                     {
                         name: confirmation.name,
@@ -508,7 +508,7 @@ export const usePlaybackFlow = ({
                 url,
             );
             if (confirmation.shouldCreate) {
-                const playlistId = playlistState.createPlaylistWithEntries(
+                const playlistId = await playlistState.createPlaylistWithEntries(
                     playlistEntries,
                     {
                         name: confirmation.name,
@@ -553,7 +553,7 @@ export const usePlaybackFlow = ({
                 getCommonSelectionSourceLabel(selected),
             );
             if (confirmation.shouldCreate) {
-                const playlistId = playlistState.createPlaylistWithPaths(
+                const playlistId = await playlistState.createPlaylistWithPaths(
                     selected,
                     {
                         name: confirmation.name,

@@ -339,12 +339,9 @@ const playbackContextMenu = usePlaybackContextMenu({
 
 const { hasLoadedPanel, loadActivePanel } = useAppUiPersistence({
     activePanel,
-    playlists,
     activePlaylistId,
     playlistScrollState,
     playlistDrawerWidthRatio,
-    loopMode,
-    sortMode,
     playlistState,
     schedulePointerRefresh,
     normalizeStoredPanel,

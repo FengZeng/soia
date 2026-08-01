@@ -7,15 +7,15 @@ type SideActionId = "home" | "history" | "network" | "settings";
 type ClearConfirmTarget = "playlist" | "history" | null;
 
 type PlaylistApi = {
-    addFromDrawerSelection: (paths: string[]) => void;
-    clearActivePlaylist: () => void;
-    removeFromActivePlaylist: (entry: PlaylistEntry) => void;
+    addFromDrawerSelection: (paths: string[]) => Promise<void>;
+    clearActivePlaylist: () => Promise<void>;
+    removeFromActivePlaylist: (entry: PlaylistEntry) => Promise<void>;
     enterPlaylist: (playlistId: string) => void;
     backToPlaylistList: () => void;
-    renamePlaylist: (playlistId: string, name: string) => void;
-    deletePlaylist: (playlistId: string) => void;
-    movePlaylist: (fromPlaylistId: string, toPlaylistId: string) => void;
-    markActivePlaylistAsPlayback: () => void;
+    renamePlaylist: (playlistId: string, name: string) => Promise<void>;
+    deletePlaylist: (playlistId: string) => Promise<void>;
+    movePlaylist: (fromPlaylistId: string, toPlaylistId: string) => Promise<void>;
+    markActivePlaylistAsPlayback: () => Promise<void>;
     toggleLoopOne: (setLoopFile: (enabled: boolean) => Promise<void>) => Promise<void>;
     togglePlaylistLoop: (setLoopFile: (enabled: boolean) => Promise<void>) => Promise<void>;
 };
@@ -118,13 +118,13 @@ export const useAppUiActions = ({
     const addPlaylistWithFilePicker = async () => {
         const selected = await player.pickFiles();
         if (!selected.length) return;
-        playlistState.addFromDrawerSelection(selected);
+        await playlistState.addFromDrawerSelection(selected);
     };
 
     const addPlaylistWithAutoPicker = async () => {
         const selected = await player.pickMediaPathsAuto();
         if (!selected.length) return;
-        playlistState.addFromDrawerSelection(selected);
+        await playlistState.addFromDrawerSelection(selected);
     };
 
     const requestAddPlaylistItem = () => {
@@ -157,22 +157,22 @@ export const useAppUiActions = ({
         clearConfirmTarget.value = null;
     };
 
-    const onConfirmClear = () => {
+    const onConfirmClear = async () => {
         if (clearConfirmTarget.value === "history") {
             history.clearHistory();
         }
         if (clearConfirmTarget.value === "playlist") {
-            playlistState.clearActivePlaylist();
+            await playlistState.clearActivePlaylist();
         }
         clearConfirmTarget.value = null;
     };
 
-    const onRemovePlaylistItem = (entry: PlaylistEntry) => {
-        playlistState.removeFromActivePlaylist(entry);
+    const onRemovePlaylistItem = async (entry: PlaylistEntry) => {
+        await playlistState.removeFromActivePlaylist(entry);
     };
 
     const onPlayPlaylist = async (entry: PlaylistEntry) => {
-        playlistState.markActivePlaylistAsPlayback();
+        await playlistState.markActivePlaylistAsPlayback();
         closePlaylist();
         await playPath(entry.path, entry.title?.trim() || undefined);
     };
@@ -185,16 +185,16 @@ export const useAppUiActions = ({
         playlistState.backToPlaylistList();
     };
 
-    const onRenamePlaylist = (playlistId: string, name: string) => {
-        playlistState.renamePlaylist(playlistId, name);
+    const onRenamePlaylist = async (playlistId: string, name: string) => {
+        await playlistState.renamePlaylist(playlistId, name);
     };
 
-    const onDeletePlaylist = (playlistId: string) => {
-        playlistState.deletePlaylist(playlistId);
+    const onDeletePlaylist = async (playlistId: string) => {
+        await playlistState.deletePlaylist(playlistId);
     };
 
-    const onMovePlaylist = (fromPlaylistId: string, toPlaylistId: string) => {
-        playlistState.movePlaylist(fromPlaylistId, toPlaylistId);
+    const onMovePlaylist = async (fromPlaylistId: string, toPlaylistId: string) => {
+        await playlistState.movePlaylist(fromPlaylistId, toPlaylistId);
     };
 
     const onPrevTrack = () => playPreviousTrack();

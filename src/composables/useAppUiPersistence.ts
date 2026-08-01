@@ -1,10 +1,5 @@
 import { onUnmounted, ref, watch, type Ref } from "vue";
-import type {
-    Playlist,
-    PlaylistScrollState,
-    PlaylistLoopMode,
-    PlaylistSortMode,
-} from "../types/playlist";
+import type { PlaylistScrollState } from "../types/playlist";
 import { applyThemeFromSettingGroups } from "../constants/theme";
 import { applyWindowDecorationsFromSettingGroups } from "../constants/windowDecorations";
 import {
@@ -22,24 +17,13 @@ const PLAYLIST_STATE_STORAGE_KEY = "soia.playlists.v2";
 
 type PlaylistPersistApi = {
     loadFromCore: () => Promise<void>;
-    applyPersistedState: (stored: {
-        playlists?: Playlist[];
-        playlistLoopMode?: "list" | "shuffle";
-        playlistSortMode?: "name" | "added";
-        activePlaylistId?: string | null;
-    }) => void;
+    applyPersistedState: (stored: { activePlaylistId?: string | null }) => void;
     toPersistedState: () => {
-        playlists: Playlist[];
-        playlistLoopMode: PlaylistLoopMode;
-        playlistSortMode: PlaylistSortMode;
         activePlaylistId: string | null;
     };
 };
 
 type PlaylistPersistedPayload = {
-    playlists: Playlist[];
-    playlistLoopMode: PlaylistLoopMode;
-    playlistSortMode: PlaylistSortMode;
     activePlaylistId: string | null;
     playlistScrollState: PlaylistScrollState;
     playlistDrawerWidthRatio: number | null;
@@ -116,12 +100,9 @@ const loadPlaylistStateFromLocal = (): Partial<PlaylistPersistedPayload> | null 
 
 type UseAppUiPersistenceOptions<PanelId extends string> = {
     activePanel: Ref<PanelId>;
-    playlists: Ref<Playlist[]>;
     activePlaylistId: Ref<string | null>;
     playlistScrollState: Ref<PlaylistScrollState>;
     playlistDrawerWidthRatio: Ref<number | null>;
-    loopMode: Ref<PlaylistLoopMode>;
-    sortMode: Ref<PlaylistSortMode>;
     playlistState: PlaylistPersistApi;
     schedulePointerRefresh: () => void;
     normalizeStoredPanel: (panel: string) => PanelId;
@@ -129,12 +110,9 @@ type UseAppUiPersistenceOptions<PanelId extends string> = {
 
 export const useAppUiPersistence = <PanelId extends string>({
     activePanel,
-    playlists,
     activePlaylistId,
     playlistScrollState,
     playlistDrawerWidthRatio,
-    loopMode,
-    sortMode,
     playlistState,
     schedulePointerRefresh,
     normalizeStoredPanel,
@@ -149,9 +127,6 @@ export const useAppUiPersistence = <PanelId extends string>({
     const loadActivePanel = async () => {
         const stored = await loadUiState<{
             activePanel?: string;
-            playlists?: Playlist[];
-            playlistLoopMode?: "list" | "shuffle";
-            playlistSortMode?: "name" | "added";
             activePlaylistId?: string | null;
             playlistScrollState?: PlaylistScrollState;
             playlistDrawerWidthRatio?: number | null;
@@ -165,12 +140,6 @@ export const useAppUiPersistence = <PanelId extends string>({
         await playlistState.loadFromCore();
         const localPlaylistState = loadPlaylistStateFromLocal();
         const playlistStateFromStorage = {
-            // Playlist domain data is loaded from Core/SQLite, never from UI persistence.
-            playlists: undefined,
-            // Playback ordering belongs to Core with the playlist snapshot; local persistence
-            // must not overwrite it during Desktop startup.
-            playlistLoopMode: undefined,
-            playlistSortMode: undefined,
             activePlaylistId: hasOwn(stored, "activePlaylistId")
                 ? normalizePersistedActivePlaylistId(stored?.activePlaylistId)
                 : normalizePersistedActivePlaylistId(
@@ -207,7 +176,7 @@ export const useAppUiPersistence = <PanelId extends string>({
             playlistScrollState.value,
         );
         savePlaylistStateToLocal({
-            ...persisted,
+            activePlaylistId: persisted.activePlaylistId,
             playlistScrollState: normalizedScrollState,
             playlistDrawerWidthRatio: normalizePlaylistDrawerWidthRatio(
                 playlistDrawerWidthRatio.value,
@@ -216,7 +185,6 @@ export const useAppUiPersistence = <PanelId extends string>({
         // Backend UI state merge cannot clear Option<String> with null.
         // Persist empty string as an explicit "go back to playlists" marker.
         void saveUiState({
-            ...persisted,
             activePlaylistId: persisted.activePlaylistId ?? "",
             playlistScrollState: normalizedScrollState,
             playlistDrawerWidthRatio: normalizePlaylistDrawerWidthRatio(
@@ -243,7 +211,7 @@ export const useAppUiPersistence = <PanelId extends string>({
     );
 
     watch(
-        [playlists, loopMode, sortMode, playlistDrawerWidthRatio],
+        playlistDrawerWidthRatio,
         () => {
             savePlaylistState();
         },
@@ -257,7 +225,7 @@ export const useAppUiPersistence = <PanelId extends string>({
             const persisted = playlistState.toPersistedState();
             const normalizedScrollState = normalizePlaylistScrollState(scrollState);
             savePlaylistStateToLocal({
-                ...persisted,
+                activePlaylistId: persisted.activePlaylistId,
                 playlistScrollState: normalizedScrollState,
                 playlistDrawerWidthRatio: normalizePlaylistDrawerWidthRatio(
                     playlistDrawerWidthRatio.value,

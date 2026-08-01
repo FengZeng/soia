@@ -297,35 +297,6 @@ fn playlist_state_from_ui(state: &UiState) -> Option<playlist_store::PlaylistPer
     })
 }
 
-fn apply_playlist_state_to_ui(
-    state: &mut UiState,
-    playlist_state: playlist_store::PlaylistPersistenceState,
-) {
-    state.playlists = Some(
-        playlist_state
-            .playlists
-            .into_iter()
-            .map(|playlist| Playlist {
-                id: playlist.id,
-                name: playlist.name,
-                entries: playlist
-                    .entries
-                    .into_iter()
-                    .map(|entry| PlaylistEntry {
-                        path: entry.path,
-                        title: entry.title,
-                        icon_url: entry.artwork_ref,
-                        added_at: entry.added_at,
-                    })
-                    .collect(),
-                created_at: playlist.created_at,
-            })
-            .collect(),
-    );
-    state.playlist_loop_mode = playlist_state.playlist_loop_mode;
-    state.playlist_sort_mode = playlist_state.playlist_sort_mode;
-}
-
 fn load_state_from_disk(path: &Path, legacy_path: &Path) -> Result<UiState, String> {
     if let Some(state) = cached_ui_state() {
         return Ok(state);
@@ -364,7 +335,6 @@ pub fn load_ui_state(app: &tauri::AppHandle) -> Result<UiState, String> {
         }
     }
     store_ui_state_cache(&state);
-    apply_playlist_state_to_ui(&mut state, playlist_store::load_state(app)?);
     Ok(state)
 }
 
@@ -416,9 +386,6 @@ pub fn load_ytdl_max_height(app: &tauri::AppHandle) -> u32 {
 pub fn save_ui_state(app: &tauri::AppHandle, state: UiState) -> Result<(), String> {
     let path = ui_state_file_path(app)?;
     let legacy_path = legacy_ui_state_file_path(app)?;
-    if let Some(playlist_state) = playlist_state_from_ui(&state) {
-        playlist_store::save_state(app, &playlist_state)?;
-    }
     let state = strip_playlist(&state);
     let existing = load_state_from_disk(&path, &legacy_path)?;
     let merged = existing.merge(state);

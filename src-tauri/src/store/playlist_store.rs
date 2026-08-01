@@ -44,11 +44,6 @@ pub fn migrate_legacy_state(
     tx.commit().map_err(|error| error.to_string())
 }
 
-pub fn load_state(app: &tauri::AppHandle) -> Result<PlaylistPersistenceState, String> {
-    let conn = media_db::open_db(app)?;
-    load_state_from_connection(&conn)
-}
-
 pub fn load_navigation_preferences(
     app: &tauri::AppHandle,
 ) -> Result<PlaylistNavigationPreferences, String> {
@@ -66,16 +61,6 @@ pub fn load_navigation_preferences(
         playlist_loop_mode: Some(loop_mode),
         playlist_sort_mode: Some(sort_mode),
     })
-}
-
-pub fn save_state(
-    app: &tauri::AppHandle,
-    state: &PlaylistPersistenceState,
-) -> Result<(), String> {
-    let mut conn = media_db::open_db(app)?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    replace_state(&tx, state)?;
-    tx.commit().map_err(|error| error.to_string())
 }
 
 fn normalize_playlist_id(id: &str) -> String {
@@ -145,44 +130,6 @@ fn import_legacy_state(
         insert_playlist(tx, playlist, order_index as i64, true)?;
     }
     update_playlist_state(tx, state, false)
-}
-
-fn replace_state(tx: &Transaction<'_>, state: &PlaylistPersistenceState) -> Result<(), String> {
-    let playback_playlist_id: Option<String> = tx
-        .query_row(
-            "SELECT playback_playlist_id FROM playlist_state WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .flatten();
-    let mut playlists = normalized_playlists(&state.playlists);
-    if !playlists.iter().any(|playlist| playlist.id == FAVORITES_PLAYLIST_ID) {
-        playlists.insert(0, PersistedPlaylist {
-            id: FAVORITES_PLAYLIST_ID.to_string(),
-            name: FAVORITES_PLAYLIST_NAME.to_string(),
-            entries: Vec::new(),
-            created_at: 0,
-        });
-    }
-    tx.execute("DELETE FROM playlist_entries", [])
-        .map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM playlists", [])
-        .map_err(|error| error.to_string())?;
-    for (order_index, playlist) in playlists.iter().enumerate() {
-        insert_playlist(tx, playlist, order_index as i64, false)?;
-    }
-    if let Some(playback_playlist_id) = playback_playlist_id
-        .filter(|id| playlists.iter().any(|playlist| playlist.id == *id))
-    {
-        tx.execute(
-            "UPDATE playlist_state SET playback_playlist_id = ?1 WHERE singleton = 1",
-            [&playback_playlist_id],
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    update_playlist_state(tx, state, true)
 }
 
 fn insert_playlist(
@@ -262,46 +209,6 @@ fn update_playlist_state(
     }
     .map_err(|error| error.to_string())?;
     Ok(())
-}
-
-fn load_state_from_connection(conn: &rusqlite::Connection) -> Result<PlaylistPersistenceState, String> {
-    let mut playlist_statement = conn
-        .prepare("SELECT id, name, created_at FROM playlists ORDER BY order_index ASC, created_at ASC")
-        .map_err(|error| error.to_string())?;
-    let rows = playlist_statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)))
-        .map_err(|error| error.to_string())?;
-    let mut playlists = Vec::new();
-    for row in rows {
-        let (id, name, created_at) = row.map_err(|error| error.to_string())?;
-        let mut entries = conn
-            .prepare("SELECT path, title, artwork_ref, added_at FROM playlist_entries WHERE playlist_id = ?1 ORDER BY order_index ASC, added_at ASC")
-            .map_err(|error| error.to_string())?;
-        let entry_rows = entries
-            .query_map([&id], |row| Ok(PersistedPlaylistEntry {
-                path: row.get(0)?,
-                title: non_empty(row.get::<_, Option<String>>(1)?.as_deref()),
-                artwork_ref: row.get(2)?,
-                added_at: row.get(3)?,
-            }))
-            .map_err(|error| error.to_string())?;
-        let entries = entry_rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-        playlists.push(PersistedPlaylist { id, name, entries, created_at });
-    }
-    let (loop_mode, sort_mode) = conn
-        .query_row(
-            "SELECT loop_mode, sort_mode FROM playlist_state WHERE singleton = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .unwrap_or(("list".to_string(), "added".to_string()));
-    Ok(PlaylistPersistenceState {
-        playlists,
-        playlist_loop_mode: Some(loop_mode),
-        playlist_sort_mode: Some(sort_mode),
-    })
 }
 
 fn normalize_loop_mode(value: Option<&str>) -> &str {
@@ -416,61 +323,4 @@ mod tests {
         assert_eq!(artwork.as_deref(), Some("https://example.test/news.jpg"));
     }
 
-    #[test]
-    fn compatibility_save_and_load_round_trip_preserves_entries_and_modes() {
-        let mut conn = connection();
-        let state = sample_state();
-
-        let tx = conn.transaction().expect("begin save");
-        replace_state(&tx, &state).expect("save state");
-        tx.commit().expect("commit save");
-
-        let loaded = load_state_from_connection(&conn).expect("load state");
-        assert_eq!(loaded.playlist_loop_mode.as_deref(), Some("shuffle"));
-        assert_eq!(loaded.playlist_sort_mode.as_deref(), Some("name"));
-        assert_eq!(loaded.playlists.len(), 1);
-        let favorites = &loaded.playlists[0];
-        assert_eq!(favorites.id, FAVORITES_PLAYLIST_ID);
-        assert_eq!(favorites.entries.len(), 1);
-        assert_eq!(favorites.entries[0].title.as_deref(), Some("News"));
-        assert_eq!(
-            favorites.entries[0].artwork_ref.as_deref(),
-            Some("https://example.test/news.jpg")
-        );
-    }
-
-    #[test]
-    fn compatibility_save_keeps_an_existing_playback_playlist_reference() {
-        let mut conn = connection();
-        let state = PlaylistPersistenceState {
-            playlists: vec![PersistedPlaylist {
-                id: "watch-later".to_string(),
-                name: "Watch later".to_string(),
-                entries: Vec::new(),
-                created_at: 10,
-            }],
-            ..PlaylistPersistenceState::default()
-        };
-        let tx = conn.transaction().expect("begin first save");
-        replace_state(&tx, &state).expect("first save");
-        tx.commit().expect("commit first save");
-        conn.execute(
-            "UPDATE playlist_state SET playback_playlist_id = 'watch-later' WHERE singleton = 1",
-            [],
-        )
-        .expect("set playback playlist");
-
-        let tx = conn.transaction().expect("begin repeated save");
-        replace_state(&tx, &state).expect("repeated save");
-        tx.commit().expect("commit repeated save");
-
-        let playback_playlist_id: Option<String> = conn
-            .query_row(
-                "SELECT playback_playlist_id FROM playlist_state WHERE singleton = 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read playback playlist");
-        assert_eq!(playback_playlist_id.as_deref(), Some("watch-later"));
-    }
 }

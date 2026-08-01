@@ -250,7 +250,10 @@ async fn handle_websocket_text(
                 &request.playlist_id,
                 request.expected_playlist_revision as i64,
             ) {
-                Ok(()) => WebSocketServerMessage::PlaylistDeleted { id, playlist_id: request.playlist_id },
+                Ok(()) => {
+                    emit_playlist_snapshot(&state.app_handle, &app_state);
+                    WebSocketServerMessage::PlaylistDeleted { id, playlist_id: request.playlist_id }
+                }
                 Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
             }
         }
@@ -259,7 +262,10 @@ async fn handle_websocket_text(
             let result = crate::commands::playback::prepare_playlist_import(&state.app_handle, &request.source)
                 .and_then(|prepared| app_state.playlist_service.import_prepared_playlist(&state.app_handle, prepared));
             match result {
-                Ok(playlist) => WebSocketServerMessage::PlaylistImported { id, playlist: PlaylistSummaryDto { id: playlist.id, name: playlist.name, created_at: playlist.created_at, order_index: playlist.order_index, revision: playlist.revision.max(0) as u64, entry_count: playlist.entry_count, is_protected: playlist.is_protected } },
+                Ok(playlist) => {
+                    emit_playlist_snapshot(&state.app_handle, &app_state);
+                    WebSocketServerMessage::PlaylistImported { id, playlist: PlaylistSummaryDto { id: playlist.id, name: playlist.name, created_at: playlist.created_at, order_index: playlist.order_index, revision: playlist.revision.max(0) as u64, entry_count: playlist.entry_count, is_protected: playlist.is_protected } }
+                }
                 Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
             }
         }
@@ -336,6 +342,12 @@ async fn handle_websocket_text(
                 message: format!("invalid websocket message: {error}"),
             },
         },
+    }
+}
+
+fn emit_playlist_snapshot(app: &tauri::AppHandle, state: &AppState) {
+    if let Ok(snapshot) = state.playlist_service.snapshot(app) {
+        let _ = app.emit("playlist-snapshot", snapshot);
     }
 }
 

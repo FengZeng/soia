@@ -1,4 +1,5 @@
 export type PlaylistEntry = {
+    coreEntryId?: string;
     path: string;
     title?: string;
     iconUrl?: string;
@@ -7,6 +8,7 @@ export type PlaylistEntry = {
 
 export type Playlist = {
     id: string;
+    coreRevision?: number;
     name: string;
     entries: PlaylistEntry[];
     createdAt: number;

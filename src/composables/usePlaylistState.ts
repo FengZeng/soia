@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { tauriPlaylistClient } from "../core-client/tauriPlaylistClient";
 import {
     FAVORITES_PLAYLIST_ID,
@@ -29,9 +29,6 @@ type CreatePlaylistEntryInput = {
     title?: string;
     iconUrl?: string;
 };
-
-const isValidSortMode = (value: unknown): value is PlaylistSortMode =>
-    value === "name" || value === "added";
 
 const createPlaylistId = () =>
     `pl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -116,6 +113,7 @@ const normalizePlaylistEntries = (entries: PlaylistEntry[]): PlaylistEntry[] => 
         const title = entry?.title?.trim() || undefined;
         const iconUrl = entry?.iconUrl?.trim() || undefined;
         unique.set(path, {
+            coreEntryId: entry.coreEntryId,
             path,
             title,
             iconUrl,
@@ -139,6 +137,7 @@ const normalizePlaylists = (items: Playlist[] | undefined): Playlist[] => {
     source.forEach((item, index) => {
         const normalizedPlaylist: Playlist = {
             id: item.id || createPlaylistId(),
+            coreRevision: item.coreRevision,
             name: normalizePlaylistName(item.name, `Playlist ${index + 1}`),
             entries: normalizePlaylistEntries(item.entries ?? []),
             createdAt:
@@ -190,6 +189,8 @@ export const usePlaylistState = () => {
     const loopMode = ref<PlaylistLoopMode>("list");
     const sortMode = ref<PlaylistSortMode>("added");
     const isLoopOne = ref(false);
+    const collectionRevision = ref(0);
+    let unsubscribeFromCore: (() => void) | null = null;
 
     const activePlaylist = computed<Playlist | null>(
         () =>
@@ -224,76 +225,50 @@ export const usePlaylistState = () => {
         }
     };
 
-    const addManyToPlaylist = (playlistId: string, paths: string[]) => {
-        const playlistIndex = playlists.value.findIndex((item) => item.id === playlistId);
-        if (playlistIndex < 0) return;
-
-        const target = playlists.value[playlistIndex];
+    const addManyToPlaylist = async (playlistId: string, paths: string[]) => {
+        const target = findPlaylistById(playlistId);
+        if (!target?.coreRevision) return;
         const existing = new Set(target.entries.map((item) => item.path));
         const dedupedPaths = Array.from(
             new Set(paths.map((item) => item.trim()).filter(Boolean)),
         );
-        const timestamp = Date.now();
         const additions = dedupedPaths
             .filter((path) => !existing.has(path))
-            .map((path, index) => ({ path, addedAt: timestamp + index }));
+            .map((path) => ({ playbackKey: path, title: null, artworkRef: null }));
         if (!additions.length) return;
-
-        const nextPlaylists = [...playlists.value];
-        nextPlaylists[playlistIndex] = {
-            ...target,
-            entries: [...target.entries, ...additions],
-        };
-        playlists.value = nextPlaylists;
+        await tauriPlaylistClient.mutate({
+            type: "addEntries", playlistId, entries: additions,
+            expectedPlaylistRevision: target.coreRevision,
+        });
+        await loadFromCore();
     };
 
-    const addEntryToPlaylist = (
+    const addEntryToPlaylist = async (
         playlistId: string,
         item: CreatePlaylistEntryInput,
     ) => {
-        const playlistIndex = playlists.value.findIndex((entry) => entry.id === playlistId);
-        if (playlistIndex < 0) return;
+        const target = findPlaylistById(playlistId);
+        if (!target?.coreRevision) return;
 
         const path = item.path?.trim() ?? "";
         if (!path) return;
 
-        const target = playlists.value[playlistIndex];
-        const title = item.title?.trim() || undefined;
-        const iconUrl = item.iconUrl?.trim() || undefined;
-        const existingIndex = target.entries.findIndex((entry) => entry.path === path);
-        const nextEntries = [...target.entries];
-
-        if (existingIndex >= 0) {
-            nextEntries[existingIndex] = {
-                ...nextEntries[existingIndex],
-                title: title ?? nextEntries[existingIndex]?.title,
-                iconUrl: iconUrl ?? nextEntries[existingIndex]?.iconUrl,
-            };
-        } else {
-            nextEntries.push({
-                path,
-                title,
-                iconUrl,
-                addedAt: Date.now(),
-            });
-        }
-
-        const nextPlaylists = [...playlists.value];
-        nextPlaylists[playlistIndex] = {
-            ...target,
-            entries: nextEntries,
-        };
-        playlists.value = nextPlaylists;
+        await tauriPlaylistClient.mutate({
+            type: "addEntries", playlistId,
+            entries: [{ playbackKey: path, title: item.title?.trim() || null, artworkRef: item.iconUrl?.trim() || null }],
+            expectedPlaylistRevision: target.coreRevision,
+        });
+        await loadFromCore();
     };
 
-    const addToFavorites = (item: CreatePlaylistEntryInput) => {
-        addEntryToPlaylist(FAVORITES_PLAYLIST_ID, item);
+    const addToFavorites = async (item: CreatePlaylistEntryInput) => {
+        await addEntryToPlaylist(FAVORITES_PLAYLIST_ID, item);
     };
 
-    const createPlaylistWithEntries = (
+    const createPlaylistWithEntries = async (
         items: CreatePlaylistEntryInput[],
         options: CreatePlaylistOptions = {},
-    ): string | null => {
+    ): Promise<string | null> => {
         const timestamp = Date.now();
         const normalizedItems = items
             .map((item) => ({
@@ -311,7 +286,6 @@ export const usePlaylistState = () => {
         const normalizedEntries = normalizePlaylistEntries(entries);
         if (!normalizedEntries.length) return null;
 
-        const playlistId = createPlaylistId();
         const fallbackName = `Playlist ${
             playlists.value.filter((item) => !isFavoritesPlaylist(item.id)).length + 1
         }`;
@@ -319,20 +293,34 @@ export const usePlaylistState = () => {
             normalizedEntries.map((item) => item.path),
             fallbackName,
         );
-        const newPlaylist: Playlist = {
-            id: playlistId,
+        const created = await tauriPlaylistClient.create({
             name: normalizePlaylistName(options.name, derivedName),
-            entries: normalizedEntries,
-            createdAt: timestamp,
-        };
-
-        playlists.value = [...playlists.value, newPlaylist];
+            expectedCollectionRevision: collectionRevision.value,
+        });
+        const playlistId = created.playlist?.summary.id;
+        if (!playlistId || !created.playlist) return null;
+        if (normalizedEntries.length) {
+            await tauriPlaylistClient.mutate({
+                type: "addEntries",
+                playlistId,
+                entries: normalizedEntries.map((entry) => ({
+                    playbackKey: entry.path,
+                    title: entry.title ?? null,
+                    artworkRef: entry.iconUrl ?? null,
+                })),
+                expectedPlaylistRevision: created.playlist.summary.revision,
+            });
+        }
         if (options.openInDrawer) {
             activePlaylistId.value = playlistId;
         }
         if (options.setAsPlayback) {
-            playbackPlaylistId.value = playlistId;
+            await tauriPlaylistClient.mutate({
+                type: "setPlaybackPlaylist",
+                playlistId,
+            });
         }
+        await loadFromCore();
         return playlistId;
     };
 
@@ -358,27 +346,16 @@ export const usePlaylistState = () => {
             fallback,
         );
 
-    const createPlaylistWithPaths = (
+    const createPlaylistWithPaths = async (
         paths: string[],
         options: CreatePlaylistOptions = {},
-    ): string | null =>
-        createPlaylistWithEntries(
+    ): Promise<string | null> =>
+        await createPlaylistWithEntries(
             paths.map((path) => ({ path })),
             options,
         );
 
     const applyPersistedState = (stored: PersistedPlaylistState) => {
-        if (stored.playlists) {
-            playlists.value = normalizePlaylists(stored.playlists);
-        }
-        if (stored.playlistLoopMode) {
-            loopMode.value =
-                stored.playlistLoopMode === "shuffle" ? "shuffle" : "list";
-        }
-        if (stored.playlistSortMode && isValidSortMode(stored.playlistSortMode)) {
-            sortMode.value = stored.playlistSortMode;
-        }
-
         const storedActivePlaylistId = normalizePlaylistId(stored.activePlaylistId);
         activePlaylistId.value = hasPlaylist(storedActivePlaylistId)
             ? storedActivePlaylistId
@@ -392,23 +369,34 @@ export const usePlaylistState = () => {
         loopMode.value = snapshot.loopMode === "shuffle" ? "shuffle" : "list";
         sortMode.value = snapshot.sortMode === "added" ? "added" : "name";
         isLoopOne.value = snapshot.isLoopOne;
+        collectionRevision.value = snapshot.collectionRevision;
         const loaded = await Promise.all(summaries.map(async (summary) => {
             const entries = [] as PlaylistEntry[];
             for (let offset = 0; offset < summary.entryCount; offset += 200) {
                 const page = await tauriPlaylistClient.getEntriesPage({ playlistId: summary.id, offset, limit: 200 });
                 entries.push(...page.entries.map((entry) => ({
-                    path: entry.playbackKey, title: entry.title ?? undefined,
+                    coreEntryId: entry.id, path: entry.playbackKey, title: entry.title ?? undefined,
                     iconUrl: entry.artworkRef ?? undefined, addedAt: entry.addedAt,
                 })));
             }
-            return { id: summary.id, name: summary.name, entries, createdAt: summary.createdAt };
+            return { id: summary.id, coreRevision: summary.revision, name: summary.name, entries, createdAt: summary.createdAt };
         }));
         playlists.value = normalizePlaylists(loaded);
         playbackPlaylistId.value = hasPlaylist(snapshot.playbackPlaylistId)
             ? snapshot.playbackPlaylistId
             : null;
         syncSelectionAfterMutation();
+        if (!unsubscribeFromCore) {
+            unsubscribeFromCore = tauriPlaylistClient.subscribe(() => {
+                void loadFromCore();
+            });
+        }
     };
+
+    onUnmounted(() => {
+        unsubscribeFromCore?.();
+        unsubscribeFromCore = null;
+    });
 
     const toPersistedState = () => ({
         playlists: playlists.value,
@@ -417,52 +405,45 @@ export const usePlaylistState = () => {
         activePlaylistId: activePlaylistId.value,
     });
 
-    const addFromDrawerSelection = (paths: string[]) => {
+    const addFromDrawerSelection = async (paths: string[]) => {
         if (activePlaylist.value) {
-            addManyToPlaylist(activePlaylist.value.id, paths);
+            await addManyToPlaylist(activePlaylist.value.id, paths);
             return;
         }
-        createPlaylistWithPaths(paths, { openInDrawer: true });
+        await createPlaylistWithPaths(paths, { openInDrawer: true });
     };
 
-    const clearActivePlaylist = () => {
-        if (!activePlaylist.value) return;
-        playlists.value = playlists.value.map((item) =>
-            item.id === activePlaylist.value?.id ? { ...item, entries: [] } : item,
-        );
+    const clearActivePlaylist = async () => {
+        const target = activePlaylist.value;
+        if (!target?.coreRevision) return;
+        await tauriPlaylistClient.mutate({ type: "clear", playlistId: target.id, expectedPlaylistRevision: target.coreRevision });
+        await loadFromCore();
     };
 
-    const removeFromActivePlaylist = (entry: PlaylistEntry) => {
-        if (!activePlaylist.value) return;
-        playlists.value = playlists.value.map((item) =>
-            item.id === activePlaylist.value?.id
-                ? {
-                      ...item,
-                      entries: item.entries.filter(
-                          (candidate) => candidate.path !== entry.path,
-                      ),
-                  }
-                : item,
-        );
+    const removeFromActivePlaylist = async (entry: PlaylistEntry) => {
+        const target = activePlaylist.value;
+        if (!target?.coreRevision || !entry.coreEntryId) return;
+        await tauriPlaylistClient.mutate({ type: "removeEntries", playlistId: target.id, entryIds: [entry.coreEntryId], expectedPlaylistRevision: target.coreRevision });
+        await loadFromCore();
     };
 
-    const renamePlaylist = (playlistId: string, name: string) => {
-        if (isFavoritesPlaylist(playlistId)) return;
+    const renamePlaylist = async (playlistId: string, name: string) => {
+        const target = findPlaylistById(playlistId);
+        if (isFavoritesPlaylist(playlistId) || !target?.coreRevision) return;
         const normalizedName = name.trim();
         if (!normalizedName) return;
-        playlists.value = playlists.value.map((item) =>
-            item.id === playlistId ? { ...item, name: normalizedName } : item,
-        );
+        await tauriPlaylistClient.mutate({ type: "rename", playlistId, name: normalizedName, expectedPlaylistRevision: target.coreRevision });
+        await loadFromCore();
     };
 
-    const deletePlaylist = (playlistId: string) => {
-        if (isFavoritesPlaylist(playlistId)) return;
-        if (!hasPlaylist(playlistId)) return;
-        playlists.value = playlists.value.filter((item) => item.id !== playlistId);
-        syncSelectionAfterMutation();
+    const deletePlaylist = async (playlistId: string) => {
+        const target = findPlaylistById(playlistId);
+        if (isFavoritesPlaylist(playlistId) || !target?.coreRevision) return;
+        await tauriPlaylistClient.mutate({ type: "delete", playlistId, expectedPlaylistRevision: target.coreRevision, expectedCollectionRevision: collectionRevision.value });
+        await loadFromCore();
     };
 
-    const movePlaylist = (fromPlaylistId: string, toPlaylistId: string) => {
+    const movePlaylist = async (fromPlaylistId: string, toPlaylistId: string) => {
         if (isFavoritesPlaylist(fromPlaylistId) || isFavoritesPlaylist(toPlaylistId)) {
             return;
         }
@@ -478,7 +459,12 @@ export const usePlaylistState = () => {
         const temp = nextPlaylists[fromIndex];
         nextPlaylists[fromIndex] = nextPlaylists[toIndex];
         nextPlaylists[toIndex] = temp;
-        playlists.value = nextPlaylists;
+        await tauriPlaylistClient.mutate({
+            type: "reorderPlaylists",
+            playlistIds: nextPlaylists.map((item) => item.id),
+            expectedCollectionRevision: collectionRevision.value,
+        });
+        await loadFromCore();
     };
 
     const enterPlaylist = (playlistId: string) => {
@@ -490,12 +476,16 @@ export const usePlaylistState = () => {
         activePlaylistId.value = null;
     };
 
-    const cycleSortMode = () => {
-        sortMode.value = sortMode.value === "name" ? "added" : "name";
+    const cycleSortMode = async () => {
+        const next = sortMode.value === "name" ? "added" : "name";
+        await tauriPlaylistClient.mutate({ type: "setSortMode", sortMode: next });
+        await loadFromCore();
     };
 
-    const cycleLoopMode = () => {
-        loopMode.value = loopMode.value === "list" ? "shuffle" : "list";
+    const cycleLoopMode = async () => {
+        const next = loopMode.value === "list" ? "shuffle" : "list";
+        await tauriPlaylistClient.mutate({ type: "setLoopMode", loopMode: next });
+        await loadFromCore();
     };
 
     const pickRandomIndex = (length: number, currentIndex: number): number => {
@@ -585,26 +575,29 @@ export const usePlaylistState = () => {
         return entry?.title?.trim() || undefined;
     };
 
-    const markActivePlaylistAsPlayback = () => {
+    const markActivePlaylistAsPlayback = async () => {
         if (!activePlaylist.value) return;
-        playbackPlaylistId.value = activePlaylist.value.id;
+        await tauriPlaylistClient.mutate({ type: "setPlaybackPlaylist", playlistId: activePlaylist.value.id });
+        await loadFromCore();
     };
 
     const toggleLoopOne = async (
         setLoopFile: (enabled: boolean) => Promise<void>,
     ) => {
-        isLoopOne.value = !isLoopOne.value;
-        await setLoopFile(isLoopOne.value);
+        const next = !isLoopOne.value;
+        await tauriPlaylistClient.mutate({ type: "setLoopOne", isLoopOne: next });
+        await setLoopFile(next);
+        await loadFromCore();
     };
 
     const togglePlaylistLoop = async (
         setLoopFile: (enabled: boolean) => Promise<void>,
     ) => {
         if (isLoopOne.value) {
-            isLoopOne.value = false;
+            await tauriPlaylistClient.mutate({ type: "setLoopOne", isLoopOne: false });
             await setLoopFile(false);
         }
-        cycleLoopMode();
+        await cycleLoopMode();
     };
 
     return {
