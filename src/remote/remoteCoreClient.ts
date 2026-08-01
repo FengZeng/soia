@@ -1,5 +1,5 @@
 import { ref } from "vue";
-import type { CoreClient } from "../core-client/CoreClient";
+import { RemotePlaylistClient } from "../core-client/remotePlaylistClient";
 import {
     WebSocketCoreClient,
     type WebSocketCoreClientConnectionState,
@@ -8,8 +8,10 @@ import {
 export const remoteConnectionState =
     ref<WebSocketCoreClientConnectionState>("idle");
 
-export const remoteCoreClient: CoreClient = new WebSocketCoreClient({
+export const remoteCoreClient = new WebSocketCoreClient({
     onConnectionStateChange: (state) => {
         remoteConnectionState.value = state;
     },
 });
+
+export const remotePlaylistClient = new RemotePlaylistClient(remoteCoreClient);
