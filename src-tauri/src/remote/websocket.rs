@@ -206,6 +206,48 @@ async fn handle_websocket_text(
         }
         Ok(WebSocketClientMessage::DeletePlaylist { id, request }) => {
             let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            let summary = match app_state.playlist_service.list_summaries(&state.app_handle) {
+                Ok(summaries) => summaries
+                    .into_iter()
+                    .find(|summary| summary.id == request.playlist_id),
+                Err(message) => {
+                    return WebSocketServerMessage::Error {
+                        id,
+                        error: CoreErrorDto::ExecutionFailed { message },
+                    };
+                }
+            };
+            let Some(summary) = summary else {
+                return WebSocketServerMessage::Error {
+                    id,
+                    error: CoreErrorDto::PlaylistNotFound {
+                        message: "playlist not found".to_string(),
+                        playlist_id: request.playlist_id,
+                    },
+                };
+            };
+            if summary.is_protected {
+                return WebSocketServerMessage::Error {
+                    id,
+                    error: CoreErrorDto::ProtectedPlaylist {
+                        message: "protected playlist cannot be deleted".to_string(),
+                        playlist_id: summary.id,
+                    },
+                };
+            }
+            let current_revision = summary.revision.max(0) as u64;
+            if current_revision != request.expected_playlist_revision {
+                return WebSocketServerMessage::Error {
+                    id,
+                    error: CoreErrorDto::PlaylistVersionConflict {
+                        message: "playlist changed before deletion".to_string(),
+                        entity_type: "playlist".to_string(),
+                        entity_id: Some(summary.id),
+                        expected_revision: request.expected_playlist_revision,
+                        current_revision,
+                    },
+                };
+            }
             match app_state.playlist_service.delete_playlist(
                 &state.app_handle,
                 &request.playlist_id,

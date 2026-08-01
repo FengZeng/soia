@@ -475,21 +475,45 @@ fn random_entry_from_connection(
     if count == 0 {
         return Ok(None);
     }
-    let sql = if count == 1 {
-        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
-         FROM playlist_entries WHERE playlist_id = ?1 LIMIT 1"
-    } else {
-        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
-         FROM playlist_entries WHERE playlist_id = ?1 AND path != ?2
-         ORDER BY RANDOM() LIMIT 1"
-    };
-    let entry = if count == 1 {
-        conn.query_row(sql, [playlist_id], playlist_entry_from_row).optional()
-    } else {
-        conn.query_row(sql, params![playlist_id, current_path], playlist_entry_from_row).optional()
+    // Entry order is kept compact by every mutation. Choose an order index in Rust rather than
+    // using SQLite's `ORDER BY RANDOM()`, which materializes and sorts the whole playlist.
+    let current_order_index: Option<i64> = conn
+        .query_row(
+            "SELECT order_index FROM playlist_entries WHERE playlist_id = ?1 AND path = ?2",
+            params![playlist_id, current_path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let mut order_index = (uuid::Uuid::now_v7().as_u128() % count as u128) as i64;
+    if count > 1 && current_order_index == Some(order_index) {
+        order_index = (order_index + 1) % count;
     }
-    .map_err(|error| error.to_string())?;
-    Ok(entry)
+    let entry = conn
+        .query_row(
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
+             FROM playlist_entries WHERE playlist_id = ?1 AND order_index = ?2",
+            params![playlist_id, order_index],
+            playlist_entry_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+
+    // Existing installs may contain a partially migrated non-compact order. Recover without
+    // returning the current item or reintroducing a random full-table sort.
+    if entry.is_some() {
+        return Ok(entry);
+    }
+    conn.query_row(
+        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
+         FROM playlist_entries
+         WHERE playlist_id = ?1 AND path != ?2
+         ORDER BY order_index ASC LIMIT 1",
+        params![playlist_id, current_path],
+        playlist_entry_from_row,
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 fn adjacent_name_entry_from_connection(
@@ -1284,5 +1308,38 @@ mod tests {
             .expect("resolve wrapped next")
             .expect("wrapped entry");
         assert_eq!(wrapped.path, "/newest.mp4");
+    }
+
+    #[test]
+    fn shuffle_navigation_selects_an_entry_without_replaying_the_current_item() {
+        let mut conn = connection();
+        let tx = conn.transaction().expect("begin create");
+        let summary = create_playlist_in_transaction(&tx, "Shuffle navigation").expect("create playlist");
+        add_entries_in_transaction(
+            &tx,
+            &summary.id,
+            &[
+                PreparedPlaylistEntry { path: "/one.mp4".to_string(), added_at: 1, ..Default::default() },
+                PreparedPlaylistEntry { path: "/two.mp4".to_string(), added_at: 2, ..Default::default() },
+                PreparedPlaylistEntry { path: "/three.mp4".to_string(), added_at: 3, ..Default::default() },
+            ],
+            1,
+        )
+        .expect("add entries");
+        tx.commit().expect("commit entries");
+        let context = PlaylistNavigationContext {
+            active_playlist_id: Some(summary.id),
+            playback_playlist_id: None,
+            loop_mode: PlaylistLoopMode::Shuffle,
+            sort_mode: PlaylistSortMode::Added,
+            is_loop_one: false,
+        };
+
+        for _ in 0..16 {
+            let next = resolve_navigation_from_connection(&conn, "/one.mp4", 1, &context, false)
+                .expect("resolve shuffle")
+                .expect("shuffle entry");
+            assert_ne!(next.path, "/one.mp4");
+        }
     }
 }
