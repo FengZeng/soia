@@ -66,6 +66,64 @@ pub struct PlaylistDto {
     pub entries: Vec<PlaylistEntryDto>,
 }
 
+/// Bounded entry-page request. Clients must not request a full collection snapshot.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPlaylistEntriesPageDto {
+    pub playlist_id: String,
+    #[ts(type = "number")]
+    pub offset: u32,
+    #[ts(type = "number")]
+    pub limit: u32,
+}
+
+/// One bounded page of entries from a single playlist.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistEntriesPageDto {
+    pub playlist_id: String,
+    #[ts(type = "number")]
+    pub playlist_revision: u64,
+    #[ts(type = "number")]
+    pub total: i64,
+    #[ts(type = "number")]
+    pub offset: u32,
+    pub entries: Vec<PlaylistEntryDto>,
+}
+
+/// Requests playback of an existing entry without exposing an arbitrary mutation surface.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayPlaylistEntryDto {
+    pub command_id: String,
+    pub client_id: String,
+    pub playlist_id: String,
+    pub entry_id: String,
+}
+
+/// Requests an atomic playlist import from a supported source. Source recognition and parsing are
+/// intentionally outside PlaylistService; adapters prepare entries before calling the service.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPlaylistFromSourceDto {
+    pub source: String,
+}
+
+/// Remote-safe whole-playlist deletion input. Entry edits and metadata edits use distinct Desktop
+/// DTOs and are deliberately not represented here.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletePlaylistDto {
+    pub playlist_id: String,
+    #[ts(type = "number")]
+    pub expected_playlist_revision: u64,
+}
+
 /// Authoritative playlist-domain state. Its revision changes only for collection
 /// structure, not for unrelated playback progress updates.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -348,6 +406,11 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     PlaylistSummaryDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistDto::export_all_to(path).map_err(|error| error.to_string())?;
+    GetPlaylistEntriesPageDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PlaylistEntriesPageDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PlayPlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
+    ImportPlaylistFromSourceDto::export_all_to(path).map_err(|error| error.to_string())?;
+    DeletePlaylistDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistSnapshotDto::export_all_to(path).map_err(|error| error.to_string())?;
     CreatePlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
     CreatePlaylistDto::export_all_to(path).map_err(|error| error.to_string())?;
@@ -367,7 +430,7 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
 mod tests {
     use super::{
         CoreErrorDto, MediaTrackDto, PlaybackCommandDto, PlaybackSnapshotDto,
-        PlaylistLoopModeDto, PlaylistMutationDto,
+        GetPlaylistEntriesPageDto, PlaylistLoopModeDto, PlaylistMutationDto,
     };
 
     #[test]
@@ -438,5 +501,18 @@ mod tests {
         assert_eq!(error_json["entityType"], "playlist");
         assert_eq!(error_json["expectedRevision"], 4);
         assert_eq!(error_json["currentRevision"], 5);
+    }
+
+    #[test]
+    fn serializes_bounded_playlist_entry_page_requests_in_camel_case() {
+        let request = GetPlaylistEntriesPageDto {
+            playlist_id: "pl-1".to_string(),
+            offset: 20,
+            limit: 50,
+        };
+        let json = serde_json::to_value(request).expect("serialize entry-page request");
+        assert_eq!(json["playlistId"], "pl-1");
+        assert_eq!(json["offset"], 20);
+        assert_eq!(json["limit"], 50);
     }
 }

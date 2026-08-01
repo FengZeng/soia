@@ -26,6 +26,7 @@ pub(crate) struct PlaylistEntry {
     pub artwork_ref: Option<String>,
     pub added_at: i64,
     pub order_index: i64,
+    pub revision: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +108,23 @@ impl PlaylistService {
     ) -> Result<PlaylistEntryPage, String> {
         let conn = media_db::open_db(app)?;
         list_entries_from_connection(&conn, playlist_id, offset, limit)
+    }
+
+    pub(crate) fn get_entry(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<PlaylistEntry>, String> {
+        let conn = media_db::open_db(app)?;
+        conn.query_row(
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
+             FROM playlist_entries WHERE playlist_id = ?1 AND id = ?2",
+            params![playlist_id.trim(), entry_id.trim()],
+            playlist_entry_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())
     }
 
     pub(crate) fn resolve_navigation(
@@ -311,7 +329,7 @@ fn list_entries_from_connection(
         .map_err(|error| error.to_string())?;
     let mut statement = conn
         .prepare(
-            "SELECT id, path, title, artwork_ref, added_at, order_index
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
              FROM playlist_entries
              WHERE playlist_id = ?1
              ORDER BY order_index ASC, added_at ASC
@@ -327,6 +345,7 @@ fn list_entries_from_connection(
                 artwork_ref: row.get(3)?,
                 added_at: row.get(4)?,
                 order_index: row.get(5)?,
+                revision: row.get(6)?,
             })
         })
         .map_err(|error| error.to_string())?
@@ -389,7 +408,7 @@ fn adjacent_added_entry_from_connection(
         .map_err(|error| error.to_string())?;
     let sql = match (current, direction > 0) {
         (Some((added_at, order_index)), true) => (
-            "SELECT id, path, title, artwork_ref, added_at, order_index
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
              FROM playlist_entries
              WHERE playlist_id = ?1
                AND (added_at < ?2 OR (added_at = ?2 AND order_index > ?3))
@@ -397,7 +416,7 @@ fn adjacent_added_entry_from_connection(
             Some((added_at, order_index)),
         ),
         (Some((added_at, order_index)), false) => (
-            "SELECT id, path, title, artwork_ref, added_at, order_index
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
              FROM playlist_entries
              WHERE playlist_id = ?1
                AND (added_at > ?2 OR (added_at = ?2 AND order_index < ?3))
@@ -405,13 +424,13 @@ fn adjacent_added_entry_from_connection(
             Some((added_at, order_index)),
         ),
         (None, true) => (
-            "SELECT id, path, title, artwork_ref, added_at, order_index
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
              FROM playlist_entries WHERE playlist_id = ?1
              ORDER BY added_at DESC, order_index ASC LIMIT 1",
             None,
         ),
         (None, false) => (
-            "SELECT id, path, title, artwork_ref, added_at, order_index
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
              FROM playlist_entries WHERE playlist_id = ?1
              ORDER BY added_at ASC, order_index DESC LIMIT 1",
             None,
@@ -428,11 +447,11 @@ fn adjacent_added_entry_from_connection(
         return Ok(entry);
     }
     let wrap_sql = if direction > 0 {
-        "SELECT id, path, title, artwork_ref, added_at, order_index
+        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
          FROM playlist_entries WHERE playlist_id = ?1
          ORDER BY added_at DESC, order_index ASC LIMIT 1"
     } else {
-        "SELECT id, path, title, artwork_ref, added_at, order_index
+        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
          FROM playlist_entries WHERE playlist_id = ?1
          ORDER BY added_at ASC, order_index DESC LIMIT 1"
     };
@@ -457,10 +476,10 @@ fn random_entry_from_connection(
         return Ok(None);
     }
     let sql = if count == 1 {
-        "SELECT id, path, title, artwork_ref, added_at, order_index
+        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
          FROM playlist_entries WHERE playlist_id = ?1 LIMIT 1"
     } else {
-        "SELECT id, path, title, artwork_ref, added_at, order_index
+        "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
          FROM playlist_entries WHERE playlist_id = ?1 AND path != ?2
          ORDER BY RANDOM() LIMIT 1"
     };
@@ -555,7 +574,7 @@ fn resolve_playlist_id_from_connection(
 fn entries_for_navigation(conn: &Connection, playlist_id: &str) -> Result<Vec<PlaylistEntry>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT id, path, title, artwork_ref, added_at, order_index
+            "SELECT id, path, title, artwork_ref, added_at, order_index, record_version
              FROM playlist_entries WHERE playlist_id = ?1",
         )
         .map_err(|error| error.to_string())?;
@@ -568,6 +587,7 @@ fn entries_for_navigation(conn: &Connection, playlist_id: &str) -> Result<Vec<Pl
                 artwork_ref: row.get(3)?,
                 added_at: row.get(4)?,
                 order_index: row.get(5)?,
+                revision: row.get(6)?,
             })
         })
         .map_err(|error| error.to_string())?
@@ -584,6 +604,7 @@ fn playlist_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Playlist
         artwork_ref: row.get(3)?,
         added_at: row.get(4)?,
         order_index: row.get(5)?,
+        revision: row.get(6)?,
     })
 }
 

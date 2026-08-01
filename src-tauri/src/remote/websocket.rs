@@ -1,7 +1,7 @@
 use super::auth::{authorize, remote_session_from_cookie};
 use super::state::{is_connection_active, RemoteControlState};
 use crate::protocol::{
-    CommandEnvelopeDto, CommandResultDto, CoreErrorDto, PlaybackSnapshotDto, PROTOCOL_VERSION,
+    CommandEnvelopeDto, CommandResultDto, CoreErrorDto, DeletePlaylistDto, GetPlaylistEntriesPageDto, ImportPlaylistFromSourceDto, PlayPlaylistEntryDto, PlaybackCommandDto, PlaybackSnapshotDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto, PROTOCOL_VERSION,
 };
 use crate::AppState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,6 +19,11 @@ use tauri::{Emitter, Manager};
 enum WebSocketClientMessage {
     Command { envelope: CommandEnvelopeDto },
     Navigation { id: Option<String>, action: String },
+    PlaylistSummaries { id: Option<String> },
+    PlaylistEntriesPage { id: Option<String>, request: GetPlaylistEntriesPageDto },
+    PlayPlaylistEntry { request: PlayPlaylistEntryDto },
+    DeletePlaylist { id: Option<String>, request: DeletePlaylistDto },
+    ImportPlaylistFromSource { id: Option<String>, request: ImportPlaylistFromSourceDto },
     Ping { id: Option<String> },
 }
 
@@ -31,6 +36,10 @@ enum WebSocketServerMessage {
     Pong { id: Option<String> },
     CommandResult { result: CommandResultDto },
     NavigationResult { id: Option<String>, ok: bool },
+    PlaylistSummaries { id: Option<String>, playlists: Vec<PlaylistSummaryDto> },
+    PlaylistEntriesPage { id: Option<String>, page: PlaylistEntriesPageDto },
+    PlaylistDeleted { id: Option<String>, playlist_id: String },
+    PlaylistImported { id: Option<String>, playlist: PlaylistSummaryDto },
     Error { id: Option<String>, error: CoreErrorDto },
 }
 
@@ -140,6 +149,81 @@ async fn handle_websocket_text(
 ) -> WebSocketServerMessage {
     match serde_json::from_str::<WebSocketClientMessage>(text) {
         Ok(WebSocketClientMessage::Ping { id }) => WebSocketServerMessage::Pong { id },
+        Ok(WebSocketClientMessage::PlaylistSummaries { id }) => {
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            match app_state.playlist_service.list_summaries(&state.app_handle) {
+                Ok(playlists) => WebSocketServerMessage::PlaylistSummaries {
+                    id,
+                    playlists: playlists.into_iter().map(|playlist| PlaylistSummaryDto {
+                        id: playlist.id, name: playlist.name, created_at: playlist.created_at,
+                        order_index: playlist.order_index, revision: playlist.revision.max(0) as u64,
+                        entry_count: playlist.entry_count, is_protected: playlist.is_protected,
+                    }).collect(),
+                },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
+        Ok(WebSocketClientMessage::PlaylistEntriesPage { id, request }) => {
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            let result = (|| {
+                let page = app_state.playlist_service.list_entries(&state.app_handle, &request.playlist_id, request.offset, request.limit)?;
+                let summary = app_state.playlist_service.list_summaries(&state.app_handle)?
+                    .into_iter().find(|item| item.id == request.playlist_id)
+                    .ok_or_else(|| "playlist not found".to_string())?;
+                Ok::<_, String>(PlaylistEntriesPageDto {
+                    playlist_id: summary.id,
+                    playlist_revision: summary.revision.max(0) as u64,
+                    total: page.total,
+                    offset: page.offset,
+                    entries: page.entries.into_iter().map(|entry| PlaylistEntryDto {
+                        id: entry.id, playback_key: entry.path, title: entry.title,
+                        artwork_ref: entry.artwork_ref, added_at: entry.added_at,
+                        order_index: entry.order_index, revision: entry.revision.max(0) as u64,
+                    }).collect(),
+                })
+            })();
+            match result {
+                Ok(page) => WebSocketServerMessage::PlaylistEntriesPage { id, page },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
+        Ok(WebSocketClientMessage::PlayPlaylistEntry { request }) => {
+            let id = Some(request.command_id.clone());
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            let entry = app_state.playlist_service.get_entry(&state.app_handle, &request.playlist_id, &request.entry_id);
+            match entry {
+                Ok(Some(entry)) => {
+                    app_state.navigation_service.set_playback_playlist_id(Some(request.playlist_id));
+                    let envelope = CommandEnvelopeDto { command_id: request.command_id, client_id: request.client_id, playback_session_id: None, command: PlaybackCommandDto::PlaySource { key: entry.path, title: entry.title } };
+                    match crate::commands::navigation::execute_navigation_envelope(&state.app_handle, &app_state, envelope).await {
+                        Ok(result) => WebSocketServerMessage::CommandResult { result },
+                        Err(error) => WebSocketServerMessage::Error { id, error },
+                    }
+                }
+                Ok(None) => WebSocketServerMessage::Error { id, error: CoreErrorDto::PlaylistNotFound { message: "playlist entry not found".into(), playlist_id: request.playlist_id } },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
+        Ok(WebSocketClientMessage::DeletePlaylist { id, request }) => {
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            match app_state.playlist_service.delete_playlist(
+                &state.app_handle,
+                &request.playlist_id,
+                request.expected_playlist_revision as i64,
+            ) {
+                Ok(()) => WebSocketServerMessage::PlaylistDeleted { id, playlist_id: request.playlist_id },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
+        Ok(WebSocketClientMessage::ImportPlaylistFromSource { id, request }) => {
+            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+            let result = crate::commands::playback::prepare_playlist_import(&state.app_handle, &request.source)
+                .and_then(|prepared| app_state.playlist_service.import_prepared_playlist(&state.app_handle, prepared));
+            match result {
+                Ok(playlist) => WebSocketServerMessage::PlaylistImported { id, playlist: PlaylistSummaryDto { id: playlist.id, name: playlist.name, created_at: playlist.created_at, order_index: playlist.order_index, revision: playlist.revision.max(0) as u64, entry_count: playlist.entry_count, is_protected: playlist.is_protected } },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
         Ok(WebSocketClientMessage::Command { envelope }) => {
             let id = Some(envelope.command_id.clone());
             if crate::core::playback_service::PlaybackService::is_navigation_command(

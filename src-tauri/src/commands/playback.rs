@@ -820,6 +820,28 @@ pub(crate) fn parse_playlist_source(
     parse_playlist_source_inner(&app, &payload.source)
 }
 
+pub(crate) fn prepare_playlist_import(
+    app: &tauri::AppHandle,
+    source: &str,
+) -> Result<crate::core::playlist_service::PreparedPlaylist, String> {
+    let parsed = parse_playlist_source_inner(app, source)?;
+    let name = Path::new(source)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Imported Playlist")
+        .to_string();
+    Ok(crate::core::playlist_service::PreparedPlaylist {
+        name,
+        entries: parsed.entries.into_iter().map(|entry| crate::core::playlist_service::PreparedPlaylistEntry {
+            path: entry.path,
+            title: entry.title,
+            artwork_ref: entry.icon,
+            added_at: crate::store::media_db::now_millis(),
+        }).collect(),
+    })
+}
+
 #[cfg(test)]
 mod playlist_source_tests {
     use super::{parse_m3u_playlist, PlaylistBase};
