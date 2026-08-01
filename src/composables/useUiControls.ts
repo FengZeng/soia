@@ -1,5 +1,7 @@
 import { ref } from "vue";
 
+const MANUAL_MOUSE_REVEAL_SUPPRESSION_MS = 3000;
+
 export const useUiControls = (
     isFileLoaded: () => boolean,
     onHideMenus: () => void,
@@ -9,9 +11,10 @@ export const useUiControls = (
     const showControls = ref(true);
     const hoverFilePicker = ref(false);
     let hideTimeout: ReturnType<typeof setTimeout> | null = null;
+    let suppressMouseRevealUntil = 0;
 
-    const hideBar = () => {
-        if (shouldKeepVisible()) {
+    const hideBar = (force = false) => {
+        if (!force && shouldKeepVisible()) {
             resetInactivityTimer();
             return;
         }
@@ -36,18 +39,45 @@ export const useUiControls = (
 
     const onUserInteraction = () => {
         if (!isFileLoaded()) return;
+        suppressMouseRevealUntil = 0;
+        showBar();
+        resetInactivityTimer();
+    };
+
+    const onMouseMove = () => {
+        if (!isFileLoaded()) return;
+        if (Date.now() < suppressMouseRevealUntil) return;
+        suppressMouseRevealUntil = 0;
+        showBar();
+        resetInactivityTimer();
+    };
+
+    const toggleControlsFromMiddleClick = () => {
+        if (!isFileLoaded()) return;
+        if (showControls.value) {
+            suppressMouseRevealUntil =
+                Date.now() + MANUAL_MOUSE_REVEAL_SUPPRESSION_MS;
+            stopInactivityTimer();
+            hideBar(true);
+            return;
+        }
+
+        suppressMouseRevealUntil = 0;
         showBar();
         resetInactivityTimer();
     };
 
     const cleanup = () => {
-        if (hideTimeout) clearTimeout(hideTimeout);
+        stopInactivityTimer();
+        suppressMouseRevealUntil = 0;
     };
 
     return {
         showControls,
         hoverFilePicker,
         onUserInteraction,
+        onMouseMove,
+        toggleControlsFromMiddleClick,
         resetInactivityTimer,
         stopInactivityTimer,
         cleanup,
