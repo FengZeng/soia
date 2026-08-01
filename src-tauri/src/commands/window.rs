@@ -30,3 +30,10 @@ pub(crate) fn sync_mpv_render_target(
 ) -> Result<(), String> {
     crate::app_bootstrap::sync_mpv_render_target_to_window(&window)
 }
+
+#[tauri::command]
+pub(crate) async fn prepare_window_for_fullscreen(
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    crate::platform::prepare_window_for_fullscreen(window).await
+}

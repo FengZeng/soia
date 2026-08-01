@@ -62,6 +62,8 @@ export type PlayerApi = {
 
 export const usePlaybackController = (coreClient: CoreClient): PlayerApi => {
   const currentWindow = Window.getCurrent();
+  const isWindowsPlatform =
+    typeof navigator !== "undefined" && /\bwindows\b/i.test(navigator.userAgent);
 
   const state = reactive<PlayerState>({
     media: {
@@ -104,7 +106,12 @@ export const usePlaybackController = (coreClient: CoreClient): PlayerApi => {
     return Boolean(nextUrl) && nextUrl !== state.media.lastLoadedUrl;
   });
 
-  const commands = usePlaybackCommands(state, currentWindow, coreClient);
+  const commands = usePlaybackCommands(
+    state,
+    currentWindow,
+    coreClient,
+    isWindowsPlatform,
+  );
 
   return {
     state,
