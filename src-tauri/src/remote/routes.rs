@@ -58,7 +58,9 @@ pub(super) async fn pair(
             return Err(RemoteError::unauthorized("invalid or expired pairing code"));
         }
         let session = uuid::Uuid::now_v7().to_string();
-        runtime.sessions.insert(session.clone());
+        runtime
+            .sessions
+            .insert(session.clone(), super::state::new_paired_session());
         session
     };
     let cookie = format!(

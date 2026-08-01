@@ -1,5 +1,8 @@
 use super::auth::{authorize, remote_session_from_cookie};
-use super::state::{is_connection_active, RemoteControlState};
+use super::state::{
+    authorize_playlist_mutation, cache_playlist_mutation, cached_playlist_mutation,
+    is_connection_active, CachedPlaylistMutation, RemoteControlState,
+};
 use crate::protocol::{
     CommandEnvelopeDto, CommandResultDto, CoreErrorDto, DeletePlaylistDto, GetPlaylistEntriesPageDto, ImportPlaylistFromSourceDto, PlayPlaylistEntryDto, PlaybackCommandDto, PlaybackSnapshotDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto, PROTOCOL_VERSION,
 };
@@ -144,7 +147,12 @@ async fn handle_websocket(
                         if !is_connection_active(&state, session.as_deref()) {
                             return;
                         }
-                        let response = handle_websocket_text(&state, &text, &legacy_client_id).await;
+                        let response = handle_websocket_text(
+                            &state,
+                            &text,
+                            &legacy_client_id,
+                            session.as_deref(),
+                        ).await;
                         if send_ws_json(&mut sender, &response).await.is_err() {
                             return;
                         }
@@ -166,6 +174,7 @@ async fn handle_websocket_text(
     state: &RemoteControlState,
     text: &str,
     legacy_client_id: &str,
+    session: Option<&str>,
 ) -> WebSocketServerMessage {
     match serde_json::from_str::<WebSocketClientMessage>(text) {
         Ok(WebSocketClientMessage::Ping { id }) => WebSocketServerMessage::Pong { id },
@@ -231,96 +240,67 @@ async fn handle_websocket_text(
             }
         }
         Ok(WebSocketClientMessage::DeletePlaylist { id, request }) => {
-            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
-            let summary = match app_state.playlist_service.get_summary(&state.app_handle, &request.playlist_id) {
-                Ok(summary) => summary,
-                Err(message) => {
-                    return WebSocketServerMessage::Error {
-                        id,
-                        error: CoreErrorDto::ExecutionFailed { message },
-                    };
-                }
-            };
-            let Some(summary) = summary else {
-                return WebSocketServerMessage::Error {
-                    id,
-                    error: CoreErrorDto::PlaylistNotFound {
+            execute_playlist_mutation(state, id, session, |app_state| {
+                let summary = app_state.playlist_service.get_summary(&state.app_handle, &request.playlist_id)
+                    .map_err(|message| CoreErrorDto::ExecutionFailed { message })?
+                    .ok_or_else(|| CoreErrorDto::PlaylistNotFound {
                         message: "playlist not found".to_string(),
-                        playlist_id: request.playlist_id,
-                    },
-                };
-            };
-            if summary.is_protected {
-                return WebSocketServerMessage::Error {
-                    id,
-                    error: CoreErrorDto::ProtectedPlaylist {
+                        playlist_id: request.playlist_id.clone(),
+                    })?;
+                if summary.is_protected {
+                    return Err(CoreErrorDto::ProtectedPlaylist {
                         message: "protected playlist cannot be deleted".to_string(),
                         playlist_id: summary.id,
-                    },
-                };
-            }
-            let current_revision = summary.revision.max(0) as u64;
-            if current_revision != request.expected_playlist_revision {
-                return WebSocketServerMessage::Error {
-                    id,
-                    error: CoreErrorDto::PlaylistVersionConflict {
+                    });
+                }
+                let current_revision = summary.revision.max(0) as u64;
+                if current_revision != request.expected_playlist_revision {
+                    return Err(CoreErrorDto::PlaylistVersionConflict {
                         message: "playlist changed before deletion".to_string(),
                         entity_type: "playlist".to_string(),
                         entity_id: Some(summary.id),
                         expected_revision: request.expected_playlist_revision,
                         current_revision,
-                    },
-                };
-            }
-            match app_state.playlist_service.delete_playlist(
-                &state.app_handle,
-                &request.playlist_id,
-                request.expected_playlist_revision as i64,
-            ) {
-                Ok(()) => {
-                    match publish_playlist_snapshot(&state.app_handle, &app_state) {
-                        Ok(snapshot) => WebSocketServerMessage::PlaylistDeleted {
-                            id,
-                            playlist_id: request.playlist_id,
-                            collection_revision: snapshot.collection_revision,
-                        },
-                        Err(message) => WebSocketServerMessage::Error {
-                            id,
-                            error: CoreErrorDto::ExecutionFailed { message },
-                        },
-                    }
+                    });
                 }
-                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
-            }
+                app_state.playlist_service.delete_playlist(
+                    &state.app_handle,
+                    &request.playlist_id,
+                    request.expected_playlist_revision as i64,
+                ).map_err(|message| CoreErrorDto::ExecutionFailed { message })?;
+                let snapshot = publish_playlist_snapshot(&state.app_handle, app_state)
+                    .map_err(|message| CoreErrorDto::ExecutionFailed { message })?;
+                Ok(CachedPlaylistMutation::Deleted {
+                    playlist_id: request.playlist_id.clone(),
+                    collection_revision: snapshot.collection_revision,
+                })
+            })
         }
         Ok(WebSocketClientMessage::ImportPlaylistFromSource { id, request }) => {
-            let app_state: tauri::State<'_, AppState> = state.app_handle.state();
-            let result = crate::commands::playback::prepare_playlist_import(&state.app_handle, &request.source)
-                .and_then(|prepared| app_state.playlist_service.import_prepared_playlist(&state.app_handle, prepared));
-            match result {
-                Ok(playlist) => {
-                    match publish_playlist_snapshot(&state.app_handle, &app_state) {
-                        Ok(snapshot) => WebSocketServerMessage::PlaylistImported {
-                            id,
-                            playlist: PlaylistSummaryDto {
-                                id: playlist.id,
-                                name: playlist.name,
-                                created_at: playlist.created_at,
-                                order_index: playlist.order_index,
-                                revision: playlist.revision.max(0) as u64,
-                                entry_count: playlist.entry_count,
-                                is_protected: playlist.is_protected,
-                            },
-                            collection_revision: snapshot.collection_revision,
-                        },
-                        Err(message) => WebSocketServerMessage::Error {
-                            id,
-                            error: CoreErrorDto::ExecutionFailed { message },
-                        },
-                    }
-                }
-                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
-            }
+            execute_playlist_mutation(state, id, session, |app_state| {
+                let prepared = crate::commands::playback::prepare_playlist_import(
+                    &state.app_handle,
+                    &request.source,
+                ).map_err(|message| CoreErrorDto::ExecutionFailed { message })?;
+                let playlist = app_state.playlist_service.import_prepared_playlist(
+                    &state.app_handle,
+                    prepared,
+                ).map_err(|message| CoreErrorDto::ExecutionFailed { message })?;
+                let snapshot = publish_playlist_snapshot(&state.app_handle, app_state)
+                    .map_err(|message| CoreErrorDto::ExecutionFailed { message })?;
+                Ok(CachedPlaylistMutation::Imported {
+                    playlist: PlaylistSummaryDto {
+                        id: playlist.id,
+                        name: playlist.name,
+                        created_at: playlist.created_at,
+                        order_index: playlist.order_index,
+                        revision: playlist.revision.max(0) as u64,
+                        entry_count: playlist.entry_count,
+                        is_protected: playlist.is_protected,
+                    },
+                    collection_revision: snapshot.collection_revision,
+                })
+            })
         }
         Ok(WebSocketClientMessage::Command { envelope }) => {
             let id = Some(envelope.command_id.clone());
@@ -395,6 +375,65 @@ async fn handle_websocket_text(
                 message: format!("invalid websocket message: {error}"),
             },
         },
+    }
+}
+
+fn execute_playlist_mutation(
+    state: &RemoteControlState,
+    id: Option<String>,
+    session: Option<&str>,
+    mutation: impl FnOnce(&AppState) -> Result<CachedPlaylistMutation, CoreErrorDto>,
+) -> WebSocketServerMessage {
+    let request_id = match id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => id.to_string(),
+        None => {
+            return WebSocketServerMessage::Error {
+                id,
+                error: CoreErrorDto::InvalidCommand {
+                    message: "playlist mutation requests require an id".to_string(),
+                },
+            };
+        }
+    };
+    let session = match authorize_playlist_mutation(state, session) {
+        Ok(session) => session,
+        Err(error) => return WebSocketServerMessage::Error { id, error },
+    };
+    if let Some(result) = cached_playlist_mutation(state, &session, &request_id) {
+        return playlist_mutation_response(Some(request_id), result);
+    }
+
+    let app_state: tauri::State<'_, AppState> = state.app_handle.state();
+    let result = match mutation(&app_state) {
+        Ok(result) => result,
+        Err(error) => CachedPlaylistMutation::Error(error),
+    };
+    cache_playlist_mutation(state, &session, &request_id, result.clone());
+    playlist_mutation_response(Some(request_id), result)
+}
+
+fn playlist_mutation_response(
+    id: Option<String>,
+    result: CachedPlaylistMutation,
+) -> WebSocketServerMessage {
+    match result {
+        CachedPlaylistMutation::Deleted {
+            playlist_id,
+            collection_revision,
+        } => WebSocketServerMessage::PlaylistDeleted {
+            id,
+            playlist_id,
+            collection_revision,
+        },
+        CachedPlaylistMutation::Imported {
+            playlist,
+            collection_revision,
+        } => WebSocketServerMessage::PlaylistImported {
+            id,
+            playlist,
+            collection_revision,
+        },
+        CachedPlaylistMutation::Error(error) => WebSocketServerMessage::Error { id, error },
     }
 }
 

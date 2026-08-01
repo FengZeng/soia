@@ -10,6 +10,7 @@ const coreErrorTypes = new Set<CoreErrorDto["type"]>([
     "invalidPlaylistMutation",
     "protectedPlaylist",
     "playlistVersionConflict",
+    "remotePermissionDenied",
 ]);
 
 const errorMessage = (error: unknown, fallback: string) => {

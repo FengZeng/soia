@@ -31,6 +31,8 @@ pub(crate) fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         enabled: false,
         pair_code: None,
         sessions: Default::default(),
+        playlist_mutation_results: Default::default(),
+        playlist_mutation_result_order: Default::default(),
     }));
     let _ = REMOTE_CONTROL_RUNTIME.set(control_runtime.clone());
     let server_token = token.clone();

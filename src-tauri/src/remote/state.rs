@@ -1,11 +1,14 @@
+use crate::protocol::{CoreErrorDto, PlaylistSummaryDto};
 use qrcode::QrCode;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const PAIR_CODE_TTL: Duration = Duration::from_secs(99);
+const PLAYLIST_MUTATION_RESULT_CACHE_CAPACITY: usize = 256;
 
 pub(super) static REMOTE_CONTROL_ADDR: OnceLock<SocketAddr> = OnceLock::new();
 pub(super) static REMOTE_CONTROL_TOKEN: OnceLock<String> = OnceLock::new();
@@ -15,7 +18,25 @@ pub(super) static REMOTE_CONTROL_RUNTIME: OnceLock<Arc<Mutex<RemoteControlRuntim
 pub(super) struct RemoteControlRuntime {
     pub(super) enabled: bool,
     pub(super) pair_code: Option<(String, Instant)>,
-    pub(super) sessions: std::collections::HashSet<String>,
+    pub(super) sessions: HashMap<String, RemoteSession>,
+    pub(super) playlist_mutation_results: HashMap<String, CachedPlaylistMutation>,
+    pub(super) playlist_mutation_result_order: VecDeque<String>,
+}
+
+pub(super) struct RemoteSession {
+    scopes: HashSet<RemoteScope>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum RemoteScope {
+    PlaylistMutate,
+}
+
+#[derive(Clone)]
+pub(super) enum CachedPlaylistMutation {
+    Deleted { playlist_id: String, collection_revision: u64 },
+    Imported { playlist: PlaylistSummaryDto, collection_revision: u64 },
+    Error(CoreErrorDto),
 }
 
 #[derive(Clone)]
@@ -99,6 +120,8 @@ pub(crate) fn set_remote_control_enabled(enabled: bool) -> Result<RemoteControlS
     runtime.pair_code = None;
     if !enabled {
         runtime.sessions.clear();
+        runtime.playlist_mutation_results.clear();
+        runtime.playlist_mutation_result_order.clear();
     }
     Ok(RemoteControlStatus {
         enabled: runtime.enabled,
@@ -111,6 +134,8 @@ pub(crate) fn disconnect_remote_control_devices() -> Result<RemoteControlStatus,
     let mut runtime = runtime.lock().map_err(|error| error.to_string())?;
     runtime.pair_code = None;
     runtime.sessions.clear();
+    runtime.playlist_mutation_results.clear();
+    runtime.playlist_mutation_result_order.clear();
     Ok(RemoteControlStatus {
         enabled: runtime.enabled,
         connected_devices: 0,
@@ -135,8 +160,69 @@ pub(super) fn is_active_session(state: &RemoteControlState, session: &str) -> bo
     state
         .runtime
         .lock()
-        .map(|runtime| runtime.sessions.contains(session))
+        .map(|runtime| runtime.sessions.contains_key(session))
         .unwrap_or(false)
+}
+
+pub(super) fn authorize_playlist_mutation(
+    state: &RemoteControlState,
+    session: Option<&str>,
+) -> Result<String, CoreErrorDto> {
+    let Some(session) = session else {
+        return Err(CoreErrorDto::RemotePermissionDenied {
+            message: "playlist import and deletion require a paired remote session".to_string(),
+        });
+    };
+    let runtime = state.runtime.lock().map_err(|error| CoreErrorDto::ExecutionFailed {
+        message: error.to_string(),
+    })?;
+    if !runtime.enabled || !runtime.sessions.get(session).is_some_and(|session| session.scopes.contains(&RemoteScope::PlaylistMutate)) {
+        return Err(CoreErrorDto::RemotePermissionDenied {
+            message: "remote session is not authorized to mutate playlists".to_string(),
+        });
+    }
+    Ok(session.to_string())
+}
+
+pub(super) fn cached_playlist_mutation(
+    state: &RemoteControlState,
+    session: &str,
+    request_id: &str,
+) -> Option<CachedPlaylistMutation> {
+    let key = playlist_mutation_key(session, request_id);
+    state.runtime.lock().ok()?.playlist_mutation_results.get(&key).cloned()
+}
+
+pub(super) fn cache_playlist_mutation(
+    state: &RemoteControlState,
+    session: &str,
+    request_id: &str,
+    result: CachedPlaylistMutation,
+) {
+    let key = playlist_mutation_key(session, request_id);
+    let Ok(mut runtime) = state.runtime.lock() else {
+        return;
+    };
+    if runtime.playlist_mutation_results.contains_key(&key) {
+        return;
+    }
+    if runtime.playlist_mutation_result_order.len() == PLAYLIST_MUTATION_RESULT_CACHE_CAPACITY {
+        if let Some(evicted) = runtime.playlist_mutation_result_order.pop_front() {
+            runtime.playlist_mutation_results.remove(&evicted);
+        }
+    }
+    runtime.playlist_mutation_result_order.push_back(key.clone());
+    runtime.playlist_mutation_results.insert(key, result);
+}
+
+pub(super) fn new_paired_session() -> RemoteSession {
+    RemoteSession {
+        scopes: HashSet::from([RemoteScope::PlaylistMutate]),
+    }
+}
+
+fn playlist_mutation_key(session: &str, request_id: &str) -> String {
+    format!("{session}:{request_id}")
 }
 
 pub(super) fn is_connection_active(

@@ -396,6 +396,7 @@ pub enum CoreErrorDto {
         #[ts(type = "number")]
         current_revision: u64,
     },
+    RemotePermissionDenied { message: String },
 }
 
 pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {

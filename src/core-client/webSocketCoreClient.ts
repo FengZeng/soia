@@ -213,11 +213,11 @@ export class WebSocketCoreClient implements CoreClient {
     }
 
     deletePlaylist(request: DeletePlaylistDto): Promise<PlaylistMutationResultDto> {
-        return this.sendPlaylistRequest("deletePlaylist", { request }, this.pendingPlaylistDeletes, false);
+        return this.sendPlaylistRequest("deletePlaylist", { request }, this.pendingPlaylistDeletes, true);
     }
 
     importPlaylistFromSource(request: ImportPlaylistFromSourceDto): Promise<PlaylistMutationResultDto> {
-        return this.sendPlaylistRequest("importPlaylistFromSource", { request }, this.pendingPlaylistImports, false);
+        return this.sendPlaylistRequest("importPlaylistFromSource", { request }, this.pendingPlaylistImports, true);
     }
 
     playPlaylistEntry(request: PlayPlaylistEntryDto): Promise<CommandResultDto> {
