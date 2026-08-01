@@ -167,8 +167,7 @@ async fn handle_websocket_text(
             let app_state: tauri::State<'_, AppState> = state.app_handle.state();
             let result = (|| {
                 let page = app_state.playlist_service.list_entries(&state.app_handle, &request.playlist_id, request.offset, request.limit)?;
-                let summary = app_state.playlist_service.list_summaries(&state.app_handle)?
-                    .into_iter().find(|item| item.id == request.playlist_id)
+                let summary = app_state.playlist_service.get_summary(&state.app_handle, &request.playlist_id)?
                     .ok_or_else(|| "playlist not found".to_string())?;
                 Ok::<_, String>(PlaylistEntriesPageDto {
                     playlist_id: summary.id,
@@ -206,10 +205,8 @@ async fn handle_websocket_text(
         }
         Ok(WebSocketClientMessage::DeletePlaylist { id, request }) => {
             let app_state: tauri::State<'_, AppState> = state.app_handle.state();
-            let summary = match app_state.playlist_service.list_summaries(&state.app_handle) {
-                Ok(summaries) => summaries
-                    .into_iter()
-                    .find(|summary| summary.id == request.playlist_id),
+            let summary = match app_state.playlist_service.get_summary(&state.app_handle, &request.playlist_id) {
+                Ok(summary) => summary,
                 Err(message) => {
                     return WebSocketServerMessage::Error {
                         id,

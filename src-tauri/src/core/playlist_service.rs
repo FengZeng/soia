@@ -110,6 +110,15 @@ impl PlaylistService {
         list_entries_from_connection(&conn, playlist_id, offset, limit)
     }
 
+    pub(crate) fn get_summary(
+        &self,
+        app: &tauri::AppHandle,
+        playlist_id: &str,
+    ) -> Result<Option<PlaylistSummary>, String> {
+        let conn = media_db::open_db(app)?;
+        playlist_summary_from_connection(&conn, playlist_id)
+    }
+
     pub(crate) fn get_entry(
         &self,
         app: &tauri::AppHandle,
@@ -309,6 +318,25 @@ fn list_summaries_from_connection(conn: &Connection) -> Result<Vec<PlaylistSumma
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok(summaries)
+}
+
+fn playlist_summary_from_connection(
+    conn: &Connection,
+    playlist_id: &str,
+) -> Result<Option<PlaylistSummary>, String> {
+    let playlist_id = normalized_id(playlist_id)?;
+    conn.query_row(
+        "SELECT p.id, p.name, COUNT(e.id), p.created_at, p.updated_at, p.order_index,
+                p.revision, p.is_protected
+         FROM playlists p
+         LEFT JOIN playlist_entries e ON e.playlist_id = p.id
+         WHERE p.id = ?1
+         GROUP BY p.id",
+        [&playlist_id],
+        playlist_summary_from_row,
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 fn list_entries_from_connection(

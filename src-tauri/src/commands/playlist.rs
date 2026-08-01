@@ -30,9 +30,7 @@ pub(crate) fn get_playlist_entries_page(
     )?;
     let summary = state
         .playlist_service
-        .list_summaries(&app)?
-        .into_iter()
-        .find(|summary| summary.id == request.playlist_id)
+        .get_summary(&app, &request.playlist_id)?
         .ok_or_else(|| "playlist not found".to_string())?;
     Ok(PlaylistEntriesPageDto {
         playlist_id: summary.id,
