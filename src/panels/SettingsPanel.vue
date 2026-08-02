@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsPanel } from "../composables/useSettingsPanel";
 import {
@@ -7,6 +7,7 @@ import {
     type RemoteControlStatus,
 } from "../composables/useRemoteControlQrDialog";
 import RemoteControlQrDialog from "../components/RemoteControlQrDialog.vue";
+import CustomSelect from "../components/CustomSelect.vue";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 import {
     ENABLE_COMPACT_MODE_SETTING_LABEL,
@@ -227,223 +228,7 @@ const toggleShaderEnabled = (path: string) => {
 
 const SHADER_COLLAPSED_VISIBLE_COUNT = 4;
 const isShaderListExpanded = ref(false);
-const openSelectKey = ref<string | null>(null);
-const activeSelectOptionIndex = ref<number>(0);
-const selectTriggerRefs = new Map<string, HTMLElement>();
-const selectMenuStyle = ref<Record<string, string>>({});
 
-const getSelectKey = (groupTitle: string, itemLabel: string): string =>
-    `${groupTitle}::${itemLabel}`;
-
-const isSelectItem = (
-    item: SettingItem,
-): item is Extract<SettingItem, { type: "select" }> => item.type === "select";
-
-const getSelectOptionIndex = (item: SettingItem): number => {
-    if (!isSelectItem(item)) {
-        return 0;
-    }
-    const index = item.options.indexOf(item.value);
-    return index >= 0 ? index : 0;
-};
-
-const clampOptionIndex = (item: SettingItem, index: number): number => {
-    if (!isSelectItem(item)) {
-        return 0;
-    }
-    if (!item.options.length) {
-        return 0;
-    }
-    if (index < 0) {
-        return item.options.length - 1;
-    }
-    if (index >= item.options.length) {
-        return 0;
-    }
-    return index;
-};
-
-const openSelect = (key: string, item: SettingItem) => {
-    openSelectKey.value = key;
-    activeSelectOptionIndex.value = getSelectOptionIndex(item);
-    nextTick(() => {
-        updateOpenSelectMenuPosition();
-    });
-};
-
-const closeSelect = () => {
-    openSelectKey.value = null;
-};
-
-const toggleSelect = (key: string, item: SettingItem) => {
-    if (openSelectKey.value === key) {
-        closeSelect();
-        return;
-    }
-    openSelect(key, item);
-};
-
-const isSelectOpen = (key: string): boolean => openSelectKey.value === key;
-
-const setActiveSelectOption = (item: SettingItem, step: number) => {
-    activeSelectOptionIndex.value = clampOptionIndex(
-        item,
-        activeSelectOptionIndex.value + step,
-    );
-};
-
-const chooseSelectOption = (item: SettingItem, option: string) => {
-    if (!isSelectItem(item)) {
-        return;
-    }
-    item.value = option;
-    closeSelect();
-};
-
-const setSelectTriggerRef = (key: string, element: HTMLElement | null) => {
-    if (!element) {
-        selectTriggerRefs.delete(key);
-        return;
-    }
-    selectTriggerRefs.set(key, element);
-};
-
-const getOpenSelectMenuStyle = (): Record<string, string> => selectMenuStyle.value;
-
-const updateOpenSelectMenuPosition = () => {
-    if (!openSelectKey.value) {
-        return;
-    }
-    const trigger = selectTriggerRefs.get(openSelectKey.value);
-    if (!trigger) {
-        return;
-    }
-    const rect = trigger.getBoundingClientRect();
-    const viewportHeight = window.innerHeight;
-    const spaceAbove = rect.top;
-    const spaceBelow = viewportHeight - rect.bottom;
-    const estimatedMenuHeight = 240;
-    const shouldOpenTop =
-        spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow;
-    const gap = 6;
-    const maxHeight = Math.max(
-        120,
-        Math.min(320, shouldOpenTop ? spaceAbove - 10 : spaceBelow - 10),
-    );
-    const triggerStyles = getComputedStyle(trigger);
-    const menuThemeVars: Record<string, string> = {
-        "--panel-select-card-border": triggerStyles
-            .getPropertyValue("--panel-select-card-border")
-            .trim(),
-        "--panel-select-card-text": triggerStyles
-            .getPropertyValue("--panel-select-card-text")
-            .trim(),
-        "--panel-select-card-hover-bg": triggerStyles
-            .getPropertyValue("--panel-select-card-hover-bg")
-            .trim(),
-        "--panel-select-card-focus-bg": triggerStyles
-            .getPropertyValue("--panel-select-card-focus-bg")
-            .trim(),
-        "--panel-select-card-focus-border": triggerStyles
-            .getPropertyValue("--panel-select-card-focus-border")
-            .trim(),
-        "--panel-select-menu-bg": triggerStyles
-            .getPropertyValue("--panel-select-menu-bg")
-            .trim(),
-        "--panel-select-menu-border": triggerStyles
-            .getPropertyValue("--panel-select-menu-border")
-            .trim(),
-        "--panel-select-menu-hover-bg": triggerStyles
-            .getPropertyValue("--panel-select-menu-hover-bg")
-            .trim(),
-        "--panel-select-menu-selected-bg": triggerStyles
-            .getPropertyValue("--panel-select-menu-selected-bg")
-            .trim(),
-        "--panel-select-menu-selected-border": triggerStyles
-            .getPropertyValue("--panel-select-menu-selected-border")
-            .trim(),
-    };
-
-    selectMenuStyle.value = shouldOpenTop
-        ? {
-              ...menuThemeVars,
-              left: `${rect.left}px`,
-              width: `${rect.width}px`,
-              bottom: `${viewportHeight - rect.top + gap}px`,
-              maxHeight: `${maxHeight}px`,
-          }
-        : {
-              ...menuThemeVars,
-              left: `${rect.left}px`,
-              width: `${rect.width}px`,
-              top: `${rect.bottom + gap}px`,
-              maxHeight: `${maxHeight}px`,
-          };
-};
-
-const onSelectTriggerKeydown = (
-    event: KeyboardEvent,
-    key: string,
-    item: SettingItem,
-) => {
-    if (!isSelectItem(item)) {
-        return;
-    }
-    if (!item.options.length) {
-        return;
-    }
-
-    if (event.key === "ArrowDown") {
-        event.preventDefault();
-        if (!isSelectOpen(key)) {
-            openSelect(key, item);
-            return;
-        }
-        setActiveSelectOption(item, 1);
-        return;
-    }
-
-    if (event.key === "ArrowUp") {
-        event.preventDefault();
-        if (!isSelectOpen(key)) {
-            openSelect(key, item);
-            return;
-        }
-        setActiveSelectOption(item, -1);
-        return;
-    }
-
-    if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        if (!isSelectOpen(key)) {
-            openSelect(key, item);
-            return;
-        }
-        const nextOption = item.options[activeSelectOptionIndex.value];
-        if (nextOption !== undefined) {
-            chooseSelectOption(item, nextOption);
-        }
-        return;
-    }
-
-    if (event.key === "Escape") {
-        if (isSelectOpen(key)) {
-            event.preventDefault();
-            closeSelect();
-        }
-    }
-};
-
-const onDocumentPointerDown = (event: PointerEvent) => {
-    if (!openSelectKey.value) {
-        return;
-    }
-    const target = event.target as HTMLElement | null;
-    if (target?.closest(".panel__custom-select, .panel__custom-select-menu")) {
-        return;
-    }
-    closeSelect();
-};
 const shouldShowShaderListCollapseToggle = computed(
     () => selectedShaderFiles.value.length > SHADER_COLLAPSED_VISIBLE_COUNT,
 );
@@ -485,16 +270,10 @@ watch(
 
 onMounted(() => {
     void refreshRemoteControlStatus().catch((error: unknown) => { remoteControlError.value = String(error); });
-    document.addEventListener("pointerdown", onDocumentPointerDown);
-    document.addEventListener("scroll", updateOpenSelectMenuPosition, true);
-    window.addEventListener("resize", updateOpenSelectMenuPosition);
     window.addEventListener("keydown", onRemoteQrKeydown);
 });
 
 onBeforeUnmount(() => {
-    document.removeEventListener("pointerdown", onDocumentPointerDown);
-    document.removeEventListener("scroll", updateOpenSelectMenuPosition, true);
-    window.removeEventListener("resize", updateOpenSelectMenuPosition);
     window.removeEventListener("keydown", onRemoteQrKeydown);
     closeRemoteQrDialog();
 });
@@ -844,80 +623,11 @@ onBeforeUnmount(() => {
                                 </label>
                             </template>
                             <template v-else>
-                                <div
-                                    class="panel__custom-select"
-                                    :class="{
-                                        'panel__custom-select--open': isSelectOpen(
-                                            getSelectKey(group.title, item.label),
-                                        ),
-                                    }"
-                                >
-                                    <button
-                                        type="button"
-                                        class="panel__custom-select-trigger"
-                                        :ref="
-                                            (el) =>
-                                                setSelectTriggerRef(
-                                                    getSelectKey(group.title, item.label),
-                                                    el as HTMLElement | null,
-                                                )
-                                        "
-                                        :aria-expanded="
-                                            isSelectOpen(getSelectKey(group.title, item.label))
-                                        "
-                                        aria-haspopup="listbox"
-                                        @click="
-                                            toggleSelect(
-                                                getSelectKey(group.title, item.label),
-                                                item,
-                                            )
-                                        "
-                                        @keydown="
-                                            onSelectTriggerKeydown(
-                                                $event,
-                                                getSelectKey(group.title, item.label),
-                                                item,
-                                            )
-                                        "
-                                    >
-                                        <span class="panel__custom-select-value">
-                                            {{ item.value }}
-                                        </span>
-                                        <span class="panel__custom-select-arrow" aria-hidden="true">
-                                            <svg viewBox="0 0 12 12">
-                                                <path d="M2.25 4.5L6 8.25L9.75 4.5" />
-                                            </svg>
-                                        </span>
-                                    </button>
-                                    <Teleport to="body">
-                                        <div
-                                            v-if="isSelectOpen(getSelectKey(group.title, item.label))"
-                                            class="panel__custom-select-menu"
-                                            :style="getOpenSelectMenuStyle()"
-                                            role="listbox"
-                                            :aria-label="item.displayLabel ?? item.label"
-                                        >
-                                            <button
-                                                v-for="(option, optionIndex) in item.options"
-                                                :key="option"
-                                                type="button"
-                                                class="panel__custom-select-option"
-                                                :class="{
-                                                    'panel__custom-select-option--selected':
-                                                        option === item.value,
-                                                    'panel__custom-select-option--active':
-                                                        optionIndex === activeSelectOptionIndex,
-                                                }"
-                                                role="option"
-                                                :aria-selected="option === item.value"
-                                                @mouseenter="activeSelectOptionIndex = optionIndex"
-                                                @click="chooseSelectOption(item, option)"
-                                            >
-                                                {{ option }}
-                                            </button>
-                                        </div>
-                                    </Teleport>
-                                </div>
+                                <CustomSelect
+                                    v-model="item.value"
+                                    :options="item.options"
+                                    :aria-label="item.displayLabel ?? item.label"
+                                />
                             </template>
                         </div>
                     </div>

@@ -15,6 +15,7 @@ import {
     getSubtitleTrackTitle,
 } from "../../utils/trackDisplay";
 import ControlSlider from "./ControlSlider.vue";
+import CustomSelect from "../CustomSelect.vue";
 
 const props = defineProps<{
     currentSpeed: number;
@@ -163,10 +164,8 @@ const audioTrackRows = computed(() =>
 const audioDeviceOptions = computed(() =>
     createAudioDeviceOptions(props.audioDevices, props.selectedAudioDevice),
 );
-
-const onAudioDeviceChange = (event: Event) => {
-    const target = event.target as HTMLSelectElement;
-    emit("set-audio-output", target.value);
+const chooseAudioOutputOption = (value: string) => {
+    emit("set-audio-output", value);
 };
 
 const cancelSubtitleRenderFrame = () => {
@@ -467,25 +466,13 @@ watch(
                     <div class="track-menu__audio-controls">
                         <label class="track-menu__audio-output">
                             <span class="track-menu__audio-control-label">Output</span>
-                            <span class="track-menu__audio-select-wrap">
-                                <select
-                                    class="track-menu__audio-select"
-                                    :value="selectedAudioDevice"
-                                    aria-label="Audio output"
-                                    @change="onAudioDeviceChange"
-                                >
-                                    <option
-                                        v-for="option in audioDeviceOptions"
-                                        :key="option.value"
-                                        :value="option.value"
-                                    >
-                                        {{ option.label }}
-                                    </option>
-                                </select>
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="m7 10 5 5 5-5z" />
-                                </svg>
-                            </span>
+                            <CustomSelect
+                                class="track-menu__audio-select"
+                                :model-value="selectedAudioDevice"
+                                :options="audioDeviceOptions"
+                                aria-label="Audio output"
+                                @update:model-value="chooseAudioOutputOption"
+                            />
                         </label>
                         <button
                             class="track-menu__audio-toggle"
@@ -1247,56 +1234,27 @@ watch(
     text-transform: uppercase;
 }
 
-.track-menu__audio-select-wrap {
-    min-width: 0;
-    position: relative;
-    display: flex;
-    align-items: center;
-}
-
 .track-menu__audio-select {
+    min-width: 0;
     width: 100%;
-    height: 30px;
-    appearance: none;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 7px;
-    padding: 0 28px 0 9px;
-    background: rgba(255, 255, 255, 0.07);
-    color: rgba(255, 255, 255, 0.94);
-    font: inherit;
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-}
-
-.track-menu__audio-select:hover {
-    background: rgba(255, 255, 255, 0.11);
-}
-
-.track-menu__audio-select:focus-visible {
-    outline: 2px solid rgba(143, 179, 255, 0.8);
-    outline-offset: 1px;
-}
-
-.track-menu__audio-select option {
-    background: #242424;
-    color: #fff;
-}
-
-.track-menu__audio-select-wrap svg {
-    position: absolute;
-    right: 7px;
-    width: 16px;
-    height: 16px;
-    fill: currentColor;
-    color: rgba(255, 255, 255, 0.68);
-    pointer-events: none;
+    --panel-select-card-bg: rgba(255, 255, 255, 0.045);
+    --panel-select-card-border: rgba(255, 255, 255, 0.2);
+    --panel-select-card-text: #f3f6fb;
+    --panel-select-card-arrow: rgba(210, 226, 255, 0.88);
+    --panel-select-card-hover-bg: rgba(88, 166, 255, 0.1);
+    --panel-select-card-hover-border: rgba(124, 183, 255, 0.45);
+    --panel-select-card-focus-bg: rgba(88, 166, 255, 0.16);
+    --panel-select-card-focus-border: rgba(124, 183, 255, 0.72);
+    --panel-select-card-focus-glow: rgba(88, 166, 255, 0.32);
+    --panel-select-menu-bg: rgba(42, 54, 71, 0.98);
+    --panel-select-menu-border: rgba(185, 202, 225, 0.16);
+    --panel-select-menu-hover-bg: rgba(185, 202, 225, 0.08);
+    --panel-select-menu-selected-bg: rgba(185, 202, 225, 0.12);
+    --panel-select-menu-selected-border: rgba(185, 202, 225, 0.28);
 }
 
 .track-menu__audio-toggle {
-    height: 30px;
+    height: 32px;
     border: none;
     border-radius: 7px;
     padding: 0 8px;
