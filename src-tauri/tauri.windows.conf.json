@@ -1,4 +1,17 @@
 {
+  "app": {
+    "windows": [
+      {
+        "title": "Soia",
+        "width": 1280,
+        "height": 720,
+        "decorations": true,
+        "transparent": false,
+        "backgroundColor": "#000000",
+        "visible": false
+      }
+    ]
+  },
   "bundle": {
     "fileAssociations": [
       {
