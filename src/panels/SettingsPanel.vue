@@ -8,6 +8,7 @@ import {
 } from "../composables/useRemoteControlQrDialog";
 import RemoteControlQrDialog from "../components/RemoteControlQrDialog.vue";
 import CustomSelect from "../components/CustomSelect.vue";
+import { AUDIO_GROUP_TITLE } from "../composables/settings-sections";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 import {
     ENABLE_COMPACT_MODE_SETTING_LABEL,
@@ -634,7 +635,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div
                     v-if="
-                        group.title === 'Audio Output' &&
+                        group.title === AUDIO_GROUP_TITLE &&
                         (audioStatusText || audioOutputError)
                     "
                     class="panel__audio-status"

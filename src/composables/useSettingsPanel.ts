@@ -38,10 +38,18 @@ export const useSettingsPanel = () => {
     const update = useUpdateSection();
     const mediaAssociation = useMediaAssociationSection(isMacOS);
     const audio = useAudioSettingsSection();
-    const settingGroups = computed(() => [
-        ...general.settingGroups.value,
-        audio.settingGroup.value,
-    ]);
+    const settingGroups = computed(() => {
+        const groups = [...general.settingGroups.value];
+        const playbackIndex = groups.findIndex(
+            (group) => group.title === "Playback",
+        );
+        groups.splice(
+            playbackIndex >= 0 ? playbackIndex + 1 : groups.length,
+            0,
+            audio.settingGroup.value,
+        );
+        return groups;
+    });
 
     const emitSettingsUpdated = () => {
         if (typeof window === "undefined") return;

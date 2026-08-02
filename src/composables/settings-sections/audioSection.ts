@@ -8,7 +8,7 @@ import {
 import { createAudioDeviceOptions } from "../../utils/audioDevices";
 import { useAudioOutput } from "../useAudioOutput";
 
-export const AUDIO_OUTPUT_GROUP_TITLE = "Audio Output";
+export const AUDIO_GROUP_TITLE = "Audio";
 
 const OUTPUT_LABEL = "AUDIO_OUTPUT_DEVICE";
 const PASSTHROUGH_LABEL = "AUDIO_PASSTHROUGH";
@@ -45,7 +45,7 @@ const toggleItem = (
 export const useAudioSettingsSection = () => {
     const output = useAudioOutput();
     const group = ref<SettingGroup>({
-        title: AUDIO_OUTPUT_GROUP_TITLE,
+        title: AUDIO_GROUP_TITLE,
         items: [],
     });
     let currentSettings = defaultAudioSettings();
@@ -70,7 +70,7 @@ export const useAudioSettingsSection = () => {
         const outputOptions = options.map((device) => device.label);
 
         group.value = {
-            title: AUDIO_OUTPUT_GROUP_TITLE,
+            title: AUDIO_GROUP_TITLE,
             items: [
                 selectItem(
                     OUTPUT_LABEL,
