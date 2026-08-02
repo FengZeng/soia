@@ -65,6 +65,9 @@ impl AudioOutputRuntime {
         state.settings = settings.clone();
         state.status.requested_mode = settings.mode;
         state.status.selected_device = settings.effective_output_device().to_string();
+        state.status.output_format = None;
+        state.status.output_rate = None;
+        state.status.output_channels = None;
         recompute_status(&mut state);
         state.status.clone()
     }
@@ -340,5 +343,34 @@ mod tests {
             status.output_issue,
             Some(AudioOutputIssue::SpeedIncompatible)
         );
+    }
+
+    #[test]
+    fn changing_settings_clears_stale_negotiated_output() {
+        let runtime = AudioOutputRuntime::new(AudioSettings {
+            mode: AudioMode::Passthrough,
+            output_device: "wasapi/receiver-a".to_string(),
+            ..AudioSettings::default()
+        });
+        runtime.update_current_ao(Some("wasapi".to_string()));
+        runtime.update_input_codec(Some("truehd".to_string()));
+        runtime.update_output_params(&serde_json::json!({
+            "format": "spdif-truehd",
+            "samplerate": 192000,
+            "channels": "7.1"
+        }));
+
+        let status = runtime.set_settings(AudioSettings {
+            mode: AudioMode::Passthrough,
+            output_device: "wasapi/receiver-b".to_string(),
+            ..AudioSettings::default()
+        });
+
+        assert_eq!(status.selected_device, "wasapi/receiver-b");
+        assert_eq!(status.output_format, None);
+        assert_eq!(status.output_rate, None);
+        assert_eq!(status.output_channels, None);
+        assert!(!status.passthrough_active);
+        assert_eq!(status.output_issue, None);
     }
 }

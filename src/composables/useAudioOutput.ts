@@ -29,6 +29,11 @@ const ensureListeners = async () => {
         }),
         listen<AudioOutputStatus>("soia:audio-output-status", (event) => {
             status.value = event.payload;
+            settings.value = {
+                ...settings.value,
+                mode: event.payload.requestedMode,
+                outputDevice: event.payload.selectedDevice,
+            };
         }).then((unlisten) => {
             unlistenStatus = unlisten;
         }),

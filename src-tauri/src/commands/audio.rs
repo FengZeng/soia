@@ -16,13 +16,26 @@ pub(crate) fn apply_audio_settings(
     settings: AudioSettings,
 ) -> Result<AudioSettings, String> {
     let settings = settings.normalized();
-    with_mpv(&state, |mpv| {
-        audio_output::apply_to_mpv(mpv, &settings, true)
-    })?;
+    let previous_settings = state.audio_output.settings();
+    state.audio_output.set_settings(settings.clone());
 
-    let status = state.audio_output.set_settings(settings.clone());
+    if let Err(error) = with_mpv(&state, |mpv| {
+        audio_output::apply_to_mpv(mpv, &settings, true)
+    }) {
+        state.audio_output.set_settings(previous_settings.clone());
+        if let Err(rollback_error) = with_mpv(&state, |mpv| {
+            audio_output::apply_to_mpv(mpv, &previous_settings, true)
+        }) {
+            log::error!(
+                "failed to restore the previous audio route after {error}: {rollback_error}"
+            );
+        }
+        audio_output::emit_status(&app, state.audio_output.status());
+        return Err(error);
+    }
+
     crate::store::ui_state_store::save_audio_settings(&app, settings.clone())?;
-    audio_output::emit_status(&app, status);
+    audio_output::emit_status(&app, state.audio_output.status());
     Ok(settings)
 }
 

@@ -464,7 +464,10 @@ watch(
                         </button>
                     </div>
                     <div class="track-menu__audio-controls">
-                        <label class="track-menu__audio-output">
+                        <label
+                            class="track-menu__audio-output"
+                            title="Choose the device used for audio output"
+                        >
                             <span class="track-menu__audio-control-label">Output</span>
                             <CustomSelect
                                 class="track-menu__audio-select"
@@ -477,6 +480,7 @@ watch(
                         <button
                             class="track-menu__audio-toggle"
                             type="button"
+                            title="Send supported encoded audio directly to the selected output device"
                             :aria-pressed="audioPassthroughEnabled"
                             @click.stop="
                                 emit(

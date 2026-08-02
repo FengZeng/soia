@@ -21,7 +21,15 @@ pub(crate) fn apply_to_mpv(
 ) -> Result<(), String> {
     let options = build_mpv_options(settings);
     set_property(mpv, "audio-fallback-to-null", "yes")?;
-    set_property(mpv, "audio-spdif", &options.audio_spdif)?;
+
+    // Disabling SPDIF first lets mpv rebuild a decoded PCM chain before
+    // exclusive mode is released. When enabling it, establish the target
+    // device and exclusive route first so the SPDIF decoder never opens
+    // against the previous shared-mode output.
+    if !options.passthrough {
+        set_property(mpv, "audio-spdif", "")?;
+    }
+
     set_property(mpv, "audio-device", &options.audio_device)?;
     set_property(
         mpv,
@@ -37,6 +45,12 @@ pub(crate) fn apply_to_mpv(
         if reset_speed {
             command(mpv, &["set", "speed", "1"])?;
         }
+        set_property(mpv, "audio-spdif", &options.audio_spdif)?;
+
+        // Recreating the SPDIF decoder in the middle of a TrueHD packet can
+        // leave FFmpeg without stream parameters. Refreshing the current
+        // position feeds the new decoder from a valid demux boundary.
+        command(mpv, &["seek", "0", "relative+exact"])?;
     }
     Ok(())
 }
