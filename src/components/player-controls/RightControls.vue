@@ -2,7 +2,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import type { AudioDevice } from "../../types/audio";
 import type { MediaTrack } from "../../types/media";
+import { createAudioDeviceOptions } from "../../utils/audioDevices";
 import type { SubtitleTarget } from "../../composables/useSubtitleState";
 import {
     getAudioTrackDetails,
@@ -19,6 +21,7 @@ const props = defineProps<{
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
+    speedLocked: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -31,6 +34,9 @@ const props = defineProps<{
     isLoopOne: boolean;
     audioTracks: MediaTrack[];
     showAudioMenu: boolean;
+    audioDevices: AudioDevice[];
+    selectedAudioDevice: string;
+    audioPassthroughEnabled: boolean;
     subTracks: MediaTrack[];
     dualSubEnabled: boolean;
     secondarySubId: MediaTrack["id"];
@@ -68,6 +74,8 @@ const emit = defineEmits<{
     (e: "set-hue", value: number): void;
     (e: "set-global-color-adjustments-enabled", enabled: boolean): void;
     (e: "select-audio", track: MediaTrack): void;
+    (e: "set-audio-output", device: string): void;
+    (e: "set-audio-passthrough", enabled: boolean): void;
     (e: "select-sub-track", payload: { target: SubtitleTarget; track: MediaTrack }): void;
     (e: "set-active-sub-target", target: SubtitleTarget): void;
     (e: "toggle-dual-sub", enabled: boolean): void;
@@ -152,6 +160,14 @@ const audioTrackRows = computed(() =>
         hoverTitle: getAudioTrackHoverTitle(track),
     })),
 );
+const audioDeviceOptions = computed(() =>
+    createAudioDeviceOptions(props.audioDevices, props.selectedAudioDevice),
+);
+
+const onAudioDeviceChange = (event: Event) => {
+    const target = event.target as HTMLSelectElement;
+    emit("set-audio-output", target.value);
+};
 
 const cancelSubtitleRenderFrame = () => {
     if (subtitleRenderFrame == null) return;
@@ -346,8 +362,13 @@ watch(
         <div class="track-menu-container">
             <button
                 class="icon-button icon-button--player"
+                :disabled="speedLocked"
                 @click.stop="emit('toggle-menu', 'speed')"
-                title="Playback Speed"
+                :title="
+                    speedLocked
+                        ? 'Playback speed is fixed during audio passthrough'
+                        : 'Playback Speed'
+                "
             >
                 {{ currentSpeed }}x
             </button>
@@ -441,6 +462,53 @@ watch(
                                     stroke-linecap="round"
                                 />
                             </svg>
+                        </button>
+                    </div>
+                    <div class="track-menu__audio-controls">
+                        <label class="track-menu__audio-output">
+                            <span class="track-menu__audio-control-label">Output</span>
+                            <span class="track-menu__audio-select-wrap">
+                                <select
+                                    class="track-menu__audio-select"
+                                    :value="selectedAudioDevice"
+                                    aria-label="Audio output"
+                                    @change="onAudioDeviceChange"
+                                >
+                                    <option
+                                        v-for="option in audioDeviceOptions"
+                                        :key="option.value"
+                                        :value="option.value"
+                                    >
+                                        {{ option.label }}
+                                    </option>
+                                </select>
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="m7 10 5 5 5-5z" />
+                                </svg>
+                            </span>
+                        </label>
+                        <button
+                            class="track-menu__audio-toggle"
+                            type="button"
+                            :aria-pressed="audioPassthroughEnabled"
+                            @click.stop="
+                                emit(
+                                    'set-audio-passthrough',
+                                    !audioPassthroughEnabled,
+                                )
+                            "
+                        >
+                            <span>Passthrough</span>
+                            <span
+                                class="track-menu__mode-switch"
+                                :class="{
+                                    'track-menu__mode-switch--on':
+                                        audioPassthroughEnabled,
+                                }"
+                                aria-hidden="true"
+                            >
+                                <span class="track-menu__mode-thumb"></span>
+                            </span>
                         </button>
                     </div>
                     <div class="track-menu__list">
@@ -1142,15 +1210,114 @@ watch(
     align-items: center;
     padding-top: 11px;
     padding-bottom: 11px;
-    width: max-content;
-    min-width: 100%;
-    max-width: 360px;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    box-sizing: border-box;
 }
 
 .track-menu--audio {
-    width: max-content;
-    min-width: 240px;
-    max-width: 360px;
+    width: min(400px, calc(100vw - 24px));
+    min-width: 300px;
+    max-width: calc(100vw - 24px);
+    max-height: min(480px, calc(100vh - 96px));
+}
+
+.track-menu__audio-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 12px;
+    padding: 9px 14px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.track-menu__audio-output {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.track-menu__audio-control-label {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.track-menu__audio-select-wrap {
+    min-width: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.track-menu__audio-select {
+    width: 100%;
+    height: 30px;
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 7px;
+    padding: 0 28px 0 9px;
+    background: rgba(255, 255, 255, 0.07);
+    color: rgba(255, 255, 255, 0.94);
+    font: inherit;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.track-menu__audio-select:hover {
+    background: rgba(255, 255, 255, 0.11);
+}
+
+.track-menu__audio-select:focus-visible {
+    outline: 2px solid rgba(143, 179, 255, 0.8);
+    outline-offset: 1px;
+}
+
+.track-menu__audio-select option {
+    background: #242424;
+    color: #fff;
+}
+
+.track-menu__audio-select-wrap svg {
+    position: absolute;
+    right: 7px;
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+    color: rgba(255, 255, 255, 0.68);
+    pointer-events: none;
+}
+
+.track-menu__audio-toggle {
+    height: 30px;
+    border: none;
+    border-radius: 7px;
+    padding: 0 8px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.9);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.track-menu__audio-toggle:hover {
+    background: rgba(255, 255, 255, 0.09);
+}
+
+.track-menu__audio-toggle:focus-visible {
+    outline: 2px solid rgba(143, 179, 255, 0.8);
+    outline-offset: 1px;
 }
 
 .track-menu__item--audio .track-menu__check {
@@ -1160,7 +1327,7 @@ watch(
 .track-menu__text--audio {
     min-width: 0;
     width: 100%;
-    max-width: calc(360px - 68px);
+    max-width: none;
     flex: 1;
     display: flex;
     align-items: center;

@@ -67,17 +67,31 @@ fn release_mpv_context(ctx: &AtomicPtr<c_void>, terminate: bool) {
     }
 }
 
-fn set_mpv_initial_options(ctx: *mut c_void) {
-    for (name, value) in MPV_INITIAL_OPTIONS {
-        let Ok(c_name) = CString::new(*name) else {
+fn set_mpv_initial_options(ctx: *mut c_void, audio_settings: &crate::audio_output::AudioSettings) {
+    let audio_options = crate::audio_output::build_mpv_options(audio_settings);
+    let audio_exclusive = if audio_options.audio_exclusive {
+        "yes"
+    } else {
+        "no"
+    };
+    let mut options = MPV_INITIAL_OPTIONS.to_vec();
+    options.extend([
+        ("audio-fallback-to-null", "yes"),
+        ("audio-spdif", audio_options.audio_spdif.as_str()),
+        ("audio-device", audio_options.audio_device.as_str()),
+        ("audio-exclusive", audio_exclusive),
+        ("audio-channels", audio_options.audio_channels),
+    ]);
+    for (name, value) in options {
+        let Ok(c_name) = CString::new(name) else {
             continue;
         };
-        let Ok(c_value) = CString::new(*value) else {
+        let Ok(c_value) = CString::new(value) else {
             continue;
         };
         let result = unsafe { mpv_set_option_string(ctx, c_name.as_ptr(), c_value.as_ptr()) };
         if result < 0 {
-            warn!("Failed to set initial mpv color option {name}={value}: {result}");
+            warn!("Failed to set initial mpv option {name}={value}: {result}");
         }
     }
 }
@@ -142,6 +156,7 @@ impl MpvHandle {
         window: *const c_void,
         display: Option<*const c_void>,
         app_handle: AppHandle,
+        audio_settings: crate::audio_output::AudioSettings,
         _auth_token: Option<SoiaAuthToken>,
     ) -> Result<Self, String> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -156,7 +171,7 @@ impl MpvHandle {
             );
         }
 
-        set_mpv_initial_options(ctx);
+        set_mpv_initial_options(ctx, &audio_settings);
 
         let init_result = unsafe { mpv_initialize(ctx) };
         if init_result < 0 {

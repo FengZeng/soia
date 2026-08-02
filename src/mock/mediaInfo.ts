@@ -86,11 +86,6 @@ const isHdrPlusSource = (source: string) =>
 const isHdrSource = (path: string) =>
     isHdrColorSource(path) || isDolbyVisionSource(path);
 
-const isDolbySource = (path: string) =>
-    hasKeyword(path, "dolby") ||
-    hasKeyword(path, "atmos") ||
-    hasKeyword(path, "dv");
-
 const formatDuration = (seconds?: number | null) => {
     if (
         typeof seconds !== "number" ||
@@ -150,8 +145,7 @@ const buildBadges = (path: string, info: MediaInfo) => {
     if (
         hasKeyword(info.audio.codec, "dolby") ||
         hasKeyword(info.video.codec, "dolby") ||
-        hasKeyword(info.video.color, "dolby") ||
-        isDolbySource(path)
+        hasKeyword(info.video.color, "dolby")
     ) {
         badges.push("Dolby");
     }
@@ -166,7 +160,6 @@ export const getMockMediaInfo = (
     const title = resolveTitle(safePath);
     const isDolbyVision = isDolbyVisionSource(safePath);
     const isHdr = isHdrSource(safePath) || isDolbyVision;
-    const isDolby = isDolbySource(safePath);
 
     const info: MediaInfo = {
         ...baseInfo,
@@ -186,12 +179,7 @@ export const getMockMediaInfo = (
                   ? "HDR10"
                   : baseInfo.video.color,
         },
-        audio: {
-            ...baseInfo.audio,
-            codec: isDolby ? "Dolby Atmos (E-AC-3)" : baseInfo.audio.codec,
-            channels: isDolby ? "7.1" : baseInfo.audio.channels,
-            sampleRate: isDolby ? "48 kHz" : baseInfo.audio.sampleRate,
-        },
+        audio: { ...baseInfo.audio },
         subtitles: isHdr
             ? ["English (SRT)", "Chinese (SRT)", "Japanese (ASS)"]
             : baseInfo.subtitles,

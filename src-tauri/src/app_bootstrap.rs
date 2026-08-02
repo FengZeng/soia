@@ -61,15 +61,21 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let audio_settings = ui_state_store::load_ui_state(&app.handle())
+        .ok()
+        .and_then(|state| state.audio)
+        .unwrap_or_default()
+        .normalized();
     let mpv_player_handle = MpvHandle::new(
         render_target,
         display,
         app.handle().clone(),
+        audio_settings.clone(),
         auth_token,
     )
     .map_err(|e| Box::new(io::Error::other(e)) as Box<dyn Error>)?;
 
-    app.manage(build_app_state(mpv_player_handle));
+    app.manage(build_app_state(mpv_player_handle, audio_settings));
     app.manage(crate::platform::new_platform_state());
 
     initialize_navigation_state_from_core(app);
@@ -85,7 +91,10 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
+fn build_app_state(
+    mpv_player_handle: MpvHandle,
+    audio_settings: crate::audio_output::AudioSettings,
+) -> AppState {
     let mpv_player = Arc::new(Mutex::new(mpv_player_handle));
     AppState {
         playback_service: crate::core::playback_service::PlaybackService::new(mpv_player.clone()),
@@ -93,6 +102,7 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
         navigation_service: crate::core::navigation::NavigationService::new(),
         playlist_service: crate::core::playlist_service::PlaylistService::new(),
         mpv_player,
+        audio_output: crate::audio_output::AudioOutputRuntime::new(audio_settings),
         pending_play_history_entry: Mutex::new(None),
         current_playback_key: Mutex::new(None),
         pending_playback_loads: Mutex::new(std::collections::VecDeque::new()),
@@ -332,7 +342,11 @@ fn configure_mpv_startup(app: &tauri::App) -> Result<(), Box<dyn Error>> {
 
     mpv_guard.set_option_string("hwdec", "auto");
 
-    let default_speed = resolve_default_playback_speed(&app.handle());
+    let default_speed = if state.audio_output.settings().passthrough_enabled() {
+        1.0
+    } else {
+        resolve_default_playback_speed(&app.handle())
+    };
     if let Err(error) = crate::mpv_command_checked(
         &mpv_guard,
         &["set", "speed", &default_speed.to_string()],

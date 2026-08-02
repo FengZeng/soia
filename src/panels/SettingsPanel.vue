@@ -62,8 +62,37 @@ const {
     removeShaderFromList,
     clearShaders,
     isFixedLogPathItem,
+    audioOutputStatus,
+    audioOutputError,
+    retryAudioOutput,
     isLoading,
 } = useSettingsPanel();
+
+const audioStatusText = computed(() => {
+    const status = audioOutputStatus.value;
+    if (status.passthroughActive) {
+        return status.inputCodec
+            ? `${status.inputCodec.toUpperCase()} passthrough active`
+            : "Passthrough active";
+    }
+    if (status.outputIssue === "device_disconnected") {
+        return "Selected output unavailable";
+    }
+    if (status.outputIssue === "passthrough_open_failed") {
+        return "Passthrough unavailable";
+    }
+    if (status.outputIssue === "output_unavailable") {
+        return "Audio output unavailable";
+    }
+    return "";
+});
+
+const shouldShowAudioRetry = computed(
+    () =>
+        Boolean(audioOutputError.value) ||
+        (audioOutputStatus.value.activeMode === "null_output" &&
+            Boolean(audioOutputStatus.value.inputCodec)),
+);
 
 const isLinuxPlatform =
     typeof navigator !== "undefined" && /\blinux\b/i.test(navigator.userAgent);
@@ -892,6 +921,23 @@ onBeforeUnmount(() => {
                             </template>
                         </div>
                     </div>
+                </div>
+                <div
+                    v-if="
+                        group.title === 'Audio Output' &&
+                        (audioStatusText || audioOutputError)
+                    "
+                    class="panel__audio-status"
+                >
+                    <span>{{ audioOutputError || audioStatusText }}</span>
+                    <button
+                        v-if="shouldShowAudioRetry"
+                        class="panel__action panel__action--ghost panel__action--compact"
+                        type="button"
+                        @click="retryAudioOutput"
+                    >
+                        Retry
+                    </button>
                 </div>
                 <template v-if="group.title === 'Playback'">
                     <div class="panel__subtitle panel__subtitle--large">

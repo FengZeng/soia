@@ -2,8 +2,10 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { PlayerApi } from "./usePlaybackController";
 import { getMockMediaInfo } from "../mock/mediaInfo";
+import { useAudioOutput } from "./useAudioOutput";
 
 export const useMediaInfo = (player: PlayerApi) => {
+    const audioOutput = useAudioOutput();
     let mediaSizeQueryId = 0;
     const mediaFileSizeBytes = ref<number | null>(null);
 
@@ -41,10 +43,20 @@ export const useMediaInfo = (player: PlayerApi) => {
 
     const mediaInfo = computed(() => {
         if (!player.state.media.isFileLoaded) return null;
-        return getMockMediaInfo(player.state.media.url, {
+        const info = getMockMediaInfo(player.state.media.url, {
             durationSeconds: player.state.playback.duration,
             fileSizeBytes: mediaFileSizeBytes.value,
         });
+        const status = audioOutput.status.value;
+        info.audio.codec = [status.inputCodec, status.inputProfile]
+            .filter(Boolean)
+            .join(" · ") || "Unknown";
+        info.audio.channels =
+            status.inputChannels ?? status.outputChannels ?? "Unknown";
+        info.audio.sampleRate = status.outputRate
+            ? `${status.outputRate / 1000} kHz`
+            : "Unknown";
+        return info;
     });
 
     const statusBadges = computed(() => mediaInfo.value?.badges ?? []);

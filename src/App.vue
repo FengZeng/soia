@@ -35,7 +35,9 @@ import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePer
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
+import { useAudioOutput } from "./composables/useAudioOutput";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
+import type { AudioSettings } from "./types/audio";
 
 const {
     isMacOS,
@@ -184,13 +186,43 @@ const {
 });
 
 const playbackVolume = usePlaybackVolumePersistence(player);
+const audioOutput = useAudioOutput();
+const isPassthroughActive = computed(
+    () => audioOutput.status.value.passthroughActive,
+);
+const applyAudioSettingsPatch = async (patch: Partial<AudioSettings>) => {
+    const current = audioOutput.settings.value;
+    try {
+        await audioOutput.applySettings({
+            ...current,
+            ...patch,
+        });
+    } catch {
+        // The shared audio-output state retains the actionable error.
+    }
+};
+const onSetAudioOutput = (device: string) =>
+    applyAudioSettingsPatch({
+        outputDevice: device,
+    });
+const onSetAudioPassthrough = (enabled: boolean) =>
+    applyAudioSettingsPatch({
+        mode: enabled ? "passthrough" : "pcm",
+    });
+
+const setVolumeWhenAvailable = async (volume: number) => {
+    if (isPassthroughActive.value) return;
+    await playbackVolume.setVolume(volume);
+};
 
 const onSetVolume = async (volume: number) => {
-    await playbackVolume.setVolume(volume);
+    if (isPassthroughActive.value) return;
+    await setVolumeWhenAvailable(volume);
     showVolumeOverlay(player.state.playback.volume);
 };
 
 const onToggleMuted = async () => {
+    if (isPassthroughActive.value) return;
     await playbackVolume.toggleMuted();
     showVolumeOverlay(player.state.playback.volume);
 };
@@ -269,12 +301,14 @@ const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
         state: player.state,
         togglePlayPause: player.togglePlayPause,
         seekRelative: onSeekRelative,
-        setVolume: playbackVolume.setVolume,
+        setVolume: setVolumeWhenAvailable,
     },
     onToggleFullscreen,
     toggleInfo,
     showSeekOverlay,
-    showVolumeOverlay,
+    (volume) => {
+        if (!isPassthroughActive.value) showVolumeOverlay(volume);
+    },
 );
 
 watch(
@@ -311,6 +345,10 @@ const {
     onDragRegionTouchStart,
 } = useWindowDragRegion();
 const { mediaInfo, statusBadges } = useMediaInfo(player);
+const onSetSpeed = (rate: number) => {
+    if (isPassthroughActive.value) return;
+    speed.setSpeed(rate);
+};
 const currentOrLastPlaybackUrl = computed(
     () => player.state.media.url || player.state.media.lastLoadedUrl,
 );
@@ -614,6 +652,7 @@ useAppStartupBindings({
                 !player.state.media.isFileLoaded || !ui.showControls.value
             "
             :status-badges="statusBadges"
+            :audio-passthrough-active="isPassthroughActive"
             :current-speed="speed.currentSpeed.value"
             :playback-rates="speed.playbackRates"
             :show-speed-menu="speed.showSpeedMenu.value"
@@ -632,6 +671,11 @@ useAppStartupBindings({
             :is-loop-one="isLoopOne"
             :audio-tracks="tracks.audioTracks.value"
             :show-audio-menu="tracks.showAudioMenu.value"
+            :audio-devices="audioOutput.devices.value"
+            :selected-audio-device="audioOutput.settings.value.outputDevice"
+            :audio-passthrough-enabled="
+                audioOutput.settings.value.mode === 'passthrough'
+            "
             :sub-tracks="tracks.subTracks.value"
             :dual-sub-enabled="tracks.dualSubEnabled.value"
             :secondary-sub-id="tracks.secondarySubId.value"
@@ -656,7 +700,7 @@ useAppStartupBindings({
             @next-track="onNextTrack"
             @toggle-menu="toggleMenu"
             @toggle-loop-one="toggleLoopOne"
-            @set-speed="speed.setSpeed"
+            @set-speed="onSetSpeed"
             @set-volume="onSetVolume"
             @toggle-muted="onToggleMuted"
             @set-audio-delay="adjustments.setAudioDelay"
@@ -675,6 +719,8 @@ useAppStartupBindings({
                 adjustments.setGlobalColorAdjustmentsEnabled
             "
             @select-audio="tracks.selectAudio"
+            @set-audio-output="onSetAudioOutput"
+            @set-audio-passthrough="onSetAudioPassthrough"
             @select-sub-track="tracks.selectSubTrack"
             @set-active-sub-target="tracks.setActiveSubTarget"
             @toggle-dual-sub="tracks.setDualSubEnabled"
