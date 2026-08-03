@@ -2,10 +2,17 @@
 mod imp {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::sync::mpsc;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
     use tauri::{Emitter, Manager};
     use tokio::time::sleep;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateSolidBrush, FillRect, GetDC, InvalidateRect, ReleaseDC, UpdateWindow,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, SetClassLongPtrW, GCLP_HBRBACKGROUND,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
 
     const MAIN_WINDOW_LABEL: &str = "main";
@@ -17,6 +24,87 @@ mod imp {
     const PIP_SCREEN_WIDTH_FACTOR: f64 = 0.30;
     const PIP_SCREEN_HEIGHT_FACTOR: f64 = 0.45;
     const PIP_MARGIN: i32 = 20;
+    const LIGHT_BACKGROUND_COLOR: u32 = 0x00f6f6f6;
+    const DARK_BACKGROUND_COLOR: u32 = 0x000f0f0f;
+    // Win32 COLORREF uses 0x00BBGGRR, so CSS #1e2227 becomes 0x0027221e.
+    const GRAPHITE_BACKGROUND_COLOR: u32 = 0x0027221e;
+    static CURRENT_BACKGROUND_COLOR: AtomicU32 = AtomicU32::new(0);
+
+    pub(crate) fn paint_native_window_background<W: HasWindowHandle>(
+        window: &W,
+        theme: Option<&str>,
+        system_theme: tauri::Theme,
+    ) -> Result<(), String> {
+        let handle = window.window_handle().map_err(|error| error.to_string())?;
+        let hwnd = match handle.as_raw() {
+            RawWindowHandle::Win32(handle) => {
+                handle.hwnd.get() as usize as *mut std::ffi::c_void
+            }
+            _ => return Err("Main window does not expose a Win32 window handle".into()),
+        };
+
+        let color = match theme.map(|value| value.trim().to_ascii_lowercase()) {
+            Some(value) if value == "light" => LIGHT_BACKGROUND_COLOR,
+            Some(value) if value == "dark" => DARK_BACKGROUND_COLOR,
+            Some(value) if value == "graphite" => GRAPHITE_BACKGROUND_COLOR,
+            Some(_) => system_background_color(system_theme),
+            None => {
+                let current = CURRENT_BACKGROUND_COLOR.load(Ordering::Acquire);
+                if current == 0 {
+                    system_background_color(system_theme)
+                } else {
+                    current
+                }
+            }
+        };
+        CURRENT_BACKGROUND_COLOR.store(color, Ordering::Release);
+
+        let brush = background_brush(color);
+        if brush.is_null() {
+            return Err("Failed to create native window background brush".into());
+        }
+
+        let mut client_rect = windows_sys::Win32::Foundation::RECT::default();
+        unsafe {
+            // The class owns this process-lifetime brush after assignment.
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush as isize);
+            if GetClientRect(hwnd, &mut client_rect) == 0 {
+                return Err("Failed to query main window client area".into());
+            }
+
+            let dc = GetDC(hwnd);
+            if dc.is_null() {
+                return Err("Failed to acquire main window device context".into());
+            }
+            FillRect(dc, &client_rect, brush);
+            ReleaseDC(hwnd, dc);
+
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+            UpdateWindow(hwnd);
+        }
+        Ok(())
+    }
+
+    fn system_background_color(theme: tauri::Theme) -> u32 {
+        match theme {
+            tauri::Theme::Light => LIGHT_BACKGROUND_COLOR,
+            _ => DARK_BACKGROUND_COLOR,
+        }
+    }
+
+    fn background_brush(color: u32) -> *mut std::ffi::c_void {
+        static LIGHT_BRUSH: OnceLock<usize> = OnceLock::new();
+        static DARK_BRUSH: OnceLock<usize> = OnceLock::new();
+        static GRAPHITE_BRUSH: OnceLock<usize> = OnceLock::new();
+
+        let slot = match color {
+            LIGHT_BACKGROUND_COLOR => &LIGHT_BRUSH,
+            GRAPHITE_BACKGROUND_COLOR => &GRAPHITE_BRUSH,
+            _ => &DARK_BRUSH,
+        };
+        *slot.get_or_init(|| unsafe { CreateSolidBrush(color) as usize })
+            as *mut std::ffi::c_void
+    }
 
     #[derive(Clone, Copy, Debug)]
     struct WindowSnapshot {
@@ -383,6 +471,6 @@ mod imp {
 
 #[cfg(target_os = "windows")]
 pub(crate) use imp::{
-    enforce_native_pip_aspect, is_native_pip_enabled, set_native_pip_enabled,
-    prepare_window_for_fullscreen, update_native_pip_state,
+    enforce_native_pip_aspect, is_native_pip_enabled, paint_native_window_background,
+    prepare_window_for_fullscreen, set_native_pip_enabled, update_native_pip_state,
 };

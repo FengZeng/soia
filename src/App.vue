@@ -30,7 +30,6 @@ import { usePlaylistEntriesWithProgress } from "./composables/usePlaylistEntries
 import { useAppStartupBindings } from "./composables/useAppStartupBindings";
 import { usePlaybackSeekActions } from "./composables/usePlaybackSeekActions";
 import { usePlaybackLoadingState } from "./composables/usePlaybackLoadingState";
-import { usePlaybackTransitionMask } from "./composables/usePlaybackTransitionMask";
 import { usePlaybackNavigation } from "./composables/usePlaybackNavigation";
 import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePersistence";
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
@@ -85,7 +84,6 @@ const {
 const clearNavSelectionDuringLoad = ref(false);
 const playbackLoadingState = usePlaybackLoadingState();
 const { isLoading, loadingUrl } = playbackLoadingState;
-const playbackTransitionMask = usePlaybackTransitionMask();
 const playlistCreationPrompt = usePlaylistCreationPrompt();
 const {
     persistCurrentManualWindow,
@@ -109,7 +107,6 @@ const playbackFlow = usePlaybackFlow({
     isInfoOpen,
     loadingState: playbackLoadingState,
     onPlaybackIntent: async () => {
-        await playbackTransitionMask.activateAndWaitForPaint();
         await persistCurrentManualWindow();
         clearNavSelectionDuringLoad.value = true;
     },
@@ -140,13 +137,8 @@ const {
 } = playbackFlow;
 
 const onStopPlaybackWithWindowRestore = async () => {
-    await playbackTransitionMask.activateAndWaitForPaint();
-    try {
-        await onStopPlayback();
-        await restorePersistedManualWindow();
-    } finally {
-        playbackTransitionMask.clear();
-    }
+    await onStopPlayback();
+    await restorePersistedManualWindow();
 };
 
 const playbackNavigation = usePlaybackNavigation({
@@ -168,11 +160,6 @@ const shouldKeepPlaybackBackgroundOpaque = computed(
 const shouldUseTransparentVideoMode = computed(
     () =>
         player.state.media.isFileLoaded &&
-        !shouldKeepPlaybackBackgroundOpaque.value,
-);
-const shouldMaskPlaybackTransition = computed(
-    () =>
-        playbackTransitionMask.isVisible.value &&
         !shouldKeepPlaybackBackgroundOpaque.value,
 );
 const sideNavActivePanel = computed(() =>
@@ -250,14 +237,8 @@ const {
     schedulePointerRefresh,
     onStopPlayback: onStopPlaybackWithWindowRestore,
     playPath,
-    playPreviousTrack: async () => {
-        await playbackTransitionMask.activateAndWaitForPaint();
-        await playbackNavigation.playPreviousTrack();
-    },
-    playNextTrack: async () => {
-        await playbackTransitionMask.activateAndWaitForPaint();
-        await playbackNavigation.playNextTrack();
-    },
+    playPreviousTrack: playbackNavigation.playPreviousTrack,
+    playNextTrack: playbackNavigation.playNextTrack,
 });
 
 const onSideNavNavigate = async (
@@ -367,9 +348,9 @@ const { hasLoadedPanel, loadActivePanel } = useAppUiPersistence({
 
 const {
     onFileLoaded: onFileLoadedBase,
-    onPlaybackRestart: onPlaybackRestartBase,
+    onPlaybackRestart,
     onProgress,
-    onEndFile: onEndFileBase,
+    onEndFile,
 } =
     useAppPlaybackEvents({
         player,
@@ -383,22 +364,6 @@ const {
         loadingUrl,
         playNextAfterEnd: playbackNavigation.playNextAfterEnd,
     });
-
-const onPlaybackRestart = () => {
-    onPlaybackRestartBase();
-    void playbackTransitionMask.releaseAfterPlaybackRestart();
-};
-
-const onEndFile = (payload: Parameters<typeof onEndFileBase>[0]) => {
-    if (payload.reason === "eof") {
-        playbackTransitionMask.activate();
-    } else if (payload.reason === "error") {
-        // A failed file never reaches playback-restart, so it cannot release
-        // the transition mask through the normal success path.
-        playbackTransitionMask.clear();
-    }
-    onEndFileBase(payload);
-};
 
 const onFileLoaded = async () => {
     await onFileLoadedBase();
@@ -435,7 +400,6 @@ useAppRuntimeBindings({
     onEndFile,
     onSourceLoadState: ({ loading, loadingKey, error }) => {
         if (loading) {
-            playbackTransitionMask.activate();
             isLoading.value = true;
             loadingUrl.value = loadingKey || player.state.media.url;
             return;
@@ -448,7 +412,6 @@ useAppRuntimeBindings({
         ) {
             return;
         }
-        playbackTransitionMask.clear();
         isLoading.value = false;
         loadingUrl.value = "";
     },
@@ -494,7 +457,6 @@ useAppStartupBindings({
         class="soia-container"
         :class="{
             'video-mode': shouldUseTransparentVideoMode,
-            'playback-transition-mask': shouldMaskPlaybackTransition,
             'cursor-hidden':
                 player.state.media.isFileLoaded &&
                 !ui.showControls.value &&

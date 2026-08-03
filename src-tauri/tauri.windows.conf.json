@@ -7,7 +7,6 @@
         "height": 720,
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#000000",
         "visible": false
       }
     ]

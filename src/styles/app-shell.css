@@ -24,13 +24,6 @@
     box-shadow: none !important;
 }
 
-.soia-container.playback-transition-mask {
-    background-color: #000 !important;
-    background-image: none !important;
-    box-shadow: none !important;
-    transition: none;
-}
-
 .cursor-hidden {
     cursor: none;
 }
