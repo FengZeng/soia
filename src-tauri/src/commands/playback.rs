@@ -59,6 +59,14 @@ pub(crate) fn mpv_set_option_string(
     })
 }
 
+#[tauri::command]
+pub(crate) fn mpv_get_property_string(
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<String, String> {
+    with_mpv(&state, |mpv_guard| mpv_guard.get_property_string(&name))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoadPlaybackSourcePayload {
@@ -312,14 +320,8 @@ pub(crate) async fn load_source(
                     // Use preferred_title (from playlist) if available, otherwise
                     // fall back to the title resolved by the source preparer.
                     let effective_title = preferred_title.clone().or(prepared.title);
-                    let playback_playlist_id = state
-                        .navigation_service
-                        .playlist_navigation_context()
-                        .playback_playlist_id;
                     let snapshot = state.playback_state.update(|snapshot| {
                         snapshot.playback_session_id = Some(playback_session_id);
-                        snapshot.playback_key = Some(source_key.clone());
-                        snapshot.playback_playlist_id = playback_playlist_id;
                         snapshot.source_loading = false;
                         snapshot.source_loading_key = None;
                         snapshot.source_load_error = None;
@@ -824,28 +826,6 @@ pub(crate) fn parse_playlist_source(
     payload: ParsePlaylistSourcePayload,
 ) -> Result<ParsedPlaylistFile, String> {
     parse_playlist_source_inner(&app, &payload.source)
-}
-
-pub(crate) fn prepare_playlist_import(
-    app: &tauri::AppHandle,
-    source: &str,
-) -> Result<crate::core::playlist_service::PreparedPlaylist, String> {
-    let parsed = parse_playlist_source_inner(app, source)?;
-    let name = Path::new(source)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("Imported Playlist")
-        .to_string();
-    Ok(crate::core::playlist_service::PreparedPlaylist {
-        name,
-        entries: parsed.entries.into_iter().map(|entry| crate::core::playlist_service::PreparedPlaylistEntry {
-            path: entry.path,
-            title: entry.title,
-            artwork_ref: entry.icon,
-            added_at: crate::store::media_db::now_millis(),
-        }).collect(),
-    })
 }
 
 #[cfg(test)]

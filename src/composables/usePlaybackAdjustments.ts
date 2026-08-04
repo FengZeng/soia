@@ -7,6 +7,8 @@ import {
     saveUiState,
 } from "./useUiStateStore";
 
+const SUB_DELAY_MAX_ENTRIES = 200;
+
 const clamp = (value: number, min: number, max: number) =>
     Math.min(max, Math.max(min, value));
 
@@ -22,6 +24,8 @@ type ColorAdjustmentsState = Record<ColorAdjustmentKey, number>;
 type PersistedPlaybackAdjustmentsState = {
     globalColorAdjustmentsEnabled?: boolean;
     globalColorAdjustments?: Partial<ColorAdjustmentsState>;
+    subDelayByMedia?: Record<string, number>;
+    secondarySubDelayByMedia?: Record<string, number>;
 };
 
 const COLOR_ADJUSTMENT_KEYS: ColorAdjustmentKey[] = [
@@ -70,12 +74,15 @@ export const usePlaybackAdjustments = () => {
         ...DEFAULT_COLOR_ADJUSTMENTS,
     });
     const localColorAdjustmentsByMediaKey = new Map<string, ColorAdjustmentsState>();
+    const subDelayByMediaKey = new Map<string, number>();
+    const secondarySubDelayByMediaKey = new Map<string, number>();
     const currentLocalMediaKey = ref("");
     const globalColorAdjustments = ref<ColorAdjustmentsState>({
         ...DEFAULT_COLOR_ADJUSTMENTS,
     });
     const globalColorAdjustmentsEnabled = ref(false);
     const persistedStateSaver = createDebouncedUiStateSaver(350);
+    const subDelaySaver = createDebouncedUiStateSaver(500);
 
     const activeColorAdjustments = computed(() =>
         globalColorAdjustmentsEnabled.value
@@ -89,10 +96,20 @@ export const usePlaybackAdjustments = () => {
     const gamma = computed(() => activeColorAdjustments.value.gamma);
     const hue = computed(() => activeColorAdjustments.value.hue);
 
+    const serializeDelayMap = (map: Map<string, number>): Record<string, number> => {
+        const result: Record<string, number> = {};
+        for (const [key, value] of map) {
+            if (value !== 0) result[key] = value;
+        }
+        return result;
+    };
+
     const buildPersistedPlaybackAdjustmentsState = () => ({
         playbackAdjustments: {
             globalColorAdjustmentsEnabled: globalColorAdjustmentsEnabled.value,
             globalColorAdjustments: { ...globalColorAdjustments.value },
+            subDelayByMedia: serializeDelayMap(subDelayByMediaKey),
+            secondarySubDelayByMedia: serializeDelayMap(secondarySubDelayByMediaKey),
         } satisfies PersistedPlaybackAdjustmentsState,
     });
 
@@ -159,6 +176,7 @@ export const usePlaybackAdjustments = () => {
     };
 
     const applyColorAdjustmentsForMedia = async (mediaKey: string) => {
+        await hydrationReady;
         const normalizedKey = mediaKey.trim();
         currentLocalMediaKey.value = normalizedKey;
         if (globalColorAdjustmentsEnabled.value) {
@@ -189,15 +207,37 @@ export const usePlaybackAdjustments = () => {
         });
     };
 
+    const evictOldestFromMap = (map: Map<string, number>, maxSize: number) => {
+        if (map.size <= maxSize) return;
+        const oldestKey = map.keys().next().value;
+        if (oldestKey) map.delete(oldestKey);
+    };
+
+    const persistSubDelaysDebounced = () => {
+        subDelaySaver.saveDebounced(buildPersistedPlaybackAdjustmentsState());
+    };
+
     const setSubDelay = async (value: number) => {
-        const next = clamp(value, -10, 10);
+        const next = clamp(value, -300, 300);
         subDelay.value = next;
+        if (currentLocalMediaKey.value) {
+            subDelayByMediaKey.delete(currentLocalMediaKey.value);
+            subDelayByMediaKey.set(currentLocalMediaKey.value, next);
+            evictOldestFromMap(subDelayByMediaKey, SUB_DELAY_MAX_ENTRIES);
+            persistSubDelaysDebounced();
+        }
         await invoke("mpv_set_option_string", { name: "sub-delay", value: next });
     };
 
     const setSecondarySubDelay = async (value: number) => {
-        const next = clamp(value, -10, 10);
+        const next = clamp(value, -300, 300);
         secondarySubDelay.value = next;
+        if (currentLocalMediaKey.value) {
+            secondarySubDelayByMediaKey.delete(currentLocalMediaKey.value);
+            secondarySubDelayByMediaKey.set(currentLocalMediaKey.value, next);
+            evictOldestFromMap(secondarySubDelayByMediaKey, SUB_DELAY_MAX_ENTRIES);
+            persistSubDelaysDebounced();
+        }
         await invoke("mpv_set_option_string", {
             name: "secondary-sub-delay",
             value: next,
@@ -213,6 +253,79 @@ export const usePlaybackAdjustments = () => {
             return;
         }
         await setSubDelay(payload.value);
+    };
+
+    const subStep = async (delta: number) => {
+        await invoke("mpv_run_command", {
+            args: ["sub-step", String(delta)],
+        });
+        try {
+            const newDelayStr = await invoke<string>("mpv_get_property_string", { name: "sub-delay" });
+            const newDelay = parseFloat(newDelayStr);
+            if (!Number.isNaN(newDelay)) {
+                subDelay.value = newDelay;
+                if (currentLocalMediaKey.value) {
+                    subDelayByMediaKey.delete(currentLocalMediaKey.value);
+                    subDelayByMediaKey.set(currentLocalMediaKey.value, newDelay);
+                    evictOldestFromMap(subDelayByMediaKey, SUB_DELAY_MAX_ENTRIES);
+                    persistSubDelaysDebounced();
+                }
+            }
+        } catch (e) {
+            console.error("Failed to read updated sub-delay after sub-step", e);
+        }
+    };
+
+    const resetSubDelay = async (target?: SubtitleTarget) => {
+        if (!target || target === "primary") {
+            await setSubDelay(0);
+        }
+        if (target === "secondary") {
+            await setSecondarySubDelay(0);
+        }
+    };
+
+    const applySubDelayForMedia = async (mediaKey: string) => {
+        await hydrationReady;
+        const normalizedKey = mediaKey.trim();
+        const storedPrimary = normalizedKey
+            ? subDelayByMediaKey.get(normalizedKey)
+            : undefined;
+        const storedSecondary = normalizedKey
+            ? secondarySubDelayByMediaKey.get(normalizedKey)
+            : undefined;
+        const primaryDelay = storedPrimary ?? 0;
+        const secondaryDelay = storedSecondary ?? 0;
+        subDelay.value = primaryDelay;
+        secondarySubDelay.value = secondaryDelay;
+
+        const sendDelayToMpv = async () => {
+            await invoke("mpv_set_option_string", {
+                name: "sub-delay",
+                value: primaryDelay,
+            });
+            await invoke("mpv_set_option_string", {
+                name: "secondary-sub-delay",
+                value: secondaryDelay,
+            });
+        };
+
+        await sendDelayToMpv();
+
+        // MPV may reset sub-delay when subtitle tracks finish initializing
+        // (which happens after the file-loaded event). Verify and re-apply.
+        const verifyAndRetry = async () => {
+            try {
+                const actualStr = await invoke<string>("mpv_get_property_string", { name: "sub-delay" });
+                const actual = parseFloat(actualStr);
+                if (!Number.isNaN(actual) && Math.abs(actual - primaryDelay) > 0.001) {
+                    await sendDelayToMpv();
+                }
+            } catch { /* mpv not ready yet, ignore */ }
+        };
+
+        setTimeout(verifyAndRetry, 500);
+        setTimeout(verifyAndRetry, 1500);
     };
 
     const setBrightness = async (value: number) => {
@@ -243,7 +356,7 @@ export const usePlaybackAdjustments = () => {
         await persistPlaybackAdjustmentsNow();
     };
 
-    void (async () => {
+    const hydrationReady = (async () => {
         const stored = await loadUiState<{
             playbackAdjustments?: PersistedPlaybackAdjustmentsState;
         }>();
@@ -253,6 +366,23 @@ export const usePlaybackAdjustments = () => {
             persisted?.globalColorAdjustments,
         );
         globalColorAdjustmentsEnabled.value = enabled;
+
+        // Restore per-media subtitle delays from persisted state
+        if (persisted?.subDelayByMedia && typeof persisted.subDelayByMedia === "object") {
+            for (const [key, value] of Object.entries(persisted.subDelayByMedia)) {
+                if (typeof value === "number" && Number.isFinite(value) && key.trim()) {
+                    subDelayByMediaKey.set(key, clamp(value, -300, 300));
+                }
+            }
+        }
+        if (persisted?.secondarySubDelayByMedia && typeof persisted.secondarySubDelayByMedia === "object") {
+            for (const [key, value] of Object.entries(persisted.secondarySubDelayByMedia)) {
+                if (typeof value === "number" && Number.isFinite(value) && key.trim()) {
+                    secondarySubDelayByMediaKey.set(key, clamp(value, -300, 300));
+                }
+            }
+        }
+
         if (!enabled) return;
         await reapplyGlobalColorAdjustments();
     })();
@@ -272,6 +402,9 @@ export const usePlaybackAdjustments = () => {
         setSubDelay,
         setSecondarySubDelay,
         setSubDelayForTarget,
+        subStep,
+        resetSubDelay,
+        applySubDelayForMedia,
         setBrightness,
         setContrast,
         setSaturation,
