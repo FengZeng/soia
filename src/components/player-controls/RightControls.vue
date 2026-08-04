@@ -56,6 +56,8 @@ const emit = defineEmits<{
     (e: "set-speed", rate: number): void;
     (e: "set-audio-delay", value: number): void;
     (e: "set-sub-delay-for-target", payload: { target: SubtitleTarget; value: number }): void;
+    (e: "sub-step", delta: number): void;
+    (e: "reset-sub-delay", target?: SubtitleTarget): void;
     (e: "set-sub-font-family", payload: { target: SubtitleTarget; value: string }): void;
     (e: "set-sub-font-size", payload: { target: SubtitleTarget; value: number }): void;
     (e: "set-sub-font-color", payload: { target: SubtitleTarget; value: string }): void;
@@ -238,6 +240,14 @@ const onChangeActiveSubDelay = (value: number) => {
 
 const onResetActiveSubDelay = () => {
     onChangeActiveSubDelay(0);
+};
+
+const onSubStepBackward = () => {
+    emit("sub-step", -1);
+};
+
+const onSubStepForward = () => {
+    emit("sub-step", 1);
 };
 
 const onChangeActiveSubFontFamily = (event: Event) => {
@@ -781,26 +791,49 @@ watch(
                     </div>
                     <div
                         v-if="props.hasSubTracks && !props.showSubtitleAdvancedSettings"
-                        class="track-menu__footer"
+                        class="track-menu__footer track-menu__footer--sub-sync"
                     >
-                        <ControlSlider
-                            :label="dualSubEnabled ? 'Delay' : 'Delay'"
-                            :value="
-                                dualSubEnabled
-                                    ? activeSubTarget === 'primary'
-                                        ? subDelay
-                                        : secondarySubDelay
-                                    : subDelay
-                            "
-                            :min="-10"
-                            :max="10"
-                            :step="0.1"
-                            unit="s"
-                            :show-sign="true"
-                            :precision="1"
-                            @change="onChangeActiveSubDelay"
-                            @reset="onResetActiveSubDelay"
-                        />
+                        <div class="sub-sync-row">
+                            <button
+                                class="sub-sync-btn"
+                                type="button"
+                                title="Sync to previous subtitle line"
+                                @click="onSubStepBackward"
+                            >
+                                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                                    <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+                                </svg>
+                            </button>
+                            <ControlSlider
+                                class="sub-sync-slider"
+                                :label="'Delay'"
+                                :value="
+                                    dualSubEnabled
+                                        ? activeSubTarget === 'primary'
+                                            ? subDelay
+                                            : secondarySubDelay
+                                        : subDelay
+                                "
+                                :min="-300"
+                                :max="300"
+                                :step="0.1"
+                                unit="s"
+                                :show-sign="true"
+                                :precision="1"
+                                @change="onChangeActiveSubDelay"
+                                @reset="onResetActiveSubDelay"
+                            />
+                            <button
+                                class="sub-sync-btn"
+                                type="button"
+                                title="Sync to next subtitle line"
+                                @click="onSubStepForward"
+                            >
+                                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                                    <path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2z" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </transition>
@@ -1416,5 +1449,54 @@ watch(
     background: rgba(255, 255, 255, 0.12);
     border-color: rgba(255, 255, 255, 0.24);
     color: #fff;
+}
+
+.track-menu__footer--sub-sync {
+    padding: 6px 10px 8px;
+}
+
+.sub-sync-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sub-sync-slider {
+    flex: 1;
+    min-width: 0;
+}
+
+.sub-sync-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    transition:
+        background-color 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.sub-sync-btn:hover {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: #fff;
+}
+
+.sub-sync-btn:active {
+    background: rgba(143, 179, 255, 0.18);
+    border-color: rgba(143, 179, 255, 0.5);
+}
+
+.sub-sync-btn svg {
+    width: 16px;
+    height: 16px;
 }
 </style>

@@ -27,6 +27,11 @@ type OnlineSubtitleCacheClearResult = {
     removedBytes: number;
 };
 
+export type PersistedMediaTracksState = {
+    audioTrackByMedia?: Record<string, string>;
+    subTrackByMedia?: Record<string, string>;
+};
+
 let cachedUiState: UiStateObject | null = null;
 let hasCachedUiState = false;
 let pendingLoad: Promise<UiStateObject | null> | null = null;

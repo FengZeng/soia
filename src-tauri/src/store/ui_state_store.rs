@@ -1,4 +1,4 @@
-use crate::store::{json_io, playlist_store, storage_paths};
+use crate::store::{json_io, playback_store, storage_paths};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -52,6 +52,8 @@ pub struct UiState {
     pub playlist_loop_mode: Option<String>,
     #[serde(default)]
     pub playlist_sort_mode: Option<String>,
+    #[serde(default)]
+    pub media_tracks: Option<MediaTracksState>,
 }
 
 impl Default for UiState {
@@ -70,6 +72,7 @@ impl Default for UiState {
             active_playlist_id: None,
             playlist_loop_mode: None,
             playlist_sort_mode: None,
+            media_tracks: None,
         }
     }
 }
@@ -92,6 +95,7 @@ impl UiState {
             active_playlist_id: incoming.active_playlist_id.or(self.active_playlist_id),
             playlist_loop_mode: incoming.playlist_loop_mode.or(self.playlist_loop_mode),
             playlist_sort_mode: incoming.playlist_sort_mode.or(self.playlist_sort_mode),
+            media_tracks: incoming.media_tracks.or(self.media_tracks),
         }
     }
 }
@@ -118,6 +122,21 @@ pub struct PlaybackAdjustmentsState {
     pub global_color_adjustments_enabled: Option<bool>,
     #[serde(default)]
     pub global_color_adjustments: Option<ColorAdjustmentsState>,
+    #[serde(default)]
+    pub local_color_adjustments_by_media: Option<std::collections::HashMap<String, ColorAdjustmentsState>>,
+    #[serde(default)]
+    pub sub_delay_by_media: Option<std::collections::HashMap<String, f64>>,
+    #[serde(default)]
+    pub secondary_sub_delay_by_media: Option<std::collections::HashMap<String, f64>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTracksState {
+    #[serde(default)]
+    pub audio_track_by_media: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub sub_track_by_media: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -172,8 +191,6 @@ pub struct PlaylistEntry {
     pub path: String,
     #[serde(default)]
     pub title: Option<String>,
-    #[serde(default)]
-    pub icon_url: Option<String>,
     pub added_at: i64,
 }
 
@@ -237,64 +254,32 @@ fn legacy_ui_state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> 
 fn strip_playlist(state: &UiState) -> UiState {
     let mut stripped = state.clone();
     stripped.playlist = None;
-    stripped.playlists = None;
-    stripped.playlist_loop_mode = None;
-    stripped.playlist_sort_mode = None;
     stripped
 }
 
-fn playlist_state_from_ui(state: &UiState) -> Option<playlist_store::PlaylistPersistenceState> {
-    let has_playlist_domain = state.playlist.is_some()
-        || state.playlists.is_some()
-        || state.playlist_loop_mode.is_some()
-        || state.playlist_sort_mode.is_some();
-    if !has_playlist_domain {
-        return None;
-    }
-    let mut playlists = state
-        .playlists
-        .clone()
-        .unwrap_or_default()
+fn from_default_playlist_entries(
+    entries: Vec<playback_store::DefaultPlaylistEntry>,
+) -> Vec<PlaylistEntry> {
+    entries
         .into_iter()
-        .map(|playlist| playlist_store::PersistedPlaylist {
-            id: playlist.id,
-            name: playlist.name,
-            entries: playlist
-                .entries
-                .into_iter()
-                .map(|entry| playlist_store::PersistedPlaylistEntry {
-                    path: entry.path,
-                    title: entry.title,
-                    artwork_ref: entry.icon_url,
-                    added_at: entry.added_at,
-                })
-                .collect(),
-            created_at: playlist.created_at,
+        .map(|entry| PlaylistEntry {
+            path: entry.path,
+            title: None,
+            added_at: entry.added_at,
         })
-        .collect::<Vec<_>>();
-    if let Some(entries) = &state.playlist {
-        if !playlists.iter().any(|playlist| playlist.id == "default") {
-            playlists.push(playlist_store::PersistedPlaylist {
-                id: "default".to_string(),
-                name: "Default Playlist".to_string(),
-                entries: entries
-                    .iter()
-                    .map(|entry| playlist_store::PersistedPlaylistEntry {
-                        path: entry.path.clone(),
-                        title: entry.title.clone(),
-                        artwork_ref: entry.icon_url.clone(),
-                        added_at: entry.added_at,
-                    })
-                    .collect(),
-                created_at: 0,
-            });
-        }
-    }
-    Some(playlist_store::PlaylistPersistenceState {
-        playlists,
-        playlist_loop_mode: state.playlist_loop_mode.clone(),
-        playlist_sort_mode: state.playlist_sort_mode.clone(),
-    })
+        .collect()
+}
+
+fn into_default_playlist_entries(
+    entries: Vec<PlaylistEntry>,
+) -> Vec<playback_store::DefaultPlaylistEntry> {
+    entries
+        .into_iter()
+        .map(|entry| playback_store::DefaultPlaylistEntry {
+            path: entry.path,
+            added_at: entry.added_at,
+        })
+        .collect()
 }
 
 fn load_state_from_disk(path: &Path, legacy_path: &Path) -> Result<UiState, String> {
@@ -327,14 +312,13 @@ pub fn load_ui_state(app: &tauri::AppHandle) -> Result<UiState, String> {
     let legacy_path = legacy_ui_state_file_path(app)?;
     let mut state = load_state_from_disk(&path, &legacy_path)?;
 
-    if let Some(legacy_playlist_state) = playlist_state_from_ui(&state) {
-        playlist_store::migrate_legacy_state(app, &legacy_playlist_state)?;
-        state = strip_playlist(&state);
-        if path.exists() {
-            json_io::write_json(&path, &state)?;
-        }
+    let playlist = playback_store::load_playlist(app)?;
+    let legacy_playlist = state.playlist.take();
+    if legacy_playlist.is_some() && path.exists() {
+        json_io::write_json(&path, &state)?;
     }
     store_ui_state_cache(&state);
+    state.playlist = Some(from_default_playlist_entries(playlist));
     Ok(state)
 }
 
@@ -386,7 +370,10 @@ pub fn load_ytdl_max_height(app: &tauri::AppHandle) -> u32 {
 pub fn save_ui_state(app: &tauri::AppHandle, state: UiState) -> Result<(), String> {
     let path = ui_state_file_path(app)?;
     let legacy_path = legacy_ui_state_file_path(app)?;
-    let state = strip_playlist(&state);
+    let mut state = state;
+    if let Some(playlist) = state.playlist.take() {
+        playback_store::save_playlist(app, into_default_playlist_entries(playlist))?;
+    }
     let existing = load_state_from_disk(&path, &legacy_path)?;
     let merged = existing.merge(state);
     json_io::write_json(&path, &merged)?;
@@ -411,6 +398,53 @@ pub fn reset_ui_state(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Load playlist/navigation state from persistence for Core's NavigationService.
+/// Returns the navigation state that Core needs to resolve previous/next without
+/// depending on the Desktop Vue application being mounted.
+pub fn load_navigation_state(
+    app: &tauri::AppHandle,
+) -> Result<crate::core::navigation::NavigationState, String> {
+    let path = ui_state_file_path(app)?;
+    let legacy_path = legacy_ui_state_file_path(app)?;
+    let state = load_state_from_disk(&path, &legacy_path)?;
+
+    let playlists = state
+        .playlists
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pl| crate::core::navigation::Playlist {
+            id: pl.id,
+            entries: pl
+                .entries
+                .into_iter()
+                .map(|e| crate::core::navigation::PlaylistEntry {
+                    path: e.path,
+                    title: e.title,
+                    added_at: e.added_at as f64,
+                })
+                .collect(),
+        })
+        .collect();
+
+    let loop_mode = match state.playlist_loop_mode.as_deref() {
+        Some("shuffle") => crate::core::navigation::LoopMode::Shuffle,
+        _ => crate::core::navigation::LoopMode::List,
+    };
+
+    let sort_mode = match state.playlist_sort_mode.as_deref() {
+        Some("name") => crate::core::navigation::SortMode::Name,
+        _ => crate::core::navigation::SortMode::Added,
+    };
+
+    Ok(crate::core::navigation::NavigationState {
+        playlists,
+        active_playlist_id: state.active_playlist_id,
+        playback_playlist_id: None,
+        loop_mode,
+        sort_mode,
+        is_loop_one: false,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -425,7 +459,6 @@ mod tests {
                 entries: vec![PlaylistEntry {
                     path: "https://example.test/live.m3u8".to_string(),
                     title: Some("News Channel".to_string()),
-                    icon_url: None,
                     added_at: 123,
                 }],
                 created_at: 100,

@@ -34,6 +34,7 @@ import { usePlaybackNavigation } from "./composables/usePlaybackNavigation";
 import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePersistence";
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
+import { useNavigationStateSync } from "./composables/useNavigationStateSync";
 import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
 
@@ -143,6 +144,14 @@ const onStopPlaybackWithWindowRestore = async () => {
 
 const playbackNavigation = usePlaybackNavigation({
     coreClient: tauriCoreClient,
+});
+
+useNavigationStateSync({
+    playlists,
+    activePlaylistId,
+    loopMode,
+    sortMode,
+    isLoopOne,
 });
 
 const isWindowsPlatform =
@@ -338,9 +347,12 @@ const playbackContextMenu = usePlaybackContextMenu({
 
 const { hasLoadedPanel, loadActivePanel } = useAppUiPersistence({
     activePanel,
+    playlists,
     activePlaylistId,
     playlistScrollState,
     playlistDrawerWidthRatio,
+    loopMode,
+    sortMode,
     playlistState,
     schedulePointerRefresh,
     normalizeStoredPanel,
@@ -371,6 +383,7 @@ const onFileLoaded = async () => {
         await tracks.setSubtitlesDisabled(true);
     }
     await adjustments.applyColorAdjustmentsForMedia(player.state.media.url);
+    await adjustments.applySubDelayForMedia(player.state.media.url);
     await subtitleAppearance.applySubtitleAppearanceOptions();
 };
 
@@ -661,6 +674,8 @@ useAppStartupBindings({
             @toggle-muted="onToggleMuted"
             @set-audio-delay="adjustments.setAudioDelay"
             @set-sub-delay-for-target="adjustments.setSubDelayForTarget"
+            @sub-step="adjustments.subStep"
+            @reset-sub-delay="adjustments.resetSubDelay"
             @set-sub-font-family="subtitleAppearance.setSubtitleFontFamily"
             @set-sub-font-size="subtitleAppearance.setSubtitleFontSize"
             @set-sub-font-color="subtitleAppearance.setSubtitleFontColor"

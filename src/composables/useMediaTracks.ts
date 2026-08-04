@@ -7,7 +7,11 @@ import {
     OPENSUBTITLES_ENABLED_SETTING_LABEL,
     SUBSOURCE_ENABLED_SETTING_LABEL,
 } from "../mock/settings";
-import { loadUiState } from "./useUiStateStore";
+import {
+    loadUiState,
+    createDebouncedUiStateSaver,
+    type PersistedMediaTracksState,
+} from "./useUiStateStore";
 import { useSubtitleState, type SubtitleTarget } from "./useSubtitleState";
 
 type HistoryApi = {
@@ -141,6 +145,50 @@ export const useMediaTracks = (
     const activeOnlineSubtitleProviderId = ref<OnlineSubtitleProviderId>(
         DEFAULT_ONLINE_SUBTITLE_PROVIDER_ID,
     );
+
+    const TRACK_MAX_ENTRIES = 200;
+    const audioTrackByMediaKey = new Map<string, string>();
+    const subTrackByMediaKey = new Map<string, string>();
+    const tracksSaver = createDebouncedUiStateSaver(500);
+
+    const buildPersistedMediaTracksState = (): { mediaTracks: PersistedMediaTracksState } => {
+        return {
+            mediaTracks: {
+                audioTrackByMedia: Object.fromEntries(audioTrackByMediaKey),
+                subTrackByMedia: Object.fromEntries(subTrackByMediaKey),
+            },
+        };
+    };
+
+    const persistTracksDebounced = () => {
+        tracksSaver.saveDebounced(buildPersistedMediaTracksState());
+    };
+
+    const evictOldestFromMap = (map: Map<string, string>, maxSize: number) => {
+        if (map.size <= maxSize) return;
+        const oldestKey = map.keys().next().value;
+        if (oldestKey) map.delete(oldestKey);
+    };
+
+    const trackHydrationReady = (async () => {
+        const stored = await loadUiState<{ mediaTracks?: PersistedMediaTracksState }>();
+        const persisted = stored?.mediaTracks;
+        if (persisted?.audioTrackByMedia && typeof persisted.audioTrackByMedia === "object") {
+            for (const [key, value] of Object.entries(persisted.audioTrackByMedia)) {
+                if (typeof value === "string" && key.trim()) {
+                    audioTrackByMediaKey.set(key, value);
+                }
+            }
+        }
+        if (persisted?.subTrackByMedia && typeof persisted.subTrackByMedia === "object") {
+            for (const [key, value] of Object.entries(persisted.subTrackByMedia)) {
+                if (typeof value === "string" && key.trim()) {
+                    subTrackByMediaKey.set(key, value);
+                }
+            }
+        }
+    })();
+
     const onlineSubtitleResultMap = ref<Record<OnlineSubtitleProviderId, OnlineSubtitleSearchResult[]>>({
         opensubtitles: [],
         subsource: [],
@@ -351,6 +399,21 @@ export const useMediaTracks = (
         audioTracks.value = all.filter((t) => t.track_type === "audio");
         const subs = all.filter((t) => t.track_type === "sub");
         const previousPrimaryId = subtitleState.primarySubId.value;
+
+        const mediaKey = getMediaKey();
+        if (mediaKey) {
+            trackHydrationReady.then(() => {
+                const savedAudioId = audioTrackByMediaKey.get(mediaKey);
+                if (savedAudioId && audioTracks.value.some((t) => String(t.id) === savedAudioId && !t.selected)) {
+                    void selectAudio(audioTracks.value.find((t) => String(t.id) === savedAudioId)!);
+                }
+                
+                const savedSubId = subTrackByMediaKey.get(mediaKey);
+                if (savedSubId && subs.some((t) => String(t.id) === savedSubId && !t.selected)) {
+                    void selectSubTrack({ target: "primary", track: subs.find((t) => String(t.id) === savedSubId)! });
+                }
+            });
+        }
         const selectedIds = subs
             .filter((track) => track.selected)
             .map((track) => track.id);
@@ -407,6 +470,13 @@ export const useMediaTracks = (
 
     const selectAudio = async (track: MediaTrack) => {
         audioTracks.value.forEach((t) => (t.selected = t.id === track.id));
+        const mediaKey = getMediaKey();
+        if (mediaKey) {
+            audioTrackByMediaKey.delete(mediaKey);
+            audioTrackByMediaKey.set(mediaKey, track.id.toString());
+            evictOldestFromMap(audioTrackByMediaKey, TRACK_MAX_ENTRIES);
+            persistTracksDebounced();
+        }
         await invoke("mpv_set_option_string", { name: "aid", value: track.id });
     };
 
@@ -415,6 +485,15 @@ export const useMediaTracks = (
         track: MediaTrack;
     }) => {
         await subtitleState.selectSubTrack(payload);
+        if (payload.target === "primary" || !payload.target) {
+            const mediaKey = getMediaKey();
+            if (mediaKey) {
+                subTrackByMediaKey.delete(mediaKey);
+                subTrackByMediaKey.set(mediaKey, payload.track.id.toString());
+                evictOldestFromMap(subTrackByMediaKey, TRACK_MAX_ENTRIES);
+                persistTracksDebounced();
+            }
+        }
     };
 
     const setDualSubEnabled = async (enabled: boolean) => {
