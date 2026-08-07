@@ -38,6 +38,7 @@ pub struct AppState {
     pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
     pub(crate) navigation_service: core::navigation::NavigationService,
     pub(crate) playlist_service: core::playlist_service::PlaylistService,
+    pub(crate) playlist_source_operations: core::playlist_source_operations::PlaylistSourceOperationStore,
     pub(crate) shader_pipeline: shader_pipeline::ShaderPipeline,
 }
 
@@ -562,6 +563,8 @@ pub fn run() {
             commands::playback::mpv_run_command,
             commands::playback::mpv_set_option_string,
             commands::playback::load_playback_source,
+            commands::playback::prepare_playlist_source_operation,
+            commands::playback::continue_playlist_source_operation,
             commands::platform::pick_media_paths_native,
             commands::platform::pick_paths_native,
             commands::playback::consume_pending_open_files,

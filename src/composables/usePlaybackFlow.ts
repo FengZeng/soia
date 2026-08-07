@@ -1,24 +1,18 @@
 import { computed, onMounted, onUnmounted, ref, type Ref } from "vue";
 import type { HistoryEntry } from "../types/history";
 import type { NetworkPlayRequest } from "../types/network";
+import type { PlaylistSourceClient } from "../core-client/PlaylistSourceClient";
 import type { PlayerApi } from "./usePlaybackController";
 import { loadUiState } from "./useUiStateStore";
 import { isLikelyLivePlaybackSource } from "../utils/livePlayback";
 import {
-    getCommonSelectionSourceLabel,
     getParsedPlaylistWorkflow,
-    getPlaylistNameFromSource,
-    getPlaylistSourceLabel,
-    getUniquePathCount,
     isPlaylistSource,
     isYoutubePlaylistUrl,
-    shouldConfirmMultiPathPlaylistCreation,
-    shouldConfirmYoutubePlaylistCreation,
 } from "../utils/playlistSourceWorkflow";
 import type {
     ParsedPlaylistEntry,
     ParsedPlaylistFile,
-    ResolvedYoutubePlaylist,
 } from "./usePlaybackCommands";
 import {
     ALLOW_URL_INPUT_DURING_PLAYBACK_SETTING_LABEL,
@@ -45,30 +39,6 @@ type HistoryApi = {
     updateTitle: (path: string, title: string) => void;
 };
 
-type PlaylistApi = {
-    createPlaylistWithPaths: (
-        paths: string[],
-        options?: {
-            name?: string;
-            openInDrawer?: boolean;
-            setAsPlayback?: boolean;
-        },
-    ) => Promise<string | null>;
-    createPlaylistWithEntries: (
-        entries: Array<{ path: string; title?: string; iconUrl?: string }>,
-        options?: {
-            name?: string;
-            openInDrawer?: boolean;
-            setAsPlayback?: boolean;
-        },
-    ) => Promise<string | null>;
-    getDefaultPlaylistNameForPaths: (paths: string[], fallback?: string) => string;
-    getDefaultPlaylistNameForEntries: (
-        entries: Array<{ path: string; title?: string; iconUrl?: string }>,
-        fallback?: string,
-    ) => string;
-};
-
 type PlaybackRequestOptions = {
     isLivePlayback?: boolean;
 };
@@ -86,9 +56,9 @@ type NowPlayingApi = {
 type UsePlaybackFlowOptions = {
     isMacOS: boolean;
     player: PlayerApi;
+    playlistSourceClient: PlaylistSourceClient;
     tracks: TracksApi;
     history: HistoryApi;
-    playlistState: PlaylistApi;
     nowPlaying: NowPlayingApi;
     hideAllMenus: () => void;
     isInfoOpen: Ref<boolean>;
@@ -165,9 +135,9 @@ const parsePlaybackPreferences = (
 export const usePlaybackFlow = ({
     isMacOS,
     player,
+    playlistSourceClient,
     tracks,
     history,
-    playlistState,
     nowPlaying,
     hideAllMenus,
     isInfoOpen,
@@ -190,6 +160,9 @@ export const usePlaybackFlow = ({
     const livePlaybackKeys = new Set<string>();
     const nonLivePlaybackKeys = new Set<string>();
     const livePlaybackPlaylistEntryCounts = new Map<string, number>();
+    const playlistSourceClientId = typeof crypto !== "undefined" && crypto.randomUUID
+        ? `desktop-playlist-source-${crypto.randomUUID()}`
+        : `desktop-playlist-source-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
     const updatePlaybackPreferences = (groups?: StoredSettingGroup[]) => {
         playbackPreferences.value = parsePlaybackPreferences(groups);
@@ -391,13 +364,6 @@ export const usePlaybackFlow = ({
         await playSource(path, preferredTitle, options);
     };
 
-    const toPlaylistEntries = (entries: ParsedPlaylistEntry[]) =>
-        entries.map((entry) => ({
-            path: entry.path?.trim() ?? "",
-            title: entry.title?.trim() || undefined,
-            iconUrl: entry.icon?.trim() || undefined,
-        }));
-
     const confirmPlaylistCreation = async (
         defaultName: string,
         itemCount: number,
@@ -409,10 +375,32 @@ export const usePlaybackFlow = ({
         return requestPlaylistCreation({ defaultName, itemCount, sourceLabel });
     };
 
+    const continuePlaylistSourceOperation = async (
+        action: { operationId: string; suggestedName: string; itemCount: number; sourceLabel: string | null },
+    ) => {
+        const confirmation = await confirmPlaylistCreation(
+            action.suggestedName,
+            action.itemCount,
+            action.sourceLabel ?? undefined,
+        );
+        await triggerPlaybackIntent();
+        resetPlaybackTimeline();
+        hideHistory.value = true;
+        nowPlaying.clearArtwork();
+        tracks.resetTracks();
+        const result = await playlistSourceClient.continue({
+            clientId: playlistSourceClientId,
+            operationId: action.operationId,
+            createPlaylist: confirmation.shouldCreate,
+            playlistName: confirmation.shouldCreate ? confirmation.name : null,
+        });
+        if (result.playlistId) onPlaylistCreated?.(result.playlistId);
+        return result;
+    };
+
     const playParsedPlaylistSource = async (
         source: string,
         parsed: ParsedPlaylistFile,
-        playlistNameFallback?: string,
         preferredTitle?: string,
     ) => {
         const workflow = getParsedPlaylistWorkflow(
@@ -441,26 +429,14 @@ export const usePlaybackFlow = ({
 
         const paths = workflow.paths;
         if (workflow.shouldConfirmPlaylistCreation) {
-            const playlistEntries = toPlaylistEntries(parsed.entries);
-            const fallbackName =
-                getPlaylistNameFromSource(source, playlistNameFallback) ??
-                "Playlist";
-            const confirmation = await confirmPlaylistCreation(
-                fallbackName,
-                getUniquePathCount(paths),
-                getPlaylistSourceLabel(source),
-            );
-            if (confirmation.shouldCreate) {
-                const playlistId = await playlistState.createPlaylistWithEntries(
-                    playlistEntries,
-                    {
-                        name: confirmation.name,
-                        openInDrawer: true,
-                        setAsPlayback: true,
-                    },
-                );
-                if (playlistId) onPlaylistCreated?.(playlistId);
-            }
+            const action = await playlistSourceClient.prepare({
+                clientId: playlistSourceClientId,
+                sources: [source],
+                preferredTitle: preferredTitle ?? null,
+            });
+            rememberLivePlaybackEntries(parsed.entries);
+            await continuePlaylistSourceOperation(action);
+            return true;
         }
         rememberLivePlaybackEntries(parsed.entries);
         const firstEntry = parsed.entries.find(
@@ -476,52 +452,21 @@ export const usePlaybackFlow = ({
         return true;
     };
 
-    const youtubePlaylistEntriesToPlaylistEntries = (
-        entries: ResolvedYoutubePlaylist["entries"],
-    ) =>
-        entries.map((entry) => ({
-            path: entry.url.trim(),
-            title: entry.title?.trim() || undefined,
-            iconUrl: undefined,
-        }));
-
-    const playYoutubePlaylist = async (url: string): Promise<boolean> => {
-        let resolved: ResolvedYoutubePlaylist;
+    const playYoutubePlaylist = async (
+        url: string,
+        preferredTitle?: string,
+    ): Promise<boolean> => {
         try {
-            resolved = await player.resolveYoutubePlaylist(url);
+            const action = await playlistSourceClient.prepare({
+                clientId: playlistSourceClientId,
+                sources: [url],
+                preferredTitle: preferredTitle ?? null,
+            });
+            await continuePlaylistSourceOperation(action);
+            return true;
         } catch {
             return false;
         }
-        if (!resolved.entries.length) return false;
-
-        const playlistEntries = youtubePlaylistEntriesToPlaylistEntries(resolved.entries);
-        const defaultName =
-            resolved.playlistTitle?.trim() ||
-            playlistState.getDefaultPlaylistNameForEntries(
-                playlistEntries,
-                "YouTube Playlist",
-            );
-        if (shouldConfirmYoutubePlaylistCreation(resolved.entries.length)) {
-            const confirmation = await confirmPlaylistCreation(
-                defaultName,
-                resolved.entries.length,
-                url,
-            );
-            if (confirmation.shouldCreate) {
-                const playlistId = await playlistState.createPlaylistWithEntries(
-                    playlistEntries,
-                    {
-                        name: confirmation.name,
-                        openInDrawer: true,
-                        setAsPlayback: true,
-                    },
-                );
-                if (playlistId) onPlaylistCreated?.(playlistId);
-            }
-        }
-        const firstEntry = playlistEntries[0];
-        await playPath(firstEntry.path, firstEntry.title);
-        return true;
     };
 
     const openWithSelected = async (selected: string[]) => {
@@ -543,26 +488,14 @@ export const usePlaybackFlow = ({
                 }
             }
         }
-        if (shouldConfirmMultiPathPlaylistCreation(selected.length)) {
-            const defaultName = playlistState.getDefaultPlaylistNameForPaths(
-                selected,
-            );
-            const confirmation = await confirmPlaylistCreation(
-                defaultName,
-                getUniquePathCount(selected),
-                getCommonSelectionSourceLabel(selected),
-            );
-            if (confirmation.shouldCreate) {
-                const playlistId = await playlistState.createPlaylistWithPaths(
-                    selected,
-                    {
-                        name: confirmation.name,
-                        openInDrawer: true,
-                        setAsPlayback: true,
-                    },
-                );
-                if (playlistId) onPlaylistCreated?.(playlistId);
-            }
+        if (selected.length > 1) {
+            const action = await playlistSourceClient.prepare({
+                clientId: playlistSourceClientId,
+                sources: selected,
+                preferredTitle: null,
+            });
+            await continuePlaylistSourceOperation(action);
+            return;
         }
         await playPath(selected[0]);
     };
@@ -599,7 +532,7 @@ export const usePlaybackFlow = ({
                 const source = player.state.media.url;
                 const parsed = await player.parsePlaylistSource(source);
                 if (
-                    await playParsedPlaylistSource(source, parsed, "IPTV Playlist")
+                    await playParsedPlaylistSource(source, parsed)
                 ) {
                     return;
                 }
@@ -627,7 +560,7 @@ export const usePlaybackFlow = ({
     const onPlayHistory = async (entry: HistoryEntry) => {
         const preferredTitle = entry.title?.trim() || "";
         if (isYoutubePlaylistUrl(entry.path)) {
-            if (await playYoutubePlaylist(entry.path)) {
+            if (await playYoutubePlaylist(entry.path, preferredTitle)) {
                 return;
             }
         }
@@ -638,7 +571,6 @@ export const usePlaybackFlow = ({
                     await playParsedPlaylistSource(
                         entry.path,
                         parsed,
-                        "IPTV Playlist",
                         preferredTitle,
                     )
                 ) {

@@ -98,6 +98,7 @@ fn build_app_state(mpv_player_handle: MpvHandle) -> AppState {
         playback_load_coordinator: crate::core::playback_loading::PlaybackLoadCoordinator::new(),
         navigation_service: crate::core::navigation::NavigationService::new(),
         playlist_service: crate::core::playlist_service::PlaylistService::new(),
+        playlist_source_operations: crate::core::playlist_source_operations::PlaylistSourceOperationStore::new(),
         mpv_player,
         pending_play_history_entry: Mutex::new(None),
         current_playback_key: Mutex::new(None),

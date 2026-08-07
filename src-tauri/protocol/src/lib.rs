@@ -113,6 +113,51 @@ pub struct ImportPlaylistFromSourceDto {
     pub source: String,
 }
 
+/// Starts a Core-owned playlist-source operation. The client supplies only the source selection;
+/// parsed entries remain in Core until the client returns its confirmation decision.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparePlaylistSourceOperationDto {
+    pub client_id: String,
+    pub sources: Vec<String>,
+    pub preferred_title: Option<String>,
+}
+
+/// Presentation-safe data needed for a client-local playlist creation confirmation dialog.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistSourceClientActionDto {
+    pub operation_id: String,
+    pub suggested_name: String,
+    #[ts(type = "number")]
+    pub item_count: u32,
+    pub source_label: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuePlaylistSourceOperationDto {
+    pub client_id: String,
+    pub operation_id: String,
+    pub create_playlist: bool,
+    pub playlist_name: Option<String>,
+}
+
+/// Result of a completed Core-owned playlist-source continuation.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistSourceContinuationResultDto {
+    pub playlist_id: Option<String>,
+    pub playback_key: Option<String>,
+    pub title: Option<String>,
+    pub is_live_playback: bool,
+    pub superseded: bool,
+}
+
 /// Remote-safe whole-playlist deletion input. Entry edits and metadata edits use distinct Desktop
 /// DTOs and are deliberately not represented here.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -413,6 +458,10 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     PlaylistEntriesPageDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlayPlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
     ImportPlaylistFromSourceDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PreparePlaylistSourceOperationDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PlaylistSourceClientActionDto::export_all_to(path).map_err(|error| error.to_string())?;
+    ContinuePlaylistSourceOperationDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PlaylistSourceContinuationResultDto::export_all_to(path).map_err(|error| error.to_string())?;
     DeletePlaylistDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistSnapshotDto::export_all_to(path).map_err(|error| error.to_string())?;
     CreatePlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;

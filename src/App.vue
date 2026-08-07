@@ -36,6 +36,7 @@ import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationProm
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
+import { tauriPlaylistSourceClient } from "./core-client/tauriPlaylistSourceClient";
 
 const {
     isMacOS,
@@ -99,9 +100,9 @@ const {
 const playbackFlow = usePlaybackFlow({
     isMacOS,
     player,
+    playlistSourceClient: tauriPlaylistSourceClient,
     tracks,
     history,
-    playlistState,
     nowPlaying,
     hideAllMenus,
     isInfoOpen,
