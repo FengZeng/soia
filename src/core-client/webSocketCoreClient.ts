@@ -15,6 +15,9 @@ import type { DeletePlaylistDto } from "./generated/DeletePlaylistDto";
 import type { ImportPlaylistFromSourceDto } from "./generated/ImportPlaylistFromSourceDto";
 import type { PlayPlaylistEntryDto } from "./generated/PlayPlaylistEntryDto";
 import type { PlaylistMutationResultDto } from "./generated/PlaylistMutationResultDto";
+import type { BrowseNetworkConnectionDto } from "./generated/BrowseNetworkConnectionDto";
+import type { NetworkBrowseResultDto } from "./generated/NetworkBrowseResultDto";
+import type { NetworkConnectionSummaryDto } from "./generated/NetworkConnectionSummaryDto";
 import { PlaybackCommandContext } from "./playbackCommandContext";
 import {
     isNewerSnapshot,
@@ -115,6 +118,8 @@ export class WebSocketCoreClient implements CoreClient {
     private readonly pendingPlaylistDeletes = new Map<string, PendingPlaylistRequest<PlaylistMutationResultDto>>();
     private readonly pendingPlaylistImports = new Map<string, PendingPlaylistRequest<PlaylistMutationResultDto>>();
     private readonly pendingPlaylistPlays = new Map<string, PendingPlaylistRequest<CommandResultDto>>();
+    private readonly pendingNetworkConnections = new Map<string, PendingPlaylistRequest<NetworkConnectionSummaryDto[]>>();
+    private readonly pendingNetworkBrowse = new Map<string, PendingPlaylistRequest<NetworkBrowseResultDto>>();
     private playlistSnapshot: PlaylistSnapshotDto | null = null;
 
     constructor(options: WebSocketCoreClientOptions = {}) {
@@ -236,6 +241,14 @@ export class WebSocketCoreClient implements CoreClient {
             this.sendPendingPlaylistRequests();
             void this.connect().catch(() => {});
         });
+    }
+
+    getNetworkConnections(): Promise<NetworkConnectionSummaryDto[]> {
+        return this.sendPlaylistRequest("networkConnections", {}, this.pendingNetworkConnections, true);
+    }
+
+    browseNetworkConnection(request: BrowseNetworkConnectionDto): Promise<NetworkBrowseResultDto> {
+        return this.sendPlaylistRequest("browseNetworkConnection", { request }, this.pendingNetworkBrowse, true);
     }
 
     connect(): Promise<void> {
@@ -438,6 +451,12 @@ export class WebSocketCoreClient implements CoreClient {
                     collectionRevision: message.collectionRevision,
                 });
                 break;
+            case "networkConnections":
+                this.resolvePlaylistRequest(this.pendingNetworkConnections, message.id, message.connections);
+                break;
+            case "networkBrowseResult":
+                this.resolvePlaylistRequest(this.pendingNetworkBrowse, message.id, message.result);
+                break;
             case "commandResult": {
                 const pending = this.pendingCommands.get(message.result.commandId);
                 if (pending) {
@@ -531,7 +550,7 @@ export class WebSocketCoreClient implements CoreClient {
 
     private sendPendingPlaylistRequests() {
         if (!this.protocolReady || this.socket?.readyState !== WebSocket.OPEN) return;
-        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays]
+        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays, this.pendingNetworkConnections, this.pendingNetworkBrowse]
             .forEach((pending) => pending.forEach((request) => {
                 if (request.sent) return;
                 this.socket?.send(JSON.stringify(request.message));
@@ -552,7 +571,7 @@ export class WebSocketCoreClient implements CoreClient {
     }
 
     private rejectPlaylistRequest(id: string, error: CoreClientError) {
-        const pendingRequests = [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays];
+        const pendingRequests = [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays, this.pendingNetworkConnections, this.pendingNetworkBrowse];
         for (const pending of pendingRequests) {
             const request = pending.get(id);
             if (!request) continue;
@@ -564,11 +583,11 @@ export class WebSocketCoreClient implements CoreClient {
     }
 
     private resetPendingPlaylistRequests() {
-        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays]
+        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays, this.pendingNetworkConnections, this.pendingNetworkBrowse]
             .forEach((pending) => pending.forEach((request, id) => {
                 if (request.retryOnReconnect) {
                     request.sent = false;
-                    return;
+                return;
                 }
                 pending.delete(id);
                 request.reject(this.transportError("playlist mutation connection was interrupted"));
@@ -576,7 +595,7 @@ export class WebSocketCoreClient implements CoreClient {
     }
 
     private rejectPendingPlaylistRequests(error: CoreClientError) {
-        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays]
+        [this.pendingPlaylistEntries, this.pendingPlaylistDeletes, this.pendingPlaylistImports, this.pendingPlaylistPlays, this.pendingNetworkConnections, this.pendingNetworkBrowse]
             .forEach((pending) => {
                 pending.forEach((request) => request.reject(error));
                 pending.clear();

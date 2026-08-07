@@ -113,6 +113,26 @@ pub struct ImportPlaylistFromSourceDto {
     pub source: String,
 }
 
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkConnectionSummaryDto { pub id: String, pub label: String, pub protocol: String }
+
+#[derive(Clone, Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseNetworkConnectionDto { pub connection_id: String, pub path: Option<String> }
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkBrowseEntryDto { pub name: String, pub path: String, pub entry_type: String, pub playback_key: Option<String> }
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkBrowseResultDto { pub path: String, pub entries: Vec<NetworkBrowseEntryDto> }
+
 /// Starts a Core-owned playlist-source operation. The client supplies only the source selection;
 /// parsed entries remain in Core until the client returns its confirmation decision.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -151,6 +171,8 @@ pub enum PreparePlaylistSourceOperationResultDto {
     },
     ClientActionRequired {
         action: PlaylistSourceClientActionDto,
+        #[ts(rename = "isLivePlayback")]
+        #[serde(rename = "isLivePlayback")]
         is_live_playback: Option<bool>,
         #[ts(type = "number | null")]
         #[ts(rename = "playlistEntryCount")]
@@ -481,6 +503,10 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     PlaylistEntriesPageDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlayPlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
     ImportPlaylistFromSourceDto::export_all_to(path).map_err(|error| error.to_string())?;
+    NetworkConnectionSummaryDto::export_all_to(path).map_err(|error| error.to_string())?;
+    BrowseNetworkConnectionDto::export_all_to(path).map_err(|error| error.to_string())?;
+    NetworkBrowseEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
+    NetworkBrowseResultDto::export_all_to(path).map_err(|error| error.to_string())?;
     PreparePlaylistSourceOperationDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistSourceClientActionDto::export_all_to(path).map_err(|error| error.to_string())?;
     PreparePlaylistSourceOperationResultDto::export_all_to(path).map_err(|error| error.to_string())?;

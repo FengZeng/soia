@@ -179,6 +179,10 @@ button, select, input[type="range"] { -webkit-tap-highlight-color: transparent; 
 .source-input input:focus-visible, .source-input button:focus-visible { outline: 2px solid var(--soia-cyan); outline-offset: 2px; }
 
 .eyebrow { margin: 0; color: #8aa7e4; font-size: 9px; font-weight: 800; letter-spacing: .24em; }
+.remote-network { display: grid; gap: 10px; padding: 22px 4px; }
+.remote-network h2 { margin: 0; font-size: 20px; }
+.remote-network select, .remote-network__entry, .remote-network > button { width: 100%; border: 1px solid rgb(255 255 255 / 12%); border-radius: 12px; padding: 12px; color: #edf3ff; background: rgb(20 25 36 / 72%); text-align: left; }
+.remote-network__entry { display: flex; gap: 10px; }
 
 .now-playing h1 {
   display: -webkit-box;

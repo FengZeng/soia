@@ -4,7 +4,7 @@ use super::state::{
     is_connection_active, CachedPlaylistMutation, RemoteControlState,
 };
 use crate::protocol::{
-    CommandEnvelopeDto, CommandResultDto, CoreErrorDto, DeletePlaylistDto, GetPlaylistEntriesPageDto, ImportPlaylistFromSourceDto, PlayPlaylistEntryDto, PlaybackCommandDto, PlaybackSnapshotDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto, PROTOCOL_VERSION,
+    BrowseNetworkConnectionDto, CommandEnvelopeDto, CommandResultDto, CoreErrorDto, DeletePlaylistDto, GetPlaylistEntriesPageDto, ImportPlaylistFromSourceDto, NetworkBrowseEntryDto, NetworkBrowseResultDto, NetworkConnectionSummaryDto, PlayPlaylistEntryDto, PlaybackCommandDto, PlaybackSnapshotDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto, PROTOCOL_VERSION,
 };
 use crate::AppState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -28,6 +28,8 @@ enum WebSocketClientMessage {
     PlayPlaylistEntry { request: PlayPlaylistEntryDto },
     DeletePlaylist { id: Option<String>, request: DeletePlaylistDto },
     ImportPlaylistFromSource { id: Option<String>, request: ImportPlaylistFromSourceDto },
+    NetworkConnections { id: Option<String> },
+    BrowseNetworkConnection { id: Option<String>, request: BrowseNetworkConnectionDto },
     Ping { id: Option<String> },
 }
 
@@ -45,6 +47,8 @@ enum WebSocketServerMessage {
     PlaylistEntriesPage { id: Option<String>, page: PlaylistEntriesPageDto },
     PlaylistDeleted { id: Option<String>, playlist_id: String, collection_revision: u64 },
     PlaylistImported { id: Option<String>, playlist: PlaylistSummaryDto, collection_revision: u64 },
+    NetworkConnections { id: Option<String>, connections: Vec<NetworkConnectionSummaryDto> },
+    NetworkBrowseResult { id: Option<String>, result: NetworkBrowseResultDto },
     Error { id: Option<String>, error: CoreErrorDto },
 }
 
@@ -197,6 +201,24 @@ async fn handle_websocket_text(
             match app_state.playlist_service.snapshot(&state.app_handle) {
                 Ok(snapshot) => WebSocketServerMessage::PlaylistSnapshot { id, snapshot },
                 Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
+            }
+        }
+        Ok(WebSocketClientMessage::NetworkConnections { id }) => {
+            match crate::store::network_connection_store::list_network_connections(&state.app_handle) {
+                Ok(connections) => WebSocketServerMessage::NetworkConnections { id, connections: connections.into_iter().map(|item| NetworkConnectionSummaryDto { id: item.id, label: item.label, protocol: item.protocol }).collect() },
+                Err(_) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message: "network connections are unavailable".to_string() } },
+            }
+        }
+        Ok(WebSocketClientMessage::BrowseNetworkConnection { id, request }) => {
+            let result = async {
+                let connection = crate::store::network_connection_store::find_network_connection(&state.app_handle, &request.connection_id)?;
+                let protocol = crate::network::service::protocol_from_connection(&connection)?;
+                let path = crate::network::service::resolve_browse_path(&connection, protocol, request.path, "browse");
+                crate::network::service::browse_connection(&state.app_handle, &connection, &path, protocol).await
+            }.await;
+            match result {
+                Ok(result) => WebSocketServerMessage::NetworkBrowseResult { id, result: NetworkBrowseResultDto { path: result.path, entries: result.entries.into_iter().map(|entry| NetworkBrowseEntryDto { name: entry.name, path: entry.path, entry_type: entry.entry_type, playback_key: entry.playback_key }).collect() } },
+                Err(_) => { log::warn!("remote network browse failed"); WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message: "network browse failed".to_string() } } }
             }
         }
         Ok(WebSocketClientMessage::PlaylistEntriesPage { id, request }) => {
