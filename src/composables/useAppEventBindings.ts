@@ -7,17 +7,13 @@ import {
     currentMonitor,
     primaryMonitor,
 } from "@tauri-apps/api/window";
-import type { ProgressPayload, MediaTrack } from "../types/media";
+import type { ProgressPayload } from "../types/media";
 import type {
     CoreClient,
     CoreClientUnsubscribe,
 } from "../core-client/CoreClient";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlayerApi } from "./usePlaybackController";
-
-type TracksUpdatePayload = {
-    tracks: MediaTrack[];
-};
 
 type EndFilePayload = {
     reason?: string;
@@ -37,7 +33,7 @@ type PlaybackLoadPreparedPayload = {
 type PlayerEventApi = Pick<PlayerApi, "state" | "syncFullscreen">;
 
 type TracksApi = {
-    handleTracksUpdate: (payload: { tracks: MediaTrack[] }) => void;
+    handleTracksSnapshot: (tracks: PlaybackSnapshotDto["tracks"]) => void;
 };
 
 type UiApi = {
@@ -105,7 +101,6 @@ export const useAppEventBindings = ({
     let unlistenRemoteSeekStarted: UnlistenFn | null = null;
     let unlistenRemoteSeekFailed: UnlistenFn | null = null;
     let unlistenResize: UnlistenFn | null = null;
-    let unlistenTracksUpdate: UnlistenFn | null = null;
     let unlistenWindowResized: UnlistenFn | null = null;
     let unlistenFullscreenWill: UnlistenFn | null = null;
     let unlistenEndFile: UnlistenFn | null = null;
@@ -171,6 +166,7 @@ export const useAppEventBindings = ({
                 ? Math.max(0, snapshot.downloadSpeedBps)
                 : 0;
         player.state.playback.volume = snapshot.volume;
+        tracks.handleTracksSnapshot(snapshot.tracks);
         onPlaybackSpeedChange?.(snapshot.speed);
         onSourceLoadState?.({
             loading: snapshot.sourceLoading,
@@ -368,14 +364,6 @@ export const useAppEventBindings = ({
             },
         );
 
-        // 监听轨道更新
-        unlistenTracksUpdate = await listen<TracksUpdatePayload>(
-            "mpv-tracks-update",
-            (event) => {
-                tracks.handleTracksUpdate(event.payload);
-            },
-        );
-
         // 全局交互监听
         windowEventHandlers.forEach(([eventName, handler]) => {
             window.addEventListener(eventName, handler);
@@ -391,7 +379,6 @@ export const useAppEventBindings = ({
         unlistenRemoteSeekStarted?.();
         unlistenRemoteSeekFailed?.();
         unlistenResize?.();
-        unlistenTracksUpdate?.();
         unlistenWindowResized?.();
         unlistenFullscreenWill?.();
         unlistenEndFile?.();

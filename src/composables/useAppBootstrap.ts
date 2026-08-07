@@ -30,7 +30,7 @@ export const useAppBootstrap = (coreClient: CoreClient) => {
     const isNativePipPlatform = detectNativePipPlatform();
     const player = usePlaybackController(coreClient);
     const history = usePlaybackHistory();
-    const tracks = useMediaTracks(() => player.state.media.url, history);
+    const tracks = useMediaTracks(coreClient, () => player.state.media.url, history);
     const speed = usePlaybackSpeed(coreClient);
     const adjustments = usePlaybackAdjustments();
     const subtitleAppearance = useSubtitleAppearance();

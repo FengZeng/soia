@@ -9,6 +9,8 @@ import {
 } from "../mock/settings";
 import { loadUiState } from "./useUiStateStore";
 import { useSubtitleState, type SubtitleTarget } from "./useSubtitleState";
+import type { CoreClient } from "../core-client/CoreClient";
+import type { MediaTrackDto } from "../core-client/generated/MediaTrackDto";
 
 type HistoryApi = {
     getExternalTracks: (path: string) => { audio: string[]; sub: string[] };
@@ -132,6 +134,7 @@ const subtitleExtensions = [
 ];
 
 export const useMediaTracks = (
+    coreClient: CoreClient,
     getCurrentMediaUrl?: () => string,
     history?: HistoryApi,
 ) => {
@@ -181,7 +184,7 @@ export const useMediaTracks = (
     const showAudioMenu = ref(false);
     const showSubMenu = ref(false);
     const showSubtitleAdvancedSettings = ref(false);
-    const subtitleState = useSubtitleState(subTracks);
+    const subtitleState = useSubtitleState(subTracks, coreClient);
     let pendingTracksUpdate: { tracks: MediaTrack[] } | null = null;
     let tracksUpdateFrame: number | null = null;
     let backgroundSubtitleQueue: BackgroundSubtitleItem[] = [];
@@ -387,6 +390,34 @@ export const useMediaTracks = (
         notifyTrackUpdateWaiters();
     };
 
+    const mediaTrackFromDto = (track: MediaTrackDto): MediaTrack => ({
+        id: track.id,
+        track_type: track.trackType,
+        title: track.title,
+        lang: track.lang,
+        selected: track.selected,
+        codec: track.codec ?? undefined,
+        codec_desc: track.codecDesc ?? undefined,
+        decoder_desc: track.decoderDesc ?? undefined,
+        demux_w: track.demuxW ?? undefined,
+        demux_h: track.demuxH ?? undefined,
+        demux_fps: track.demuxFps ?? undefined,
+        demux_bitrate: track.demuxBitrate ?? undefined,
+        demux_samplerate: track.demuxSamplerate ?? undefined,
+        demux_channels: track.demuxChannels ?? undefined,
+        demux_channel_count: track.demuxChannelCount ?? undefined,
+        fps: track.fps ?? undefined,
+        w: track.w ?? undefined,
+        h: track.h ?? undefined,
+        is_default: track.isDefault ?? undefined,
+        forced: track.forced ?? undefined,
+        external: track.external ?? undefined,
+    });
+
+    const handleTracksSnapshot = (tracks: MediaTrackDto[]) => {
+        handleTracksUpdate({ tracks: tracks.map(mediaTrackFromDto) });
+    };
+
     const handleTracksUpdate = (payload: { tracks: MediaTrack[] }) => {
         pendingTracksUpdate = payload;
         if (tracksUpdateFrame != null) return;
@@ -406,8 +437,10 @@ export const useMediaTracks = (
     };
 
     const selectAudio = async (track: MediaTrack) => {
-        audioTracks.value.forEach((t) => (t.selected = t.id === track.id));
-        await invoke("mpv_set_option_string", { name: "aid", value: track.id });
+        await coreClient.execute({
+            type: "selectAudioTrack",
+            trackId: Number(track.id),
+        });
     };
 
     const selectSubTrack = async (payload: {
@@ -715,7 +748,7 @@ export const useMediaTracks = (
         isOnlineSubtitleDialogOpen,
         isSearchingOnlineSubtitles,
         isLoadingOnlineSubtitle,
-        handleTracksUpdate,
+        handleTracksSnapshot,
         showAudioMenu,
         showSubMenu,
         showSubtitleAdvancedSettings,

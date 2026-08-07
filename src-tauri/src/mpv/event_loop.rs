@@ -131,11 +131,6 @@ struct MediaTrack {
     external: Option<bool>,
 }
 
-#[derive(Serialize, Clone)]
-struct TracksPayload {
-    tracks: Vec<MediaTrack>,
-}
-
 impl From<&MediaTrack> for crate::protocol::MediaTrackDto {
     fn from(track: &MediaTrack) -> Self {
         Self {
@@ -1413,25 +1408,17 @@ pub(super) fn mpv_event_loop(
                                                 external: as_bool("external"),
                                             });
                                         }
-                                        if !tracks.is_empty() {
-                                            // Track selected sid/aid for carry-over
-                                            last_selected_sid = tracks.iter()
-                                                .find(|t| t.track_type == "sub" && t.selected)
-                                                .map(|t| t.id)
-                                                .unwrap_or(0);
-                                            last_selected_aid = tracks.iter()
-                                                .find(|t| t.track_type == "audio" && t.selected)
-                                                .map(|t| t.id)
-                                                .unwrap_or(0);
-
-                                            emit_event(
-                                                &app_handle,
-                                                "mpv-tracks-update",
-                                                TracksPayload {
-                                                    tracks: tracks.clone(),
-                                                },
-                                            );
-                                        }
+                                        // Track selected sid/aid for carry-over even when the
+                                        // list is empty, so replacement media cannot retain a
+                                        // stale selection.
+                                        last_selected_sid = tracks.iter()
+                                            .find(|t| t.track_type == "sub" && t.selected)
+                                            .map(|t| t.id)
+                                            .unwrap_or(0);
+                                        last_selected_aid = tracks.iter()
+                                            .find(|t| t.track_type == "audio" && t.selected)
+                                            .map(|t| t.id)
+                                            .unwrap_or(0);
                                         let snapshot_tracks = tracks
                                             .iter()
                                             .map(crate::protocol::MediaTrackDto::from)
