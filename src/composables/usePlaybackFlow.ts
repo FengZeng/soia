@@ -6,15 +6,6 @@ import type { PlayerApi } from "./usePlaybackController";
 import { loadUiState } from "./useUiStateStore";
 import { isLikelyLivePlaybackSource } from "../utils/livePlayback";
 import {
-    getParsedPlaylistWorkflow,
-    isPlaylistSource,
-    isYoutubePlaylistUrl,
-} from "../utils/playlistSourceWorkflow";
-import type {
-    ParsedPlaylistEntry,
-    ParsedPlaylistFile,
-} from "./usePlaybackCommands";
-import {
     ALLOW_URL_INPUT_DURING_PLAYBACK_SETTING_LABEL,
     DISABLE_SUBTITLES_SETTING_LABEL,
     ENABLE_COMPACT_MODE_SETTING_LABEL,
@@ -193,17 +184,6 @@ export const usePlaybackFlow = ({
         player.state.playback.bufferedTime = 0;
     };
 
-    const rememberLivePlaybackEntries = (entries: ParsedPlaylistEntry[]) => {
-        const paths = entries
-            .map((entry) => entry.path?.trim() ?? "")
-            .filter(Boolean);
-        paths.forEach((path) => {
-            livePlaybackKeys.add(path);
-            nonLivePlaybackKeys.delete(path);
-            livePlaybackPlaylistEntryCounts.set(path, paths.length);
-        });
-    };
-
     const rememberNonLivePlaybackSource = (path: string) => {
         if (!path) return;
         nonLivePlaybackKeys.add(path);
@@ -224,9 +204,6 @@ export const usePlaybackFlow = ({
         player.state.media.isLivePlayback = false;
         rememberNonLivePlaybackSource(playbackKey);
     };
-
-    const getParsedPlaylistPaths = (parsed: ParsedPlaylistFile) =>
-        parsed.entries.map((entry) => entry.path?.trim() ?? "").filter(Boolean);
 
     const shouldTreatAsLivePlayback = (
         playbackKey: string,
@@ -383,11 +360,6 @@ export const usePlaybackFlow = ({
             action.itemCount,
             action.sourceLabel ?? undefined,
         );
-        await triggerPlaybackIntent();
-        resetPlaybackTimeline();
-        hideHistory.value = true;
-        nowPlaying.clearArtwork();
-        tracks.resetTracks();
         const result = await playlistSourceClient.continue({
             clientId: playlistSourceClientId,
             operationId: action.operationId,
@@ -398,75 +370,68 @@ export const usePlaybackFlow = ({
         return result;
     };
 
-    const playParsedPlaylistSource = async (
-        source: string,
-        parsed: ParsedPlaylistFile,
+    const preparePlaylistSourceOperation = async (
+        sources: string[],
         preferredTitle?: string,
     ) => {
-        const workflow = getParsedPlaylistWorkflow(
-            parsed.metadata,
-            getParsedPlaylistPaths(parsed),
-        );
-        if (workflow.type === "playSource") {
-            if (workflow.isLivePlayback) {
-                livePlaybackKeys.add(source);
-                nonLivePlaybackKeys.delete(source);
-                livePlaybackPlaylistEntryCounts.delete(source);
+        const requestedKey = sources.length === 1 ? sources[0]?.trim() || "" : "";
+        await triggerPlaybackIntent();
+        resetPlaybackTimeline();
+        hideHistory.value = true;
+        nowPlaying.clearArtwork();
+        tracks.resetTracks();
+        if (requestedKey) {
+            player.state.media.url = requestedKey;
+            player.state.media.isLivePlayback = shouldTreatAsLivePlayback(requestedKey);
+            player.state.media.title = rememberPreferredTitle(
+                requestedKey,
+                preferredTitle,
+            );
+            loadingUrl.value = requestedKey;
+            isLoading.value = true;
+        }
+        const prepared = await playlistSourceClient.prepare({
+            clientId: playlistSourceClientId,
+            sources,
+            preferredTitle: preferredTitle ?? null,
+        });
+        const result = prepared.type === "clientActionRequired"
+            ? await continuePlaylistSourceOperation(prepared.action)
+            : prepared.result;
+        if (result.superseded) return result;
+        const playbackKey = result.playbackKey?.trim() || sources[0]?.trim() || "";
+        const isLivePlayback = prepared.type === "clientActionRequired"
+            ? prepared.isLivePlayback ?? result.isLivePlayback
+            : result.isLivePlayback;
+        const playlistEntryCount = prepared.type === "clientActionRequired"
+            ? prepared.playlistEntryCount
+            : prepared.playlistEntryCount;
+        if (playbackKey) {
+            player.state.media.url = playbackKey;
+            if (isLivePlayback) {
+                livePlaybackKeys.add(playbackKey);
+                nonLivePlaybackKeys.delete(playbackKey);
+                if (playlistEntryCount !== null) {
+                    livePlaybackPlaylistEntryCounts.set(
+                        playbackKey,
+                        playlistEntryCount,
+                    );
+                } else {
+                    livePlaybackPlaylistEntryCounts.delete(playbackKey);
+                }
             } else {
-                rememberNonLivePlaybackSource(source);
+                rememberNonLivePlaybackSource(playbackKey);
             }
-            await playPath(source, preferredTitle, {
-                isLivePlayback: workflow.isLivePlayback,
-            });
-            return true;
         }
-
-        if (workflow.type === "fallbackToOriginalSource") {
-            hideHistory.value = false;
-            isLoading.value = false;
-            return false;
+        player.state.media.isLivePlayback = isLivePlayback;
+        if (preferredTitle?.trim() && playbackKey) {
+            player.state.media.title = rememberPreferredTitle(
+                playbackKey,
+                preferredTitle,
+            );
         }
-
-        const paths = workflow.paths;
-        if (workflow.shouldConfirmPlaylistCreation) {
-            const action = await playlistSourceClient.prepare({
-                clientId: playlistSourceClientId,
-                sources: [source],
-                preferredTitle: preferredTitle ?? null,
-            });
-            rememberLivePlaybackEntries(parsed.entries);
-            await continuePlaylistSourceOperation(action);
-            return true;
-        }
-        rememberLivePlaybackEntries(parsed.entries);
-        const firstEntry = parsed.entries.find(
-            (entry) => entry.path?.trim() === paths[0],
-        );
-        await playPath(
-            paths[0],
-            firstEntry?.title?.trim() || preferredTitle || undefined,
-            {
-                isLivePlayback: workflow.isLivePlayback,
-            },
-        );
-        return true;
-    };
-
-    const playYoutubePlaylist = async (
-        url: string,
-        preferredTitle?: string,
-    ): Promise<boolean> => {
-        try {
-            const action = await playlistSourceClient.prepare({
-                clientId: playlistSourceClientId,
-                sources: [url],
-                preferredTitle: preferredTitle ?? null,
-            });
-            await continuePlaylistSourceOperation(action);
-            return true;
-        } catch {
-            return false;
-        }
+        if (playbackKey) applyResolvedMediaTitle(playbackKey, result.title);
+        return result;
     };
 
     const openWithSelected = async (selected: string[]) => {
@@ -475,29 +440,7 @@ export const usePlaybackFlow = ({
             isLoading.value = false;
             return;
         }
-        if (selected.length === 1) {
-            const selectedPath = selected[0];
-            if (isPlaylistSource(selectedPath)) {
-                try {
-                    const parsed = await player.parsePlaylistSource(selectedPath);
-                    if (await playParsedPlaylistSource(selectedPath, parsed)) {
-                        return;
-                    }
-                } catch {
-                    // Fall back to default open behavior when parsing fails.
-                }
-            }
-        }
-        if (selected.length > 1) {
-            const action = await playlistSourceClient.prepare({
-                clientId: playlistSourceClientId,
-                sources: selected,
-                preferredTitle: null,
-            });
-            await continuePlaylistSourceOperation(action);
-            return;
-        }
-        await playPath(selected[0]);
+        await preparePlaylistSourceOperation(selected);
     };
 
     const openWithFilePicker = async () => {
@@ -522,25 +465,7 @@ export const usePlaybackFlow = ({
 
     const onLoadFile = async () => {
         if (!player.state.media.url) return;
-        if (isYoutubePlaylistUrl(player.state.media.url)) {
-            if (await playYoutubePlaylist(player.state.media.url)) {
-                return;
-            }
-        }
-        if (isPlaylistSource(player.state.media.url)) {
-            try {
-                const source = player.state.media.url;
-                const parsed = await player.parsePlaylistSource(source);
-                if (
-                    await playParsedPlaylistSource(source, parsed)
-                ) {
-                    return;
-                }
-            } catch {
-                // Fall through to default load when playlist parsing fails.
-            }
-        }
-        await playPath(player.state.media.url);
+        await preparePlaylistSourceOperation([player.state.media.url]);
         if (!player.state.media.isFileLoaded) {
             hideHistory.value = false;
         }
@@ -559,33 +484,12 @@ export const usePlaybackFlow = ({
 
     const onPlayHistory = async (entry: HistoryEntry) => {
         const preferredTitle = entry.title?.trim() || "";
-        if (isYoutubePlaylistUrl(entry.path)) {
-            if (await playYoutubePlaylist(entry.path, preferredTitle)) {
-                return;
-            }
-        }
-        if (isPlaylistSource(entry.path)) {
-            try {
-                const parsed = await player.parsePlaylistSource(entry.path);
-                if (
-                    await playParsedPlaylistSource(
-                        entry.path,
-                        parsed,
-                        preferredTitle,
-                    )
-                ) {
-                    return;
-                }
-            } catch {
-                // Fall through to normal history playback when parsing fails.
-            }
-        }
-        await playPath(entry.path, preferredTitle);
+        await preparePlaylistSourceOperation([entry.path], preferredTitle);
     };
 
     const onPlayNetwork = async (payload: NetworkPlayRequest) => {
         const displayName = payload.displayName?.trim() || "";
-        await playSource(payload.playbackKey, displayName);
+        await preparePlaylistSourceOperation([payload.playbackKey], displayName);
     };
 
     const onUpdateUrl = (value: string) => {

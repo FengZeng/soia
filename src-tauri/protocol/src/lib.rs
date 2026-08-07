@@ -136,6 +136,29 @@ pub struct PlaylistSourceClientActionDto {
     pub source_label: Option<String>,
 }
 
+/// Result of source preparation. Core either completes direct playback or asks the client for
+/// the only UI-owned decision: whether to persist the prepared playlist and under what name.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PreparePlaylistSourceOperationResultDto {
+    Completed {
+        result: PlaylistSourceContinuationResultDto,
+        #[ts(type = "number | null")]
+        #[ts(rename = "playlistEntryCount")]
+        #[serde(rename = "playlistEntryCount")]
+        playlist_entry_count: Option<u32>,
+    },
+    ClientActionRequired {
+        action: PlaylistSourceClientActionDto,
+        is_live_playback: Option<bool>,
+        #[ts(type = "number | null")]
+        #[ts(rename = "playlistEntryCount")]
+        #[serde(rename = "playlistEntryCount")]
+        playlist_entry_count: Option<u32>,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -460,6 +483,7 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     ImportPlaylistFromSourceDto::export_all_to(path).map_err(|error| error.to_string())?;
     PreparePlaylistSourceOperationDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistSourceClientActionDto::export_all_to(path).map_err(|error| error.to_string())?;
+    PreparePlaylistSourceOperationResultDto::export_all_to(path).map_err(|error| error.to_string())?;
     ContinuePlaylistSourceOperationDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaylistSourceContinuationResultDto::export_all_to(path).map_err(|error| error.to_string())?;
     DeletePlaylistDto::export_all_to(path).map_err(|error| error.to_string())?;

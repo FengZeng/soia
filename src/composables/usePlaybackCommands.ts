@@ -22,39 +22,11 @@ type CurrentWindow = {
   setFullscreen: (value: boolean) => Promise<void>;
 };
 
-export type ParsedPlaylistEntry = {
-  path: string;
-  title?: string | null;
-  icon?: string | null;
-};
-
-export type ParsedPlaylistMetadata = {
-  hasEndList: boolean;
-  playlistType?: string | null;
-  targetDuration?: number | null;
-  hasHlsTags: boolean;
-};
-
-export type ParsedPlaylistFile = {
-  entries: ParsedPlaylistEntry[];
-  metadata: ParsedPlaylistMetadata;
-};
-
 export type LoadFileResult = {
   playbackKey?: string | null;
   title?: string | null;
   isLivePlayback?: boolean;
   superseded?: boolean;
-};
-
-export type ResolvedYoutubePlaylistEntry = {
-  url: string;
-  title?: string | null;
-};
-
-export type ResolvedYoutubePlaylist = {
-  playlistTitle?: string | null;
-  entries: ResolvedYoutubePlaylistEntry[];
 };
 
 export const usePlaybackCommands = (
@@ -105,48 +77,6 @@ export const usePlaybackCommands = (
 
   const pickFiles = async (): Promise<string[]> => {
     return openVideoPicker();
-  };
-
-  const normalizeParsedPlaylistFile = (
-    response: Partial<ParsedPlaylistFile> | null | undefined,
-  ): ParsedPlaylistFile => ({
-    entries: Array.isArray(response?.entries) ? response.entries : [],
-    metadata: {
-      hasEndList: response?.metadata?.hasEndList === true,
-      playlistType: response?.metadata?.playlistType ?? null,
-      targetDuration:
-        typeof response?.metadata?.targetDuration === "number"
-          ? response.metadata.targetDuration
-          : null,
-      hasHlsTags: response?.metadata?.hasHlsTags === true,
-    },
-  });
-
-  const parsePlaylistFile = async (path: string): Promise<ParsedPlaylistFile> => {
-    const response = await invoke<ParsedPlaylistFile>(
-      "parse_playlist_file",
-      { payload: { path } },
-    );
-    return normalizeParsedPlaylistFile(response);
-  };
-
-  const parsePlaylistSource = async (
-    source: string,
-  ): Promise<ParsedPlaylistFile> => {
-    const response = await invoke<ParsedPlaylistFile>(
-      "parse_playlist_source",
-      { payload: { source } },
-    );
-    return normalizeParsedPlaylistFile(response);
-  };
-
-  const resolveYoutubePlaylist = async (
-    url: string,
-  ): Promise<ResolvedYoutubePlaylist> => {
-    return await invoke<ResolvedYoutubePlaylist>(
-      "resolve_youtube_playlist",
-      { payload: { url } },
-    );
   };
 
   const togglePlayPause = async (): Promise<void> => {
@@ -255,9 +185,6 @@ export const usePlaybackCommands = (
 
   return {
     loadPlaybackSource,
-    parsePlaylistFile,
-    parsePlaylistSource,
-    resolveYoutubePlaylist,
     pickMediaPathsAuto,
     pickFiles,
     togglePlayPause,

@@ -6,6 +6,7 @@ use tauri::Emitter;
 use crate::protocol::{
     ContinuePlaylistSourceOperationDto, PlaylistSourceClientActionDto,
     PlaylistSourceContinuationResultDto, PreparePlaylistSourceOperationDto,
+    PreparePlaylistSourceOperationResultDto,
 };
 
 use crate::{
@@ -177,14 +178,15 @@ pub(crate) async fn load_playback_source(
     load_source(&app, &state, payload).await
 }
 
-/// Prepares a trusted playlist-creation operation without returning its entries to the client.
-/// The client may render the returned action, but only Core can persist and play the prepared data.
+/// Recognizes and prepares a playlist source without returning its entries to the client.
+/// Core completes direct playback itself and only returns an action when a client confirmation is
+/// required before persisting a prepared playlist.
 #[tauri::command]
 pub(crate) async fn prepare_playlist_source_operation(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     request: PreparePlaylistSourceOperationDto,
-) -> Result<PlaylistSourceClientActionDto, String> {
+) -> Result<PreparePlaylistSourceOperationResultDto, String> {
     let client_id = request.client_id.trim();
     if client_id.is_empty() {
         return Err("playlist source clientId is required".to_string());
@@ -194,10 +196,40 @@ pub(crate) async fn prepare_playlist_source_operation(
         return Err("playlist source selection is empty".to_string());
     }
 
-    let fallback_name = next_default_playlist_name(&state, &app)?;
     let preferred_title = request.preferred_title.and_then(normalize_optional_title);
-    let (prepared_playlist, playback_key, playback_title, source_label) =
-        prepare_playlist_source_operation_data(&app, sources, &fallback_name, preferred_title).await?;
+    let prepared = prepare_playlist_source_operation_data(&app, &state, sources, preferred_title).await?;
+    let PreparedPlaylistSourceOperation::ClientActionRequired {
+        prepared_playlist,
+        playback_key,
+        playback_title,
+        source_label,
+        is_live_playback,
+        playlist_entry_count,
+    } = prepared else {
+        let PreparedPlaylistSourceOperation::DirectPlayback {
+            playback_key,
+            playback_title,
+            is_live_playback,
+            playlist_entry_count,
+        } = prepared else { unreachable!() };
+        let _admission_lock = state.playback_command_lock.lock().await;
+        let playback = load_source(
+            &app,
+            &state,
+            LoadPlaybackSourcePayload::new(playback_key, playback_title),
+        )
+        .await?;
+        return Ok(PreparePlaylistSourceOperationResultDto::Completed {
+            result: PlaylistSourceContinuationResultDto {
+                playlist_id: None,
+                playback_key: playback.playback_key,
+                title: playback.title,
+                is_live_playback: is_live_playback.unwrap_or(playback.is_live_playback),
+                superseded: playback.superseded,
+            },
+            playlist_entry_count,
+        });
+    };
     let item_count = u32::try_from(unique_prepared_entry_count(&prepared_playlist))
         .map_err(|_| "playlist source has too many entries".to_string())?;
     if item_count == 0 {
@@ -210,12 +242,33 @@ pub(crate) async fn prepare_playlist_source_operation(
         playback_key,
         playback_title,
     )?;
-    Ok(PlaylistSourceClientActionDto {
-        operation_id,
-        suggested_name,
-        item_count,
-        source_label: Some(source_label),
+    Ok(PreparePlaylistSourceOperationResultDto::ClientActionRequired {
+        action: PlaylistSourceClientActionDto {
+            operation_id,
+            suggested_name,
+            item_count,
+            source_label: Some(source_label),
+        },
+        is_live_playback,
+        playlist_entry_count,
     })
+}
+
+enum PreparedPlaylistSourceOperation {
+    DirectPlayback {
+        playback_key: String,
+        playback_title: Option<String>,
+        is_live_playback: Option<bool>,
+        playlist_entry_count: Option<u32>,
+    },
+    ClientActionRequired {
+        prepared_playlist: crate::core::playlist_service::PreparedPlaylist,
+        playback_key: String,
+        playback_title: Option<String>,
+        source_label: String,
+        is_live_playback: Option<bool>,
+        playlist_entry_count: Option<u32>,
+    },
 }
 
 /// Applies a client-local confirmation to a prepared operation. Import and playback are performed
@@ -337,12 +390,13 @@ fn unique_prepared_entry_count(prepared_playlist: &crate::core::playlist_service
 
 async fn prepare_playlist_source_operation_data(
     app: &tauri::AppHandle,
+    state: &AppState,
     sources: Vec<String>,
-    fallback_name: &str,
     preferred_title: Option<String>,
-) -> Result<(crate::core::playlist_service::PreparedPlaylist, String, Option<String>, String), String> {
+) -> Result<PreparedPlaylistSourceOperation, String> {
     if sources.len() > 1 {
-        let name = derive_playlist_name_from_paths(&sources, fallback_name);
+        let fallback_name = next_default_playlist_name(state, app)?;
+        let name = derive_playlist_name_from_paths(&sources, &fallback_name);
         let entries = sources
             .iter()
             .enumerate()
@@ -353,22 +407,41 @@ async fn prepare_playlist_source_operation_data(
                 added_at: crate::store::media_db::now_millis() + index as i64,
             })
             .collect();
-        return Ok((
-            crate::core::playlist_service::PreparedPlaylist { name, entries },
-            sources[0].clone(),
-            preferred_title,
-            common_playlist_source_label(&sources),
-        ));
+        return Ok(PreparedPlaylistSourceOperation::ClientActionRequired {
+            prepared_playlist: crate::core::playlist_service::PreparedPlaylist { name, entries },
+            playback_key: sources[0].clone(),
+            playback_title: preferred_title,
+            source_label: common_playlist_source_label(&sources),
+            is_live_playback: None,
+            playlist_entry_count: None,
+        });
     }
 
     let source = &sources[0];
     if is_youtube_playlist_source(source) {
-        let resolved = crate::mpv::resolve_ytdlp_playlist(app, source).await?;
-        let (playback_key, playback_title) = resolved
-            .entries
-            .first()
-            .map(|entry| (entry.url.clone(), entry.title.clone()))
-            .ok_or_else(|| "YouTube playlist contains no playable entries".to_string())?;
+        let resolved = match crate::mpv::resolve_ytdlp_playlist(app, source).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                log::warn!("YouTube playlist preparation fell back to original source: {error}");
+                return Ok(direct_playlist_source_playback(
+                    source.clone(),
+                    preferred_title,
+                    None,
+                    None,
+                ));
+            }
+        };
+        let Some(first_entry) = resolved.entries.first() else {
+            log::warn!("YouTube playlist preparation fell back to original source: no playable entries");
+            return Ok(direct_playlist_source_playback(
+                source.clone(),
+                preferred_title,
+                None,
+                None,
+            ));
+        };
+        let playback_key = first_entry.url.clone();
+        let playback_title = first_entry.title.clone();
         let entries = resolved
             .entries
             .into_iter()
@@ -380,27 +453,69 @@ async fn prepare_playlist_source_operation_data(
                 added_at: crate::store::media_db::now_millis() + index as i64,
             })
             .collect();
-        return Ok((
-            crate::core::playlist_service::PreparedPlaylist {
+        return Ok(PreparedPlaylistSourceOperation::ClientActionRequired {
+            prepared_playlist: crate::core::playlist_service::PreparedPlaylist {
                 name: resolved.title.unwrap_or_else(|| "YouTube Playlist".to_string()),
                 entries,
             },
             playback_key,
-            playback_title.or(preferred_title),
-            source.clone(),
-        ));
+            playback_title: playback_title.or(preferred_title),
+            source_label: source.clone(),
+            is_live_playback: None,
+            playlist_entry_count: None,
+        });
     }
 
-    let parsed = parse_playlist_source_inner(app, source)?;
-    if parsed.metadata.has_hls_tags {
-        return Err("HLS sources do not create persistent playlists".to_string());
+    if !is_playlist_source(source) {
+        return Ok(direct_playlist_source_playback(
+            source.clone(),
+            preferred_title,
+            None,
+            None,
+        ));
     }
-    let (playback_key, playback_title) = parsed
-        .entries
-        .first()
-        .map(|entry| (entry.path.clone(), entry.title.clone()))
-        .ok_or_else(|| "playlist source contains no playable entries".to_string())?;
-    let name = playlist_name_from_source(source).unwrap_or_else(|| fallback_name.to_string());
+    let parsed = match parse_playlist_source_inner(app, source) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            log::warn!("playlist source preparation fell back to original source: {error}");
+            return Ok(direct_playlist_source_playback(
+                source.clone(),
+                preferred_title,
+                None,
+                None,
+            ));
+        }
+    };
+    if parsed.metadata.has_hls_tags {
+        return Ok(direct_playlist_source_playback(
+            source.clone(),
+            preferred_title,
+            Some(is_live_hls_playlist(&parsed.metadata)),
+            None,
+        ));
+    }
+    let Some(first_entry) = parsed.entries.first() else {
+        return Ok(direct_playlist_source_playback(
+            source.clone(),
+            preferred_title,
+            None,
+            None,
+        ));
+    };
+    if parsed.entries.len() == 1 {
+        return Ok(direct_playlist_source_playback(
+            first_entry.path.clone(),
+            first_entry.title.clone().or(preferred_title),
+            Some(true),
+            Some(1),
+        ));
+    }
+    let fallback_name = next_default_playlist_name(state, app)?;
+    let name = playlist_name_from_source(source).unwrap_or(fallback_name);
+    let playback_key = first_entry.path.clone();
+    let playback_title = first_entry.title.clone().or(preferred_title);
+    let playlist_entry_count = u32::try_from(parsed.entries.len())
+        .map_err(|_| "playlist source has too many entries".to_string())?;
     let entries = parsed
         .entries
         .into_iter()
@@ -412,12 +527,43 @@ async fn prepare_playlist_source_operation_data(
             added_at: crate::store::media_db::now_millis() + index as i64,
         })
         .collect();
-    Ok((
-        crate::core::playlist_service::PreparedPlaylist { name, entries },
+    Ok(PreparedPlaylistSourceOperation::ClientActionRequired {
+        prepared_playlist: crate::core::playlist_service::PreparedPlaylist { name, entries },
         playback_key,
-        playback_title.or(preferred_title),
-        source.clone(),
-    ))
+        playback_title,
+        source_label: source.clone(),
+        is_live_playback: Some(true),
+        playlist_entry_count: Some(playlist_entry_count),
+    })
+}
+
+fn direct_playlist_source_playback(
+    playback_key: String,
+    playback_title: Option<String>,
+    is_live_playback: Option<bool>,
+    playlist_entry_count: Option<u32>,
+) -> PreparedPlaylistSourceOperation {
+    PreparedPlaylistSourceOperation::DirectPlayback {
+        playback_key,
+        playback_title,
+        is_live_playback,
+        playlist_entry_count,
+    }
+}
+
+fn is_playlist_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    let path = url::Url::parse(trimmed)
+        .ok()
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|| trimmed.to_string());
+    let path = path.to_ascii_lowercase();
+    path.ends_with(".m3u") || path.ends_with(".m3u8")
+}
+
+fn is_live_hls_playlist(metadata: &ParsedPlaylistMetadata) -> bool {
+    !metadata.has_end_list
+        && !matches!(metadata.playlist_type.as_deref(), Some(value) if value.eq_ignore_ascii_case("VOD"))
 }
 
 fn is_youtube_playlist_source(source: &str) -> bool {
@@ -1174,7 +1320,10 @@ pub(crate) fn prepare_playlist_import(
 
 #[cfg(test)]
 mod playlist_source_tests {
-    use super::{parse_m3u_playlist, PlaylistBase};
+    use super::{
+        is_live_hls_playlist, is_playlist_source, parse_m3u_playlist, ParsedPlaylistMetadata,
+        PlaylistBase,
+    };
     use std::path::Path;
 
     #[test]
@@ -1247,5 +1396,34 @@ mod playlist_source_tests {
         assert!(parsed.metadata.has_end_list);
         assert_eq!(parsed.metadata.playlist_type.as_deref(), Some("VOD"));
         assert_eq!(parsed.metadata.target_duration, Some(8.0));
+    }
+
+    #[test]
+    fn recognizes_local_and_remote_playlist_sources() {
+        assert!(is_playlist_source("/media/channels.M3U"));
+        assert!(is_playlist_source("https://media.example/live/list.m3u8?token=abc"));
+        assert!(!is_playlist_source("https://media.example/video.mp4"));
+    }
+
+    #[test]
+    fn classifies_hls_live_and_vod_from_core_metadata() {
+        assert!(is_live_hls_playlist(&ParsedPlaylistMetadata {
+            has_end_list: false,
+            playlist_type: None,
+            target_duration: Some(6.0),
+            has_hls_tags: true,
+        }));
+        assert!(!is_live_hls_playlist(&ParsedPlaylistMetadata {
+            has_end_list: true,
+            playlist_type: None,
+            target_duration: Some(6.0),
+            has_hls_tags: true,
+        }));
+        assert!(!is_live_hls_playlist(&ParsedPlaylistMetadata {
+            has_end_list: false,
+            playlist_type: Some("VOD".to_string()),
+            target_duration: Some(6.0),
+            has_hls_tags: true,
+        }));
     }
 }

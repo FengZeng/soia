@@ -2,17 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { toCoreClientTransportError } from "./coreClientError";
 import type { PlaylistSourceClient } from "./PlaylistSourceClient";
 import type { ContinuePlaylistSourceOperationDto } from "./generated/ContinuePlaylistSourceOperationDto";
-import type { PlaylistSourceClientActionDto } from "./generated/PlaylistSourceClientActionDto";
 import type { PlaylistSourceContinuationResultDto } from "./generated/PlaylistSourceContinuationResultDto";
 import type { PreparePlaylistSourceOperationDto } from "./generated/PreparePlaylistSourceOperationDto";
+import type { PreparePlaylistSourceOperationResultDto } from "./generated/PreparePlaylistSourceOperationResultDto";
 
 /** Tauri transport adapter for Core-owned playlist-source operations. */
 export class TauriPlaylistSourceClient implements PlaylistSourceClient {
     async prepare(
         request: PreparePlaylistSourceOperationDto,
-    ): Promise<PlaylistSourceClientActionDto> {
+    ): Promise<PreparePlaylistSourceOperationResultDto> {
         try {
-            return await invoke<PlaylistSourceClientActionDto>(
+            return await invoke<PreparePlaylistSourceOperationResultDto>(
                 "prepare_playlist_source_operation",
                 { request },
             );

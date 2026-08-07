@@ -4,8 +4,6 @@ import type { CoreClient } from "../core-client/CoreClient";
 import {
   usePlaybackCommands,
   type LoadFileResult,
-  type ParsedPlaylistFile,
-  type ResolvedYoutubePlaylist,
 } from "./usePlaybackCommands";
 import { formatTime } from "../utils/formatTime";
 
@@ -43,9 +41,6 @@ export type PlayerApi = {
     keyOrUrl: string,
     preferredTitle?: string,
   ) => Promise<LoadFileResult>;
-  parsePlaylistFile: (path: string) => Promise<ParsedPlaylistFile>;
-  parsePlaylistSource: (source: string) => Promise<ParsedPlaylistFile>;
-  resolveYoutubePlaylist: (url: string) => Promise<ResolvedYoutubePlaylist>;
   pickMediaPathsAuto: () => Promise<string[]>;
   pickFiles: () => Promise<string[]>;
   togglePlayPause: () => Promise<void>;
