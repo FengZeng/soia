@@ -41,12 +41,26 @@ impl PlatformIntegration for DefaultPlatformIntegration {
 
     fn apply_window_appearance(
         &self,
-        _window: tauri::Window,
+        window: tauri::Window,
         _compact_mode: bool,
         _corner_radius: Option<f64>,
-        _theme: Option<String>,
+        theme: Option<String>,
     ) -> Result<(), String> {
-        Ok(())
+        #[cfg(target_os = "windows")]
+        {
+            let system_theme = window.theme().unwrap_or(tauri::Theme::Dark);
+            super::windows::paint_native_window_background(
+                &window,
+                theme.as_deref(),
+                system_theme,
+            )
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (window, theme);
+            Ok(())
+        }
     }
 
     fn set_window_vibrancy_visible(

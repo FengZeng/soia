@@ -502,6 +502,14 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
     let _ = app_handle_for_thread.run_on_main_thread(move || {
         if let Some(window) = app_handle_for_show.get_webview_window(MAIN_WINDOW_LABEL) {
             let _ = window.show();
+            #[cfg(target_os = "windows")]
+            if let Err(error) = crate::platform::windows::paint_native_window_background(
+                &window,
+                None,
+                window.theme().unwrap_or(tauri::Theme::Dark),
+            ) {
+                log::warn!("Failed to paint native main window background: {error}");
+            }
         }
     });
 }

@@ -27,6 +27,12 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
         .get_webview_window("main")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Failed to get main window"))?;
 
+    // Only the webview needs transparency for the UI overlay.
+    #[cfg(target_os = "windows")]
+    window
+        .as_ref()
+        .set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))?;
+
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let _ = window.set_decorations(false);
