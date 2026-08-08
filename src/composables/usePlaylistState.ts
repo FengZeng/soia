@@ -397,6 +397,11 @@ export const usePlaylistState = () => {
         activePlaylistId.value = playlistId;
     };
 
+    const openPlaylist = async (playlistId: string) => {
+        await loadFromCore();
+        enterPlaylist(playlistId);
+    };
+
     const backToPlaylistList = () => {
         activePlaylistId.value = null;
     };
@@ -462,6 +467,7 @@ export const usePlaylistState = () => {
         deletePlaylist,
         movePlaylist,
         enterPlaylist,
+        openPlaylist,
         backToPlaylistList,
         markActivePlaylistAsPlayback,
         cycleSortMode,

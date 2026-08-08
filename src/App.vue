@@ -112,7 +112,8 @@ const playbackFlow = usePlaybackFlow({
         clearNavSelectionDuringLoad.value = true;
     },
     requestPlaylistCreation: playlistCreationPrompt.requestPlaylistCreation,
-    onPlaylistCreated: () => {
+    onPlaylistCreated: async (playlistId) => {
+        await playlistState.openPlaylist(playlistId);
         isPlaylistOpen.value = true;
     },
 });

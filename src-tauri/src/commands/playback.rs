@@ -474,10 +474,25 @@ async fn prepare_playlist_source_operation_data(
             None,
         ));
     }
-    let parsed = match parse_playlist_source_inner(app, source) {
-        Ok(parsed) => parsed,
-        Err(error) => {
+    let parse_app = app.clone();
+    let parse_source = source.clone();
+    let parsed = match tokio::task::spawn_blocking(move || {
+        parse_playlist_source_inner(&parse_app, &parse_source)
+    })
+    .await
+    {
+        Ok(Ok(parsed)) => parsed,
+        Ok(Err(error)) => {
             log::warn!("playlist source preparation fell back to original source: {error}");
+            return Ok(direct_playlist_source_playback(
+                source.clone(),
+                preferred_title,
+                None,
+                None,
+            ));
+        }
+        Err(error) => {
+            log::warn!("playlist source preparation task failed; falling back to original source: {error}");
             return Ok(direct_playlist_source_playback(
                 source.clone(),
                 preferred_title,

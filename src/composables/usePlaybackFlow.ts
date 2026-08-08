@@ -63,7 +63,7 @@ type UsePlaybackFlowOptions = {
         itemCount: number;
         sourceLabel?: string;
     }) => Promise<PlaylistCreationConfirmation>;
-    onPlaylistCreated?: (playlistId: string) => void;
+    onPlaylistCreated?: (playlistId: string) => void | Promise<void>;
 };
 
 type StoredSettingGroup = {
@@ -366,7 +366,13 @@ export const usePlaybackFlow = ({
             createPlaylist: confirmation.shouldCreate,
             playlistName: confirmation.shouldCreate ? confirmation.name : null,
         });
-        if (result.playlistId) onPlaylistCreated?.(result.playlistId);
+        if (result.playlistId) {
+            try {
+                await onPlaylistCreated?.(result.playlistId);
+            } catch (error) {
+                console.warn("playlist creation completed but the Desktop playlist view could not refresh", error);
+            }
+        }
         return result;
     };
 
