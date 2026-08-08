@@ -10,6 +10,7 @@ import {
     type PlaylistSortMode,
 } from "../types/playlist";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
+import { createPlaylistReaderController } from "../features/playlist/playlistReaderController";
 
 type PersistedPlaylistState = {
     activePlaylistId?: string | null;
@@ -131,6 +132,7 @@ export const usePlaylistState = () => {
     const isLoopOne = ref(false);
     const collectionRevision = ref(0);
     let unsubscribeFromCore: (() => void) | null = null;
+    const playlistReader = createPlaylistReaderController(tauriPlaylistClient);
 
     const activePlaylist = computed<Playlist | null>(
         () =>
@@ -294,7 +296,7 @@ export const usePlaylistState = () => {
     };
 
     const loadFromCore = async () => {
-        const snapshot = await tauriPlaylistClient.getSnapshot();
+        const snapshot = await playlistReader.getSnapshot();
         const summaries = snapshot.playlists;
         loopMode.value = snapshot.loopMode === "shuffle" ? "shuffle" : "list";
         sortMode.value = snapshot.sortMode === "added" ? "added" : "name";
@@ -303,7 +305,7 @@ export const usePlaylistState = () => {
         const loaded = await Promise.all(summaries.map(async (summary) => {
             const entries = [] as PlaylistEntry[];
             for (let offset = 0; offset < summary.entryCount; offset += 200) {
-                const page = await tauriPlaylistClient.getEntriesPage({ playlistId: summary.id, offset, limit: 200 });
+                const page = await playlistReader.getEntriesPage(summary.id, offset, 200);
                 entries.push(...page.entries.map((entry) => ({
                     coreEntryId: entry.id, path: entry.playbackKey, title: entry.title ?? undefined,
                     iconUrl: entry.artworkRef ?? undefined, addedAt: entry.addedAt,
@@ -314,7 +316,7 @@ export const usePlaylistState = () => {
         playlists.value = loaded;
         syncSelectionAfterMutation();
         if (!unsubscribeFromCore) {
-            unsubscribeFromCore = tauriPlaylistClient.subscribe(() => {
+            unsubscribeFromCore = playlistReader.subscribe(() => {
                 void loadFromCore();
             });
         }
@@ -322,6 +324,7 @@ export const usePlaylistState = () => {
 
     onUnmounted(() => {
         unsubscribeFromCore?.();
+        playlistReader.dispose();
         unsubscribeFromCore = null;
     });
 

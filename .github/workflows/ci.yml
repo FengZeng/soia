@@ -98,6 +98,9 @@ jobs:
       - name: Check adapter boundaries
         run: pnpm check:adapter-boundaries
 
+      - name: Check headless playlist feature
+        run: pnpm check:headless-playlist-feature
+
       - name: Build frontend
         run: pnpm build
 
