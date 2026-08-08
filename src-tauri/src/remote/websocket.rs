@@ -213,7 +213,11 @@ async fn handle_websocket_text(
             let result = async {
                 let connection = crate::store::network_connection_store::find_network_connection(&state.app_handle, &request.connection_id)?;
                 let protocol = crate::network::service::protocol_from_connection(&connection)?;
-                let path = crate::network::service::resolve_browse_path(&connection, protocol, request.path, "browse");
+                // A remote client omits the path only for its initial connection.
+                // Resolve that request through the same default-path logic as the
+                // desktop browser; explicit paths remain normal navigation.
+                let mode = if request.path.is_some() { "browse" } else { "connect" };
+                let path = crate::network::service::resolve_browse_path(&state.app_handle, &connection, protocol, request.path, mode);
                 crate::network::service::browse_connection(&state.app_handle, &connection, &path, protocol).await
             }.await;
             match result {

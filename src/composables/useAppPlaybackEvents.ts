@@ -1,7 +1,5 @@
 import type { Ref } from "vue";
 import type { ProgressPayload } from "../types/media";
-import { AUTO_PLAY_NEXT_IN_PLAYLIST_SETTING_LABEL } from "../mock/settings";
-import { loadUiState } from "./useUiStateStore";
 
 type EndFilePayload = {
     reason?: string;
@@ -67,7 +65,6 @@ type UseAppPlaybackEventsOptions = {
     isLoopOne: Ref<boolean>;
     isLoading: Ref<boolean>;
     loadingUrl: Ref<string>;
-    playNextAfterEnd: () => Promise<void>;
 };
 
 export const useAppPlaybackEvents = ({
@@ -79,32 +76,7 @@ export const useAppPlaybackEvents = ({
     isLoopOne,
     isLoading,
     loadingUrl,
-    playNextAfterEnd,
 }: UseAppPlaybackEventsOptions) => {
-    const shouldAutoPlayNextInPlaylist = async () => {
-        const stored = await loadUiState<{
-            settings?: {
-                groups?: Array<{
-                    title: string;
-                    items: Array<{ label: string; value: string }>;
-                }>;
-            };
-        }>();
-        const value = stored?.settings?.groups
-            ?.flatMap((group) => group.items)
-            .find(
-                (item) =>
-                    item.label === AUTO_PLAY_NEXT_IN_PLAYLIST_SETTING_LABEL,
-            )?.value;
-        if (!value) return true;
-        return value === "On";
-    };
-
-    const handleEndFile = async () => {
-        if (!(await shouldAutoPlayNextInPlaylist())) return;
-        await playNextAfterEnd();
-    };
-
     const onFileLoaded = () => {
         const pending = pendingResume.value;
         const resumePosition =
@@ -152,7 +124,6 @@ export const useAppPlaybackEvents = ({
         if (reason !== "eof") return;
         isLoading.value = false;
         loadingUrl.value = "";
-        void handleEndFile();
     };
 
     const onPlaybackRestart = () => {

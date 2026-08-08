@@ -5,7 +5,6 @@ import type { DesktopPlaylistEditor } from "./PlaylistClient";
 import type { CreatePlaylistDto } from "./generated/CreatePlaylistDto";
 import type { GetPlaylistEntriesPageDto } from "./generated/GetPlaylistEntriesPageDto";
 import type { PlaylistEntriesPageDto } from "./generated/PlaylistEntriesPageDto";
-import type { PlaylistSummaryDto } from "./generated/PlaylistSummaryDto";
 import type { PlaylistSnapshotDto } from "./generated/PlaylistSnapshotDto";
 import type { PlayPlaylistEntryDto } from "./generated/PlayPlaylistEntryDto";
 import type { CommandResultDto } from "./generated/CommandResultDto";
@@ -25,14 +24,6 @@ export class TauriPlaylistClient implements DesktopPlaylistEditor {
             return await invoke<PlaylistSnapshotDto>("get_playlist_snapshot");
         } catch (error) {
             throw toCoreClientTransportError(error, "failed to retrieve playlist snapshot");
-        }
-    }
-
-    async getSummaries(): Promise<PlaylistSummaryDto[]> {
-        try {
-            return await invoke<PlaylistSummaryDto[]>("get_playlist_summaries");
-        } catch (error) {
-            throw toCoreClientTransportError(error, "failed to retrieve playlist summaries");
         }
     }
 

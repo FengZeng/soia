@@ -10,17 +10,6 @@ use crate::AppState;
 use tauri::Emitter;
 
 #[tauri::command]
-pub(crate) fn get_playlist_summaries(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<PlaylistSummaryDto>, String> {
-    state
-        .playlist_service
-        .list_summaries(&app)
-        .map(|summaries| summaries.iter().map(to_summary_dto).collect())
-}
-
-#[tauri::command]
 pub(crate) fn get_playlist_snapshot(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,

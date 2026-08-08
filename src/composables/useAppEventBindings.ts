@@ -93,7 +93,6 @@ export const useAppEventBindings = ({
     onPlaybackSpeedChange,
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
-    // 事件监听器引用
     let stopPlaybackController: (() => void) | null = null;
     let unlistenPlaybackLoadPrepared: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
@@ -202,7 +201,6 @@ export const useAppEventBindings = ({
             (event) => onPlaybackLoadPrepared?.(event.payload),
         );
 
-        // 监听文件加载完成
         unlistenFileLoaded = await listen("file_loaded", () => {
             player.state.media.isFileLoaded = true;
             player.state.media.lastLoadedUrl = player.state.media.url;
@@ -361,7 +359,6 @@ export const useAppEventBindings = ({
             },
         );
 
-        // 全局交互监听
         windowEventHandlers.forEach(([eventName, handler]) => {
             window.addEventListener(eventName, handler);
         });

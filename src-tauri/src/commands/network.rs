@@ -57,6 +57,7 @@ pub(crate) async fn browse_network_connection(
     )?;
 
     let path = crate::network::service::resolve_browse_path(
+        &app,
         &connection,
         protocol,
         payload.path,

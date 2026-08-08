@@ -357,14 +357,12 @@ const {
     useAppPlaybackEvents({
         player,
         tracks,
-        playlistState,
         history,
         nowPlaying,
         pendingResume,
         isLoopOne,
         isLoading,
         loadingUrl,
-        playNextAfterEnd: playbackNavigation.playNextAfterEnd,
     });
 
 const onFileLoaded = async () => {

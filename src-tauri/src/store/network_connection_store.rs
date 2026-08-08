@@ -47,7 +47,16 @@ fn normalize_connection(
 
     let default_path = {
         let value = connection.default_path.trim();
-        if value.is_empty() {
+        let is_dlna = protocol.eq_ignore_ascii_case("http-dlna")
+            || protocol.eq_ignore_ascii_case("dlna");
+        if is_dlna {
+            let object_id = value.trim_start_matches('/');
+            if object_id.is_empty() {
+                "0".to_string()
+            } else {
+                object_id.to_string()
+            }
+        } else if value.is_empty() {
             "/".to_string()
         } else if value.starts_with('/') {
             value.to_string()

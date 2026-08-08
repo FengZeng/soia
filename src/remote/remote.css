@@ -191,6 +191,8 @@ button, select, input[type="range"] { -webkit-tap-highlight-color: transparent; 
 .remote-network select, .remote-network__entry, .remote-network > button { width: 100%; border: 1px solid rgb(255 255 255 / 12%); border-radius: 12px; padding: 12px; color: #edf3ff; background: rgb(20 25 36 / 72%); text-align: left; }
 .remote-network__entry { display: flex; min-width: 0; gap: 10px; }
 .remote-network__entry-name { min-width: 0; overflow-wrap: anywhere; }
+.remote-network__entry--playing, .remote-network__entry--contains-playing { border-color: rgb(139 174 255 / 52%) !important; color: #f2f6ff !important; background: linear-gradient(90deg, rgb(106 146 255 / 22%), rgb(106 146 255 / 7%)) !important; box-shadow: inset 3px 0 #7da3ff; }
+.remote-network__entry--playing small { margin-left: auto; color: #a9c2ff; font-weight: 700; }
 .remote-network__folder { width: 20px; height: 20px; flex: 0 0 auto; fill: rgb(139 182 255 / 18%); stroke: #9bc0ff; stroke-width: 1.7; }
 .remote-network__entry small { display: block; margin-top: 3px; color: #93a0b6; font-size: 10px; }
 .remote-network__path { display: flex; align-items: center; min-height: 38px; gap: 8px; overflow: hidden; color: #aeb9cc; font-size: 12px; white-space: nowrap; }

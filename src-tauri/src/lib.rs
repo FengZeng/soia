@@ -571,7 +571,6 @@ pub fn run() {
             commands::playback::execute_playback_command,
             commands::playback::get_playback_snapshot,
             commands::playlist::get_playlist_snapshot,
-            commands::playlist::get_playlist_summaries,
             commands::playlist::get_playlist_entries_page,
             commands::playlist::play_playlist_entry,
             commands::playlist::create_playlist,
