@@ -732,16 +732,8 @@ pub(crate) async fn load_source(
             );
         }
     };
-    // If a preferred_title is set (from playlist entry), inject force-media-title
-    // so mpv reports this title in its media-title property. This prevents the
-    // mpv event loop from overwriting our preferred title with a filename.
-    let mut mpv_load_options = prepared.mpv_load_options.clone();
-    if let Some(ref title) = preferred_title {
-        mpv_load_options.push(format!(
-            "force-media-title={}",
-            crate::playback_source::load::escape_mpv_load_option_value(title)
-        ));
-    }
+    let mpv_load_options = prepared.mpv_load_options.clone();
+    let effective_title = preferred_title.clone().or(prepared.title.clone());
     let load_result = state
         .playback_load_coordinator
         .execute_if_current(generation, || {
@@ -762,6 +754,11 @@ pub(crate) async fn load_source(
                 pending_loads.push_back((generation, source_key.clone()));
             }
             match with_mpv_state(state, |mpv_guard| {
+                mpv_set_option_string_checked(
+                    mpv_guard,
+                    "force-media-title",
+                    effective_title.as_deref().unwrap_or(""),
+                )?;
                 crate::core::playback_loading::load(
                     mpv_guard,
                     &prepared.playback_url,
@@ -781,7 +778,6 @@ pub(crate) async fn load_source(
                     }
                     // Use preferred_title (from playlist) if available, otherwise
                     // fall back to the title resolved by the source preparer.
-                    let effective_title = preferred_title.clone().or(prepared.title);
                     let playback_playlist_id = state
                         .navigation_service
                         .playlist_navigation_context()
