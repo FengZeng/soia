@@ -101,6 +101,9 @@ jobs:
       - name: Check headless playlist feature
         run: pnpm check:headless-playlist-feature
 
+      - name: Check headless playback feature
+        run: pnpm check:headless-playback-feature
+
       - name: Build frontend
         run: pnpm build
 

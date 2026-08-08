@@ -10,9 +10,9 @@ import {
 import type { ProgressPayload } from "../types/media";
 import type {
     CoreClient,
-    CoreClientUnsubscribe,
 } from "../core-client/CoreClient";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
+import { createPlaybackController } from "../features/playback/playbackController";
 import type { PlayerApi } from "./usePlaybackController";
 
 type EndFilePayload = {
@@ -94,7 +94,7 @@ export const useAppEventBindings = ({
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
     // 事件监听器引用
-    let unlistenPlaybackSnapshot: CoreClientUnsubscribe | null = null;
+    let stopPlaybackController: (() => void) | null = null;
     let unlistenPlaybackLoadPrepared: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
     let unlistenPlaybackRestart: UnlistenFn | null = null;
@@ -147,10 +147,7 @@ export const useAppEventBindings = ({
         ],
     ];
 
-    let latestPlaybackSnapshotRevision = -1;
     const applyPlaybackSnapshot = (snapshot: PlaybackSnapshotDto) => {
-        if (snapshot.revision < latestPlaybackSnapshotRevision) return;
-        latestPlaybackSnapshotRevision = snapshot.revision;
         player.state.playback.currentTime = snapshot.position;
         player.state.playback.duration = snapshot.duration;
         player.state.playback.bufferedTime =
@@ -197,8 +194,8 @@ export const useAppEventBindings = ({
             onFullscreenTransition();
         });
 
-        unlistenPlaybackSnapshot = coreClient.subscribe(applyPlaybackSnapshot);
-        void coreClient.getSnapshot().then(applyPlaybackSnapshot).catch(() => {});
+        const playbackController = createPlaybackController(coreClient);
+        stopPlaybackController = playbackController.start(applyPlaybackSnapshot);
 
         unlistenPlaybackLoadPrepared = await listen<PlaybackLoadPreparedPayload>(
             "playback-load-prepared",
@@ -372,7 +369,7 @@ export const useAppEventBindings = ({
     });
 
     onUnmounted(() => {
-        unlistenPlaybackSnapshot?.();
+        stopPlaybackController?.();
         unlistenPlaybackLoadPrepared?.();
         unlistenFileLoaded?.();
         unlistenPlaybackRestart?.();

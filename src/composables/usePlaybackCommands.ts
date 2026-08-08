@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CoreClient } from "../core-client/CoreClient";
+import type { PlaybackController } from "../features/playback/playbackController";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MEDIA_FILE_EXTENSIONS } from "../constants/media";
 
@@ -32,7 +32,7 @@ export type LoadFileResult = {
 export const usePlaybackCommands = (
   state: PlayerEffectState,
   currentWindow: CurrentWindow,
-  coreClient: CoreClient,
+  playbackController: Pick<PlaybackController, "execute">,
   isWindowsPlatform = false,
 ) => {
   let lastAudibleVolume = 100;
@@ -80,7 +80,7 @@ export const usePlaybackCommands = (
   };
 
   const togglePlayPause = async (): Promise<void> => {
-    await coreClient.execute({
+    await playbackController.execute({
       type: "setPaused",
       paused: state.playback.isPlaying,
     });
@@ -126,7 +126,7 @@ export const usePlaybackCommands = (
   };
 
   const stopPlayback = async (): Promise<void> => {
-    await coreClient.execute({ type: "stop" });
+    await playbackController.execute({ type: "stop" });
   };
 
   const syncFullscreen = async (): Promise<void> => {
@@ -148,11 +148,11 @@ export const usePlaybackCommands = (
   };
 
   const seek = async (position: number): Promise<void> => {
-    await coreClient.execute({ type: "seekAbsolute", position });
+    await playbackController.execute({ type: "seekAbsolute", position });
   };
 
   const seekRelative = async (position: number): Promise<void> => {
-    await coreClient.execute({ type: "seekRelative", seconds: position });
+    await playbackController.execute({ type: "seekRelative", seconds: position });
   };
 
   const setLoopFile = async (enabled: boolean): Promise<void> => {
@@ -170,7 +170,7 @@ export const usePlaybackCommands = (
       .catch(() => {})
       .then(async () => {
         if (requestId !== volumeRequestId) return;
-        await coreClient.execute({ type: "setVolume", volume: nextVolume });
+        await playbackController.execute({ type: "setVolume", volume: nextVolume });
       });
     await volumeApplyQueue;
   };
