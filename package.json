@@ -21,6 +21,7 @@
     "check:core-client-error": "node ./scripts/check_core_client_error.mjs",
     "check:track-state-contract": "node ./scripts/check_track_state_contract.mjs",
     "check:websocket-core-client-protocol": "node ./scripts/check_websocket_core_client_protocol.mjs",
+    "check:adapter-boundaries": "node ./scripts/check_adapter_boundaries.mjs",
     "preview": "vite preview",
     "tauri": "pnpm version:sync && pnpm media:sync && node ./scripts/run_tauri.mjs",
     "version:sync": "node ./scripts/sync_version.mjs",
