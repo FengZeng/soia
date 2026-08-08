@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.10] - 2026-08-08
+
+### Features
+
+- Expanded the browser-based Remote Controller with playlist browsing and playback.
+- Added network source browsing and playback to the Remote Controller, including shared last-folder navigation with the desktop app.
+
+### Improvements
+
+- Reworked playlist and playback services around the shared core, enabling consistent desktop and Remote Controller behavior.
+
+### Fixes
+
+- Fixed a Windows issue where the app window could become fully transparent when switching videos or leaving playback.
+
 ## [0.2.9] - 2026-07-25
 
 ### Features

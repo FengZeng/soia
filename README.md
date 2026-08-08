@@ -6,7 +6,7 @@
 </h1>
 
 <p align="center">
-🎬 HDR & Dolby Vision · 🌐 WebDAV + DLNA + SMB Streaming · 🖥 Cross-platform
+🎬 HDR & Dolby Vision · 🌐 WebDAV + DLNA + SMB Streaming · 📱 Web Remote Controller
 </p>
 
 <p align="center">
@@ -40,6 +40,30 @@
 - M3U (IPTV) parsing and playback
 - Smart buffering with real-time speed indicators
 - Resume playback with history tracking
+
+### Web Browser Remote Controller
+
+- Control Soia playback from a web browser on the same local network
+- Play, pause, seek, adjust volume, and select audio or subtitle tracks remotely
+- Browse and play playlists or configured WebDAV, DLNA, and SMB media sources
+- Continue network browsing from the folder last opened in the desktop app
+- Connect in seconds by scanning the QR code in the playback context menu, or open it from Settings
+
+Both interfaces are equal clients of the same backend:
+
+```mermaid
+flowchart TB
+    desktop["Desktop UI"]
+    remote["Web Remote UI"]
+    backend["Shared Backend<br/>Playback · Playlists · Network Browsing"]
+    mpv["mpv Playback Engine"]
+    data["App Data<br/>Playlists · Network Connections · History"]
+
+    desktop <--> |"Tauri"| backend
+    remote <--> |"HTTP / WebSocket"| backend
+    backend <--> mpv
+    backend <--> data
+```
 
 ### Native Experience
 
