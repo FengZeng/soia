@@ -12,9 +12,6 @@ import {
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 
 type PersistedPlaylistState = {
-    playlists?: Playlist[];
-    playlistLoopMode?: PlaylistLoopMode;
-    playlistSortMode?: PlaylistSortMode;
     activePlaylistId?: string | null;
 };
 
@@ -29,9 +26,6 @@ type CreatePlaylistEntryInput = {
     title?: string;
     iconUrl?: string;
 };
-
-const createPlaylistId = () =>
-    `pl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
 const isFavoritesPlaylist = (playlistId: string | null) =>
     playlistId === FAVORITES_PLAYLIST_ID;
@@ -105,62 +99,9 @@ const derivePlaylistNameFromPaths = (paths: string[], fallback: string) => {
     return itemNames[0] ?? fallback;
 };
 
-const normalizePlaylistEntries = (entries: PlaylistEntry[]): PlaylistEntry[] => {
-    const unique = new Map<string, PlaylistEntry>();
-    entries.forEach((entry) => {
-        const path = entry?.path?.trim();
-        if (!path) return;
-        const title = entry?.title?.trim() || undefined;
-        const iconUrl = entry?.iconUrl?.trim() || undefined;
-        unique.set(path, {
-            coreEntryId: entry.coreEntryId,
-            path,
-            title,
-            iconUrl,
-            addedAt:
-                typeof entry.addedAt === "number" ? entry.addedAt : Date.now(),
-        });
-    });
-    return Array.from(unique.values());
-};
-
 const normalizePlaylistName = (name: string | undefined, fallback: string) => {
     const trimmed = name?.trim();
     return trimmed || fallback;
-};
-
-const normalizePlaylists = (items: Playlist[] | undefined): Playlist[] => {
-    const source = items ?? [];
-    let favoritesPlaylist: Playlist | null = null;
-    const userPlaylists: Playlist[] = [];
-
-    source.forEach((item, index) => {
-        const normalizedPlaylist: Playlist = {
-            id: item.id || createPlaylistId(),
-            coreRevision: item.coreRevision,
-            name: normalizePlaylistName(item.name, `Playlist ${index + 1}`),
-            entries: normalizePlaylistEntries(item.entries ?? []),
-            createdAt:
-                typeof item.createdAt === "number" ? item.createdAt : Date.now(),
-        };
-
-        if (
-            normalizedPlaylist.id === FAVORITES_PLAYLIST_ID ||
-            normalizedPlaylist.id === LEGACY_FAVOURITE_PLAYLIST_ID
-        ) {
-            favoritesPlaylist = {
-                ...normalizedPlaylist,
-                id: FAVORITES_PLAYLIST_ID,
-                name: FAVORITES_PLAYLIST_NAME,
-                createdAt: normalizedPlaylist.createdAt || 0,
-            };
-            return;
-        }
-
-        userPlaylists.push(normalizedPlaylist);
-    });
-
-    return [favoritesPlaylist ?? createFavoritesPlaylist(), ...userPlaylists];
 };
 
 const sortEntries = (
@@ -185,7 +126,6 @@ const sortEntries = (
 export const usePlaylistState = () => {
     const playlists = ref<Playlist[]>([createFavoritesPlaylist()]);
     const activePlaylistId = ref<string | null>(null);
-    const playbackPlaylistId = ref<string | null>(null);
     const loopMode = ref<PlaylistLoopMode>("list");
     const sortMode = ref<PlaylistSortMode>("added");
     const isLoopOne = ref(false);
@@ -210,18 +150,9 @@ export const usePlaylistState = () => {
         return playlists.value.find((item) => item.id === playlistId) ?? null;
     };
 
-    const getOrderedEntriesByPlaylistId = (playlistId: string | null) => {
-        const target = findPlaylistById(playlistId);
-        if (!target) return [];
-        return sortEntries(target.entries, sortMode.value);
-    };
-
     const syncSelectionAfterMutation = () => {
         if (!hasPlaylist(activePlaylistId.value)) {
             activePlaylistId.value = null;
-        }
-        if (!hasPlaylist(playbackPlaylistId.value)) {
-            playbackPlaylistId.value = null;
         }
     };
 
@@ -283,14 +214,13 @@ export const usePlaylistState = () => {
             iconUrl: item.iconUrl,
             addedAt: timestamp + index,
         }));
-        const normalizedEntries = normalizePlaylistEntries(entries);
-        if (!normalizedEntries.length) return null;
+        if (!entries.length) return null;
 
         const fallbackName = `Playlist ${
             playlists.value.filter((item) => !isFavoritesPlaylist(item.id)).length + 1
         }`;
         const derivedName = derivePlaylistNameFromPaths(
-            normalizedEntries.map((item) => item.path),
+            entries.map((item) => item.path),
             fallbackName,
         );
         const created = await tauriPlaylistClient.create({
@@ -299,11 +229,11 @@ export const usePlaylistState = () => {
         });
         const playlistId = created.playlist?.summary.id;
         if (!playlistId || !created.playlist) return null;
-        if (normalizedEntries.length) {
+        if (entries.length) {
             await tauriPlaylistClient.mutate({
                 type: "addEntries",
                 playlistId,
-                entries: normalizedEntries.map((entry) => ({
+                entries: entries.map((entry) => ({
                     playbackKey: entry.path,
                     title: entry.title ?? null,
                     artworkRef: entry.iconUrl ?? null,
@@ -381,10 +311,7 @@ export const usePlaylistState = () => {
             }
             return { id: summary.id, coreRevision: summary.revision, name: summary.name, entries, createdAt: summary.createdAt };
         }));
-        playlists.value = normalizePlaylists(loaded);
-        playbackPlaylistId.value = hasPlaylist(snapshot.playbackPlaylistId)
-            ? snapshot.playbackPlaylistId
-            : null;
+        playlists.value = loaded;
         syncSelectionAfterMutation();
         if (!unsubscribeFromCore) {
             unsubscribeFromCore = tauriPlaylistClient.subscribe(() => {
@@ -398,12 +325,7 @@ export const usePlaylistState = () => {
         unsubscribeFromCore = null;
     });
 
-    const toPersistedState = () => ({
-        playlists: playlists.value,
-        playlistLoopMode: loopMode.value,
-        playlistSortMode: sortMode.value,
-        activePlaylistId: activePlaylistId.value,
-    });
+    const toPersistedState = () => ({ activePlaylistId: activePlaylistId.value });
 
     const addFromDrawerSelection = async (paths: string[]) => {
         if (activePlaylist.value) {
@@ -488,93 +410,6 @@ export const usePlaylistState = () => {
         await loadFromCore();
     };
 
-    const pickRandomIndex = (length: number, currentIndex: number): number => {
-        if (length <= 1) return 0;
-        let nextIndex = currentIndex;
-        do {
-            nextIndex = Math.floor(Math.random() * length);
-        } while (nextIndex === currentIndex);
-        return nextIndex;
-    };
-
-    const resolvePlaybackPlaylistId = (currentPath: string): string | null => {
-        const current = currentPath.trim();
-        if (!current) return null;
-
-        const playbackPlaylist = findPlaylistById(playbackPlaylistId.value);
-        if (playbackPlaylist?.entries.some((entry) => entry.path === current)) {
-            return playbackPlaylist.id;
-        }
-
-        const active = activePlaylist.value;
-        if (active?.entries.some((entry) => entry.path === current)) {
-            return active.id;
-        }
-
-        const matched = [...playlists.value]
-            .reverse()
-            .find((item) => item.entries.some((entry) => entry.path === current));
-        return matched?.id ?? null;
-    };
-
-    const getAdjacentPath = (
-        currentPath: string,
-        direction: 1 | -1,
-    ): string | null => {
-        const playlistId = resolvePlaybackPlaylistId(currentPath);
-        if (!playlistId) return null;
-        playbackPlaylistId.value = playlistId;
-
-        const list = getOrderedEntriesByPlaylistId(playlistId);
-        if (!list.length) return null;
-        const currentIndex = list.findIndex((item) => item.path === currentPath);
-
-        if (loopMode.value === "shuffle") {
-            return list[pickRandomIndex(list.length, currentIndex)]?.path ?? null;
-        }
-
-        if (currentIndex < 0) {
-            return direction === 1
-                ? list[0]?.path ?? null
-                : list[list.length - 1]?.path ?? null;
-        }
-
-        let nextIndex = currentIndex + direction;
-        if (nextIndex < 0) nextIndex = list.length - 1;
-        if (nextIndex >= list.length) nextIndex = 0;
-        return list[nextIndex]?.path ?? null;
-    };
-
-    const getPathForEnd = (currentPath: string): string | null => {
-        if (isLoopOne.value) return null;
-
-        const playlistId = resolvePlaybackPlaylistId(currentPath);
-        if (!playlistId) return null;
-        playbackPlaylistId.value = playlistId;
-
-        const list = getOrderedEntriesByPlaylistId(playlistId);
-        if (!list.length) return null;
-        const currentIndex = list.findIndex((item) => item.path === currentPath);
-        if (currentIndex < 0) return null;
-
-        if (loopMode.value === "shuffle") {
-            return list[pickRandomIndex(list.length, currentIndex)]?.path ?? null;
-        }
-
-        return list[(currentIndex + 1) % list.length]?.path ?? null;
-    };
-
-    const getTitleForPath = (path: string): string | undefined => {
-        const normalizedPath = path.trim();
-        if (!normalizedPath) return undefined;
-        const playlistId = resolvePlaybackPlaylistId(normalizedPath);
-        if (!playlistId) return undefined;
-        const entry = getOrderedEntriesByPlaylistId(playlistId).find(
-            (item) => item.path === normalizedPath,
-        );
-        return entry?.title?.trim() || undefined;
-    };
-
     const markActivePlaylistAsPlayback = async () => {
         if (!activePlaylist.value) return;
         await tauriPlaylistClient.mutate({ type: "setPlaybackPlaylist", playlistId: activePlaylist.value.id });
@@ -627,9 +462,6 @@ export const usePlaylistState = () => {
         backToPlaylistList,
         markActivePlaylistAsPlayback,
         cycleSortMode,
-        getAdjacentPath,
-        getPathForEnd,
-        getTitleForPath,
         toggleLoopOne,
         togglePlaylistLoop,
     };
