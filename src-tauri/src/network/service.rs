@@ -87,7 +87,7 @@ pub(crate) fn resolve_protocol_with_hint(
 }
 
 pub(crate) fn validate_mode(mode: &str) -> Result<(), String> {
-    // `connect` means "initial browse using connection default path".
+    // `connect` means "initial browse using the shared default path or root".
     // `browse` means "navigate to caller-provided path (or protocol fallback)".
     match mode.trim().to_ascii_lowercase().as_str() {
         "connect" | "browse" => Ok(()),
@@ -96,6 +96,7 @@ pub(crate) fn validate_mode(mode: &str) -> Result<(), String> {
 }
 
 pub(crate) fn resolve_browse_path(
+    app: &tauri::AppHandle,
     connection: &NetworkConnectionRecord,
     protocol: BrowseProtocol,
     path: Option<String>,
@@ -103,9 +104,25 @@ pub(crate) fn resolve_browse_path(
 ) -> String {
     let is_connect = mode.trim().eq_ignore_ascii_case("connect");
     if is_connect {
+        if should_start_network_at_root(app) {
+            return root_browse_path(protocol);
+        }
         return path.unwrap_or_else(|| default_browse_path(connection, protocol));
     }
     normalize_input_path(path, protocol)
+}
+
+const NETWORK_START_AT_ROOT_SETTING_LABEL: &str = "NETWORK_START_AT_ROOT";
+
+fn should_start_network_at_root(app: &tauri::AppHandle) -> bool {
+    crate::store::ui_state_store::load_setting_value(
+        app,
+        NETWORK_START_AT_ROOT_SETTING_LABEL,
+    )
+    .ok()
+    .flatten()
+    .as_deref()
+        == Some("On")
 }
 
 fn create_network_playback_key(
@@ -364,12 +381,31 @@ pub(crate) fn resolve_network_playback_url(
 fn default_browse_path(connection: &NetworkConnectionRecord, protocol: BrowseProtocol) -> String {
     let value = connection.default_path.trim();
     if !value.is_empty() {
-        return value.to_string();
+        return match protocol {
+            // Older saved connection files may contain `/0`; DLNA object IDs
+            // are not slash-delimited paths, so keep the canonical ID form.
+            BrowseProtocol::Dlna => {
+                let object_id = value.trim_start_matches('/');
+                if object_id.is_empty() {
+                    "0".to_string()
+                } else {
+                    object_id.to_string()
+                }
+            }
+            _ => value.to_string(),
+        };
     }
     match protocol {
         BrowseProtocol::Webdav => "/".to_string(),
         BrowseProtocol::Dlna => "0".to_string(),
         BrowseProtocol::Smb => "/".to_string(),
+    }
+}
+
+fn root_browse_path(protocol: BrowseProtocol) -> String {
+    match protocol {
+        BrowseProtocol::Webdav | BrowseProtocol::Smb => "/".to_string(),
+        BrowseProtocol::Dlna => "0".to_string(),
     }
 }
 

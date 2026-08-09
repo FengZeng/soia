@@ -6,6 +6,12 @@ import { coreClientKey } from "../core-client/coreClientKey";
 import type { PlaybackCommandDto } from "../core-client/generated/PlaybackCommandDto";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { MediaTrackDto } from "../core-client/generated/MediaTrackDto";
+import { createPlaybackController } from "../features/playback/playbackController";
+import {
+    displayedPlaybackPosition,
+    isSeekPositionConfirmed,
+    playbackProgressPercent,
+} from "../features/playback/playbackDerivedState";
 import { formatLanguageCodeTitle } from "../utils/trackDisplay";
 import { remoteConnectionState } from "./remoteCoreClient";
 
@@ -22,10 +28,8 @@ const sourceUrl = ref("");
 const playbackRates = [2, 1.75, 1.5, 1.25, 1, 0.75, 0.5, 0.25];
 const canControl = computed(() => remoteConnectionState.value === "connected");
 const durationLabel = computed(() => formatTime(state.value.duration));
-const displayedPosition = computed(() => pendingSeek.value ?? state.value.position);
-const progressPercent = computed(() => state.value.duration > 0
-    ? displayedPosition.value / state.value.duration * 100
-    : 0);
+const displayedPosition = computed(() => displayedPlaybackPosition(state.value, pendingSeek.value));
+const progressPercent = computed(() => playbackProgressPercent(state.value.duration, displayedPosition.value));
 const audioTracks = computed(() => state.value.tracks.filter((track) => track.trackType === "audio"));
 const subtitleTracks = computed(() => state.value.tracks.filter((track) => track.trackType === "sub"));
 const selectedAudioTrackId = computed(() => audioTracks.value.find((track) => track.selected)?.id ?? "");
@@ -49,13 +53,14 @@ watch(remoteConnectionState, (nextState) => {
 
 const remoteClient = inject(coreClientKey);
 if (!remoteClient) throw new Error("Remote CoreClient is unavailable");
+const playbackController = createPlaybackController(remoteClient);
 
 const errorMessage = (clientError: CoreClientError) => clientError.type === "core"
     ? clientError.error.message
     : clientError.message;
 
 const handleSnapshot = (nextState: PlaybackSnapshotDto) => {
-    if (pendingSeek.value !== null && Math.abs(nextState.position - pendingSeek.value) < 2) {
+    if (pendingSeek.value !== null && isSeekPositionConfirmed(nextState, pendingSeek.value)) {
         pendingSeek.value = null;
     }
     state.value = nextState;
@@ -64,7 +69,7 @@ const handleSnapshot = (nextState: PlaybackSnapshotDto) => {
 };
 
 function command(commandToExecute: PlaybackCommandDto) {
-    void remoteClient.execute(commandToExecute).catch((clientError: CoreClientError) => {
+    void playbackController.execute(commandToExecute).catch((clientError: CoreClientError) => {
         pendingSeek.value = null;
         error.value = errorMessage(clientError);
     });
@@ -115,13 +120,13 @@ function selectSubtitleTrack(event: Event) {
     command(trackId > 0 ? { type: "selectSubtitleTrack", trackId } : { type: "disableSubtitles" });
 }
 
-let unsubscribe: (() => void) | null = null;
+let stopPlaybackController: (() => void) | null = null;
 onMounted(() => {
-    unsubscribe = remoteClient.subscribe(handleSnapshot, (clientError) => {
+    stopPlaybackController = playbackController.start(handleSnapshot, (clientError) => {
         error.value = errorMessage(clientError);
     });
 });
-onBeforeUnmount(() => unsubscribe?.());
+onBeforeUnmount(() => stopPlaybackController?.());
 </script>
 
 <template>

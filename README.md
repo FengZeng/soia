@@ -6,15 +6,15 @@
 </h1>
 
 <p align="center">
-🎬 HDR & Dolby Vision · 🌐 WebDAV + DLNA + SMB Streaming · 🖥 Cross-platform
+🎬 HDR & Dolby Vision · 🌐 WebDAV + DLNA + SMB Streaming · 📱 Web Remote Controller
 </p>
 
 <p align="center">
 <b><a href="https://github.com/FengZeng/soia/releases">⬇️ Download Latest Release</a> · <a href="https://github.com/FengZeng/soia/issues">🐞 Report a Bug</a></b>
 </p>
 
-![Soia App Preview](https://github.com/user-attachments/assets/9896ae38-d082-413e-8a01-bdb28e687bf7)
-> A modern mpv frontend focused on performance and clean design.
+![Soia App Preview](docs/assets/screenshots/Soia.webp)
+> An mpv-powered video player with network streaming and browser-based remote control.
 
 **Soia** is a high-performance video player built on mpv, designed for smooth playback of everything from local Dolby Vision content to remote WebDAV, DLNA, and SMB streams — all in one fast, elegant, cross-platform experience.
 
@@ -38,8 +38,24 @@
 - WebDAV browsing and streaming
 - DLNA and SMB/Samba discovery, browsing, and playback
 - M3U (IPTV) parsing and playback
+- Persistent playlists, including a built-in Favorites playlist
 - Smart buffering with real-time speed indicators
 - Resume playback with history tracking
+
+### Web Browser Remote Controller
+
+- Control Soia playback from a web browser on the same local network
+- Play, pause, seek, adjust volume, and select audio or subtitle tracks remotely
+- Browse and play playlists or configured WebDAV, DLNA, and SMB media sources
+- Continue network browsing from the folder last opened in the desktop app
+- Enable Remote Controller in Settings, then show its QR code there or from the playback context menu to pair and connect in seconds
+- Pair multiple remote devices to control the same player together
+
+![Web Remote Controller](docs/assets/screenshots/remote-controller.webp)
+
+Both interfaces are equal clients of the same backend:
+
+![Shared Backend Architecture](docs/assets/diagrams/shared-backend.webp)
 
 ### Native Experience
 
@@ -141,8 +157,8 @@ pnpm bundle:win:release
 
 App data is stored in Tauri's local app data directory and includes:
 
-- `media.db`: default playlist entries, playback history, and local installation/device/sync metadata
-- `state.json`: UI state and settings (for example active panel, multiple-playlist metadata, and preferences)
+- `media.db`: playlists, playlist entries, playback history, and local installation/device metadata
+- `state.json`: UI state and preferences
 - `network_connections.json`: saved network connections
 - `thumbnails/`: captured artwork for Now Playing
 

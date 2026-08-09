@@ -27,6 +27,12 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
         .get_webview_window("main")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Failed to get main window"))?;
 
+    // Only the webview needs transparency for the UI overlay.
+    #[cfg(target_os = "windows")]
+    window
+        .as_ref()
+        .set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))?;
+
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let _ = window.set_decorations(false);
@@ -101,6 +107,7 @@ fn build_app_state(
         playback_load_coordinator: crate::core::playback_loading::PlaybackLoadCoordinator::new(),
         navigation_service: crate::core::navigation::NavigationService::new(),
         playlist_service: crate::core::playlist_service::PlaylistService::new(),
+        playlist_source_operations: crate::core::playlist_source_operations::PlaylistSourceOperationStore::new(),
         mpv_player,
         audio_output: crate::audio_output::AudioOutputRuntime::new(audio_settings),
         pending_play_history_entry: Mutex::new(None),

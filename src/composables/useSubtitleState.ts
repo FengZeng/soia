@@ -1,6 +1,7 @@
 import { computed, ref, type Ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { MediaTrack } from "../types/media";
+import type { CoreClient } from "../core-client/CoreClient";
 
 export type SubtitleTarget = "primary" | "secondary";
 
@@ -12,7 +13,10 @@ type SelectSubtitlePayload = {
 const isSameTrackId = (left: MediaTrack["id"], right: MediaTrack["id"]) =>
     String(left) === String(right);
 
-export const useSubtitleState = (subTracks: Ref<MediaTrack[]>) => {
+export const useSubtitleState = (
+    subTracks: Ref<MediaTrack[]>,
+    coreClient: CoreClient,
+) => {
     const dualSubEnabled = ref(false);
     const secondarySubId = ref<MediaTrack["id"]>(0);
     const activeSubTarget = ref<SubtitleTarget>("primary");
@@ -49,11 +53,17 @@ export const useSubtitleState = (subTracks: Ref<MediaTrack[]>) => {
     };
 
     const selectPrimarySub = async (track: MediaTrack) => {
-        subTracks.value.forEach((t) => (t.selected = t.id === track.id));
         if (track.id !== 0 && isSameTrackId(track.id, secondarySubId.value)) {
             await clearSecondarySid();
         }
-        await invoke("mpv_set_option_string", { name: "sid", value: track.id });
+        if (track.id === 0) {
+            await coreClient.execute({ type: "disableSubtitles" });
+            return;
+        }
+        await coreClient.execute({
+            type: "selectSubtitleTrack",
+            trackId: Number(track.id),
+        });
     };
 
     const selectSecondarySub = async (track: MediaTrack) => {
@@ -102,11 +112,8 @@ export const useSubtitleState = (subTracks: Ref<MediaTrack[]>) => {
         dualSubEnabled.value = false;
         activeSubTarget.value = "primary";
         secondarySubId.value = 0;
-        subTracks.value.forEach((track) => {
-            track.selected = false;
-        });
         await invoke("mpv_set_option_string", { name: "secondary-sid", value: "no" });
-        await invoke("mpv_set_option_string", { name: "sid", value: "no" });
+        await coreClient.execute({ type: "disableSubtitles" });
     };
 
     const enableAutoSubtitleSelection = async () => {

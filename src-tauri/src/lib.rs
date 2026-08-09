@@ -40,6 +40,7 @@ pub struct AppState {
     pub(crate) playback_load_coordinator: core::playback_loading::PlaybackLoadCoordinator,
     pub(crate) navigation_service: core::navigation::NavigationService,
     pub(crate) playlist_service: core::playlist_service::PlaylistService,
+    pub(crate) playlist_source_operations: core::playlist_source_operations::PlaylistSourceOperationStore,
     pub(crate) shader_pipeline: shader_pipeline::ShaderPipeline,
 }
 
@@ -504,6 +505,14 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
     let _ = app_handle_for_thread.run_on_main_thread(move || {
         if let Some(window) = app_handle_for_show.get_webview_window(MAIN_WINDOW_LABEL) {
             let _ = window.show();
+            #[cfg(target_os = "windows")]
+            if let Err(error) = crate::platform::windows::paint_native_window_background(
+                &window,
+                None,
+                window.theme().unwrap_or(tauri::Theme::Dark),
+            ) {
+                log::warn!("Failed to paint native main window background: {error}");
+            }
         }
     });
 }
@@ -556,13 +565,14 @@ pub fn run() {
             commands::playback::mpv_run_command,
             commands::playback::mpv_set_option_string,
             commands::playback::load_playback_source,
+            commands::playback::prepare_playlist_source_operation,
+            commands::playback::continue_playlist_source_operation,
             commands::platform::pick_media_paths_native,
             commands::platform::pick_paths_native,
             commands::playback::consume_pending_open_files,
             commands::playback::execute_playback_command,
             commands::playback::get_playback_snapshot,
             commands::playlist::get_playlist_snapshot,
-            commands::playlist::get_playlist_summaries,
             commands::playlist::get_playlist_entries_page,
             commands::playlist::play_playlist_entry,
             commands::playlist::create_playlist,

@@ -5,6 +5,8 @@ import type { PlaybackSnapshotDto } from "./generated/PlaybackSnapshotDto";
 import type { PlaylistSnapshotDto } from "./generated/PlaylistSnapshotDto";
 import type { PlaylistEntriesPageDto } from "./generated/PlaylistEntriesPageDto";
 import type { PlaylistSummaryDto } from "./generated/PlaylistSummaryDto";
+import type { NetworkBrowseResultDto } from "./generated/NetworkBrowseResultDto";
+import type { NetworkConnectionSummaryDto } from "./generated/NetworkConnectionSummaryDto";
 
 export const WEBSOCKET_PROTOCOL_VERSION = 6;
 
@@ -16,6 +18,8 @@ export type WebSocketServerMessage =
     | { type: "playlistEntriesPage"; id?: string | null; page: PlaylistEntriesPageDto }
     | { type: "playlistDeleted"; id?: string | null; playlistId: string; collectionRevision: number }
     | { type: "playlistImported"; id?: string | null; playlist: PlaylistSummaryDto; collectionRevision: number }
+    | { type: "networkConnections"; id?: string | null; connections: NetworkConnectionSummaryDto[] }
+    | { type: "networkBrowseResult"; id?: string | null; result: NetworkBrowseResultDto }
     | { type: "pong"; id?: string | null }
     | { type: "commandResult"; result: CommandResultDto }
     | { type: "navigationResult"; id?: string | null; ok: boolean }
@@ -118,6 +122,14 @@ export const parseWebSocketServerMessage = (
                 playlist: playlist as PlaylistSummaryDto,
                 collectionRevision: message.collection_revision,
             };
+        }
+        case "networkConnections":
+            if (!Array.isArray(message.connections)) throw new Error("received invalid network connections");
+            return { type, id: typeof message.id === "string" ? message.id : null, connections: message.connections as NetworkConnectionSummaryDto[] };
+        case "networkBrowseResult": {
+            const result = asRecord(message.result);
+            if (!result || typeof result.path !== "string" || !Array.isArray(result.entries)) throw new Error("received invalid network browse result");
+            return { type, id: typeof message.id === "string" ? message.id : null, result: result as NetworkBrowseResultDto };
         }
         case "pong":
             return {

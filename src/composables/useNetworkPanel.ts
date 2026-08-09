@@ -163,7 +163,7 @@ export const useNetworkPanel = () => {
             return;
         }
         try {
-            await browser.openDirectory(rootPath);
+            await openDirectory(rootPath, { rememberPath: false });
             hasConnected.value = true;
         } catch (error) {
             browser.errorMessage.value = toErrorMessage(
@@ -227,11 +227,26 @@ export const useNetworkPanel = () => {
 
     const openEntry = async (entry: NetworkFileRow) => {
         if (entry.type !== "DIR") return;
-        await browser.openDirectory(entry.path);
+        await openDirectory(entry.path);
     };
 
     const onBrowsePath = async (path: string) => {
+        await openDirectory(path);
+    };
+
+    const openDirectory = async (
+        path: string,
+        { rememberPath = true }: { rememberPath?: boolean } = {},
+    ) => {
         await browser.openDirectory(path);
+        if (!rememberPath) return;
+        const connection = selectedConnection.value;
+        if (connection) {
+            connection.defaultPath = browser.networkPath.value;
+        }
+        // `defaultPath` is the shared last-opened directory for this connection.
+        // Persist it after a successful browse so remote clients can resume here too.
+        await saveSelectedConnection();
     };
 
     const buildPlayRequest = (entry: NetworkFileRow): NetworkPlayRequest => {
@@ -262,15 +277,6 @@ export const useNetworkPanel = () => {
         () => selectedConnectionId.value,
         () => {
             hasConnected.value = false;
-        },
-    );
-
-    watch(
-        () => browser.networkPath.value,
-        (path) => {
-            if (!selectedConnection.value) return;
-            if (selectedConnection.value.protocol === "http-dlna") return;
-            selectedConnection.value.defaultPath = path;
         },
     );
 

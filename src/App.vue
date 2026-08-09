@@ -38,6 +38,7 @@ import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog
 import { useAudioOutput } from "./composables/useAudioOutput";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
 import type { AudioSettings } from "./types/audio";
+import { tauriPlaylistSourceClient } from "./core-client/tauriPlaylistSourceClient";
 
 const {
     isMacOS,
@@ -101,9 +102,9 @@ const {
 const playbackFlow = usePlaybackFlow({
     isMacOS,
     player,
+    playlistSourceClient: tauriPlaylistSourceClient,
     tracks,
     history,
-    playlistState,
     nowPlaying,
     hideAllMenus,
     isInfoOpen,
@@ -113,7 +114,8 @@ const playbackFlow = usePlaybackFlow({
         clearNavSelectionDuringLoad.value = true;
     },
     requestPlaylistCreation: playlistCreationPrompt.requestPlaylistCreation,
-    onPlaylistCreated: () => {
+    onPlaylistCreated: async (playlistId) => {
+        await playlistState.openPlaylist(playlistId);
         isPlaylistOpen.value = true;
     },
 });
@@ -393,14 +395,12 @@ const {
     useAppPlaybackEvents({
         player,
         tracks,
-        playlistState,
         history,
         nowPlaying,
         pendingResume,
         isLoopOne,
         isLoading,
         loadingUrl,
-        playNextAfterEnd: playbackNavigation.playNextAfterEnd,
     });
 
 const onFileLoaded = async () => {

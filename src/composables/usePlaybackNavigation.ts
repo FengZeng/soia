@@ -14,16 +14,8 @@ export const usePlaybackNavigation = ({ coreClient }: UsePlaybackNavigationOptio
         });
     };
 
-    // EOF auto-play is now handled by Core (mpv event loop → handle_end_of_file).
-    // This is a no-op retained for interface compatibility.
-    const playNextAfterEnd = async () => {
-        // Core handles EOF auto-play directly in the Rust event loop.
-        // No frontend action needed.
-    };
-
     return {
         playPreviousTrack: () => playTrack(-1),
         playNextTrack: () => playTrack(1),
-        playNextAfterEnd,
     };
 };

@@ -7,17 +7,13 @@ import {
     currentMonitor,
     primaryMonitor,
 } from "@tauri-apps/api/window";
-import type { ProgressPayload, MediaTrack } from "../types/media";
+import type { ProgressPayload } from "../types/media";
 import type {
     CoreClient,
-    CoreClientUnsubscribe,
 } from "../core-client/CoreClient";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
+import { createPlaybackController } from "../features/playback/playbackController";
 import type { PlayerApi } from "./usePlaybackController";
-
-type TracksUpdatePayload = {
-    tracks: MediaTrack[];
-};
 
 type EndFilePayload = {
     reason?: string;
@@ -37,7 +33,7 @@ type PlaybackLoadPreparedPayload = {
 type PlayerEventApi = Pick<PlayerApi, "state" | "syncFullscreen">;
 
 type TracksApi = {
-    handleTracksUpdate: (payload: { tracks: MediaTrack[] }) => void;
+    handleTracksSnapshot: (tracks: PlaybackSnapshotDto["tracks"]) => void;
 };
 
 type UiApi = {
@@ -97,15 +93,13 @@ export const useAppEventBindings = ({
     onPlaybackSpeedChange,
     resolveMediaTitle,
 }: AppEventBindingsOptions) => {
-    // 事件监听器引用
-    let unlistenPlaybackSnapshot: CoreClientUnsubscribe | null = null;
+    let stopPlaybackController: (() => void) | null = null;
     let unlistenPlaybackLoadPrepared: UnlistenFn | null = null;
     let unlistenFileLoaded: UnlistenFn | null = null;
     let unlistenPlaybackRestart: UnlistenFn | null = null;
     let unlistenRemoteSeekStarted: UnlistenFn | null = null;
     let unlistenRemoteSeekFailed: UnlistenFn | null = null;
     let unlistenResize: UnlistenFn | null = null;
-    let unlistenTracksUpdate: UnlistenFn | null = null;
     let unlistenWindowResized: UnlistenFn | null = null;
     let unlistenFullscreenWill: UnlistenFn | null = null;
     let unlistenEndFile: UnlistenFn | null = null;
@@ -152,10 +146,7 @@ export const useAppEventBindings = ({
         ],
     ];
 
-    let latestPlaybackSnapshotRevision = -1;
     const applyPlaybackSnapshot = (snapshot: PlaybackSnapshotDto) => {
-        if (snapshot.revision < latestPlaybackSnapshotRevision) return;
-        latestPlaybackSnapshotRevision = snapshot.revision;
         player.state.playback.currentTime = snapshot.position;
         player.state.playback.duration = snapshot.duration;
         player.state.playback.bufferedTime =
@@ -171,6 +162,7 @@ export const useAppEventBindings = ({
                 ? Math.max(0, snapshot.downloadSpeedBps)
                 : 0;
         player.state.playback.volume = snapshot.volume;
+        tracks.handleTracksSnapshot(snapshot.tracks);
         onPlaybackSpeedChange?.(snapshot.speed);
         onSourceLoadState?.({
             loading: snapshot.sourceLoading,
@@ -201,15 +193,14 @@ export const useAppEventBindings = ({
             onFullscreenTransition();
         });
 
-        unlistenPlaybackSnapshot = coreClient.subscribe(applyPlaybackSnapshot);
-        void coreClient.getSnapshot().then(applyPlaybackSnapshot).catch(() => {});
+        const playbackController = createPlaybackController(coreClient);
+        stopPlaybackController = playbackController.start(applyPlaybackSnapshot);
 
         unlistenPlaybackLoadPrepared = await listen<PlaybackLoadPreparedPayload>(
             "playback-load-prepared",
             (event) => onPlaybackLoadPrepared?.(event.payload),
         );
 
-        // 监听文件加载完成
         unlistenFileLoaded = await listen("file_loaded", () => {
             player.state.media.isFileLoaded = true;
             player.state.media.lastLoadedUrl = player.state.media.url;
@@ -368,15 +359,6 @@ export const useAppEventBindings = ({
             },
         );
 
-        // 监听轨道更新
-        unlistenTracksUpdate = await listen<TracksUpdatePayload>(
-            "mpv-tracks-update",
-            (event) => {
-                tracks.handleTracksUpdate(event.payload);
-            },
-        );
-
-        // 全局交互监听
         windowEventHandlers.forEach(([eventName, handler]) => {
             window.addEventListener(eventName, handler);
         });
@@ -384,14 +366,13 @@ export const useAppEventBindings = ({
     });
 
     onUnmounted(() => {
-        unlistenPlaybackSnapshot?.();
+        stopPlaybackController?.();
         unlistenPlaybackLoadPrepared?.();
         unlistenFileLoaded?.();
         unlistenPlaybackRestart?.();
         unlistenRemoteSeekStarted?.();
         unlistenRemoteSeekFailed?.();
         unlistenResize?.();
-        unlistenTracksUpdate?.();
         unlistenWindowResized?.();
         unlistenFullscreenWill?.();
         unlistenEndFile?.();

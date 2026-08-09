@@ -1,13 +1,13 @@
 import { computed, reactive } from "vue";
 import { Window } from "@tauri-apps/api/window";
 import type { CoreClient } from "../core-client/CoreClient";
+import { createPlaybackController } from "../features/playback/playbackController";
 import {
   usePlaybackCommands,
   type LoadFileResult,
-  type ParsedPlaylistFile,
-  type ResolvedYoutubePlaylist,
 } from "./usePlaybackCommands";
 import { formatTime } from "../utils/formatTime";
+import { playbackProgressPercent } from "../features/playback/playbackDerivedState";
 
 type PlayerState = {
   media: {
@@ -43,9 +43,6 @@ export type PlayerApi = {
     keyOrUrl: string,
     preferredTitle?: string,
   ) => Promise<LoadFileResult>;
-  parsePlaylistFile: (path: string) => Promise<ParsedPlaylistFile>;
-  parsePlaylistSource: (source: string) => Promise<ParsedPlaylistFile>;
-  resolveYoutubePlaylist: (url: string) => Promise<ResolvedYoutubePlaylist>;
   pickMediaPathsAuto: () => Promise<string[]>;
   pickFiles: () => Promise<string[]>;
   togglePlayPause: () => Promise<void>;
@@ -91,15 +88,13 @@ export const usePlaybackController = (coreClient: CoreClient): PlayerApi => {
     },
   });
 
-  const progressPercent = computed(() => {
-    if (state.playback.duration <= 0) return 0;
-    return (state.playback.currentTime / state.playback.duration) * 100;
-  });
+  const progressPercent = computed(() =>
+    playbackProgressPercent(state.playback.duration, state.playback.currentTime),
+  );
 
-  const bufferedPercent = computed(() => {
-    if (state.playback.duration <= 0) return 0;
-    return (state.playback.bufferedTime / state.playback.duration) * 100;
-  });
+  const bufferedPercent = computed(() =>
+    playbackProgressPercent(state.playback.duration, state.playback.bufferedTime),
+  );
 
   const isUrlModified = computed(() => {
     const nextUrl = state.media.url.trim();
@@ -109,7 +104,7 @@ export const usePlaybackController = (coreClient: CoreClient): PlayerApi => {
   const commands = usePlaybackCommands(
     state,
     currentWindow,
-    coreClient,
+    createPlaybackController(coreClient),
     isWindowsPlatform,
   );
 

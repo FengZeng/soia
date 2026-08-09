@@ -4,6 +4,7 @@ import type { CoreClientError } from "../core-client/CoreClient";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
 import type { PlaylistEntryDto } from "../core-client/generated/PlaylistEntryDto";
 import type { PlaylistSnapshotDto } from "../core-client/generated/PlaylistSnapshotDto";
+import { createPlaylistReaderController } from "../features/playlist/playlistReaderController";
 import { remoteCoreClient, remotePlaylistClient } from "./remoteCoreClient";
 
 const PAGE_SIZE = 100;
@@ -22,11 +23,9 @@ const playbackKey = ref<string | null>(null);
 const playbackPlaylistId = ref<string | null>(null);
 const playbackSnapshotReceived = ref(false);
 const error = ref("");
-const requestClientId = createId("playlist-client");
 let entriesRequestRevision = 0;
 let preferredSelectionRevision = 0;
 let preferredSelectionPending = false;
-let unsubscribePlaylist: (() => void) | null = null;
 let unsubscribePlayback: (() => void) | null = null;
 
 const playlists = computed(() => snapshot.value?.playlists ?? []);
@@ -34,13 +33,6 @@ const selectedPlaylist = computed(() =>
     playlists.value.find((playlist) => playlist.id === selectedPlaylistId.value) ?? null,
 );
 const canLoadMore = computed(() => entries.value.length < entriesTotal.value);
-
-function createId(prefix: string) {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-        return `${prefix}-${crypto.randomUUID()}`;
-    }
-    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
 
 function message(error: unknown) {
     const clientError = error as CoreClientError;
@@ -80,15 +72,13 @@ function applyPlaybackSnapshot(nextSnapshot: PlaybackSnapshotDto) {
     void selectPreferredPlaylist();
 }
 
+const playlistReader = createPlaylistReaderController(remotePlaylistClient);
+
 async function findPlaylistContainingPlaybackKey(key: string) {
     for (const playlist of playlists.value) {
         if (!playlist.entryCount) continue;
         for (let offset = 0; offset < playlist.entryCount; offset += PAGE_SIZE) {
-            const page = await remotePlaylistClient.getEntriesPage({
-                playlistId: playlist.id,
-                offset,
-                limit: PAGE_SIZE,
-            });
+            const page = await playlistReader.getEntriesPage(playlist.id, offset, PAGE_SIZE);
             if (page.entries.some((entry) => entry.playbackKey === key)) return playlist.id;
             if (!page.entries.length) break;
         }
@@ -139,11 +129,7 @@ async function loadEntries(reset: boolean) {
     const offset = reset ? 0 : entries.value.length;
     entriesLoading.value = true;
     try {
-        const page = await remotePlaylistClient.getEntriesPage({
-            playlistId: playlist.id,
-            offset,
-            limit: PAGE_SIZE,
-        });
+        const page = await playlistReader.getEntriesPage(playlist.id, offset, PAGE_SIZE);
         if (requestRevision !== entriesRequestRevision || selectedPlaylistId.value !== playlist.id) return;
         entries.value = reset ? page.entries : [...entries.value, ...page.entries];
         entriesTotal.value = page.total;
@@ -164,12 +150,7 @@ async function playEntry(entry: PlaylistEntryDto) {
     if (!playlist) return;
     error.value = "";
     try {
-        await remotePlaylistClient.playEntry({
-            commandId: createId("playlist-play"),
-            clientId: requestClientId,
-            playlistId: playlist.id,
-            entryId: entry.id,
-        });
+        await playlistReader.playEntry(playlist.id, entry.id);
         playbackKey.value = entry.playbackKey;
         playbackPlaylistId.value = playlist.id;
     } catch (nextError) {
@@ -219,15 +200,15 @@ watch(
 );
 
 onMounted(() => {
-    unsubscribePlaylist = remotePlaylistClient.subscribe(applySnapshot);
+    playlistReader.subscribe(applySnapshot);
     unsubscribePlayback = remoteCoreClient.subscribe(applyPlaybackSnapshot);
-    void remotePlaylistClient.getSnapshot().then(applySnapshot).catch((nextError) => {
+    void playlistReader.getSnapshot().then(applySnapshot).catch((nextError) => {
         error.value = message(nextError);
     });
 });
 
 onBeforeUnmount(() => {
-    unsubscribePlaylist?.();
+    playlistReader.dispose();
     unsubscribePlayback?.();
 });
 </script>

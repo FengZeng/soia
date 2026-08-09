@@ -251,6 +251,26 @@ impl PlaylistService {
         app: &tauri::AppHandle,
         prepared: PreparedPlaylist,
     ) -> Result<PlaylistSummary, String> {
+        self.import_prepared_playlist_with_playback_selection(app, prepared, false)
+    }
+
+    /// Imports one prepared playlist and optionally makes it the persisted playback playlist in
+    /// the same transaction. Source continuations use this to avoid a playlist that exists but
+    /// is not selected after a restart.
+    pub(crate) fn import_prepared_playlist_as_playback(
+        &self,
+        app: &tauri::AppHandle,
+        prepared: PreparedPlaylist,
+    ) -> Result<PlaylistSummary, String> {
+        self.import_prepared_playlist_with_playback_selection(app, prepared, true)
+    }
+
+    fn import_prepared_playlist_with_playback_selection(
+        &self,
+        app: &tauri::AppHandle,
+        prepared: PreparedPlaylist,
+        select_for_playback: bool,
+    ) -> Result<PlaylistSummary, String> {
         let _guard = self.mutation_lock.lock().map_err(|error| error.to_string())?;
         let mut conn = media_db::open_db(app)?;
         let tx = conn.transaction().map_err(|error| error.to_string())?;
@@ -258,6 +278,13 @@ impl PlaylistService {
         insert_prepared_entries(&tx, &summary.id, &prepared.entries)?;
         bump_playlist_revision(&tx, &summary.id)?;
         bump_collection_revision(&tx)?;
+        if select_for_playback {
+            tx.execute(
+                "UPDATE playlist_state SET playback_playlist_id = ?1, updated_at = ?2 WHERE singleton = 1",
+                params![&summary.id, media_db::now_millis()],
+            )
+            .map_err(|error| error.to_string())?;
+        }
         let summary = playlist_summary_in_transaction(&tx, &summary.id)?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok(summary)

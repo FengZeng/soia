@@ -19,21 +19,13 @@ You can also go to System Settings > Privacy & Security and click "Open Anyway" 
 
 The app is open-source and its code is publicly available for anyone to inspect.
 
-## [0.2.9] - 2026-07-25
+## [0.2.10] - 2026-08-08
 
 ### Highlights
 
-* **Remote Controller**
-  Added a browser-based Remote Controller for controlling playback from another device on your local network. Open it from Settings or scan the QR code in the playback context menu. It supports playback, seeking, volume, previous/next controls, and audio/subtitle track controls.
-
-  More powerful Remote Controller features are planned for future updates.
-
-* **Refined Playback Architecture**
-  Reworked the playback architecture around a shared core, making desktop and remote controls more consistent and reliable.
-
-* **Remembered Subtitle Choices for Series**
-  Your subtitle track selection is now preserved when moving between episodes in the same series.
+* **Remote Controller: Playlists and Network Media**
+  The browser-based Remote Controller can now browse and play playlists, as well as browse and play media from configured network sources. Network browsing uses the same remembered folder as the desktop app, so you can pick up where you left off on another device.
 
 ### Fixes
 
-* Fixed HDR brightness adjustment so it is applied correctly to HDR content. Thanks to [@cjohnsto-nz](https://github.com/cjohnsto-nz) for the contribution.
+* Fixed a Windows issue where switching videos or leaving playback could leave the app window fully transparent.

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CoreClient } from "../core-client/CoreClient";
+import type { PlaybackController } from "../features/playback/playbackController";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MEDIA_FILE_EXTENSIONS } from "../constants/media";
 
@@ -22,24 +22,6 @@ type CurrentWindow = {
   setFullscreen: (value: boolean) => Promise<void>;
 };
 
-export type ParsedPlaylistEntry = {
-  path: string;
-  title?: string | null;
-  icon?: string | null;
-};
-
-export type ParsedPlaylistMetadata = {
-  hasEndList: boolean;
-  playlistType?: string | null;
-  targetDuration?: number | null;
-  hasHlsTags: boolean;
-};
-
-export type ParsedPlaylistFile = {
-  entries: ParsedPlaylistEntry[];
-  metadata: ParsedPlaylistMetadata;
-};
-
 export type LoadFileResult = {
   playbackKey?: string | null;
   title?: string | null;
@@ -47,20 +29,10 @@ export type LoadFileResult = {
   superseded?: boolean;
 };
 
-export type ResolvedYoutubePlaylistEntry = {
-  url: string;
-  title?: string | null;
-};
-
-export type ResolvedYoutubePlaylist = {
-  playlistTitle?: string | null;
-  entries: ResolvedYoutubePlaylistEntry[];
-};
-
 export const usePlaybackCommands = (
   state: PlayerEffectState,
   currentWindow: CurrentWindow,
-  coreClient: CoreClient,
+  playbackController: Pick<PlaybackController, "execute">,
   isWindowsPlatform = false,
 ) => {
   let lastAudibleVolume = 100;
@@ -107,50 +79,8 @@ export const usePlaybackCommands = (
     return openVideoPicker();
   };
 
-  const normalizeParsedPlaylistFile = (
-    response: Partial<ParsedPlaylistFile> | null | undefined,
-  ): ParsedPlaylistFile => ({
-    entries: Array.isArray(response?.entries) ? response.entries : [],
-    metadata: {
-      hasEndList: response?.metadata?.hasEndList === true,
-      playlistType: response?.metadata?.playlistType ?? null,
-      targetDuration:
-        typeof response?.metadata?.targetDuration === "number"
-          ? response.metadata.targetDuration
-          : null,
-      hasHlsTags: response?.metadata?.hasHlsTags === true,
-    },
-  });
-
-  const parsePlaylistFile = async (path: string): Promise<ParsedPlaylistFile> => {
-    const response = await invoke<ParsedPlaylistFile>(
-      "parse_playlist_file",
-      { payload: { path } },
-    );
-    return normalizeParsedPlaylistFile(response);
-  };
-
-  const parsePlaylistSource = async (
-    source: string,
-  ): Promise<ParsedPlaylistFile> => {
-    const response = await invoke<ParsedPlaylistFile>(
-      "parse_playlist_source",
-      { payload: { source } },
-    );
-    return normalizeParsedPlaylistFile(response);
-  };
-
-  const resolveYoutubePlaylist = async (
-    url: string,
-  ): Promise<ResolvedYoutubePlaylist> => {
-    return await invoke<ResolvedYoutubePlaylist>(
-      "resolve_youtube_playlist",
-      { payload: { url } },
-    );
-  };
-
   const togglePlayPause = async (): Promise<void> => {
-    await coreClient.execute({
+    await playbackController.execute({
       type: "setPaused",
       paused: state.playback.isPlaying,
     });
@@ -196,7 +126,7 @@ export const usePlaybackCommands = (
   };
 
   const stopPlayback = async (): Promise<void> => {
-    await coreClient.execute({ type: "stop" });
+    await playbackController.execute({ type: "stop" });
   };
 
   const syncFullscreen = async (): Promise<void> => {
@@ -218,11 +148,11 @@ export const usePlaybackCommands = (
   };
 
   const seek = async (position: number): Promise<void> => {
-    await coreClient.execute({ type: "seekAbsolute", position });
+    await playbackController.execute({ type: "seekAbsolute", position });
   };
 
   const seekRelative = async (position: number): Promise<void> => {
-    await coreClient.execute({ type: "seekRelative", seconds: position });
+    await playbackController.execute({ type: "seekRelative", seconds: position });
   };
 
   const setLoopFile = async (enabled: boolean): Promise<void> => {
@@ -240,7 +170,7 @@ export const usePlaybackCommands = (
       .catch(() => {})
       .then(async () => {
         if (requestId !== volumeRequestId) return;
-        await coreClient.execute({ type: "setVolume", volume: nextVolume });
+        await playbackController.execute({ type: "setVolume", volume: nextVolume });
       });
     await volumeApplyQueue;
   };
@@ -255,9 +185,6 @@ export const usePlaybackCommands = (
 
   return {
     loadPlaybackSource,
-    parsePlaylistFile,
-    parsePlaylistSource,
-    resolveYoutubePlaylist,
     pickMediaPathsAuto,
     pickFiles,
     togglePlayPause,
