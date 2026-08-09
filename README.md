@@ -13,7 +13,7 @@
 <b><a href="https://github.com/FengZeng/soia/releases">⬇️ Download Latest Release</a> · <a href="https://github.com/FengZeng/soia/issues">🐞 Report a Bug</a></b>
 </p>
 
-![Soia App Preview](https://github.com/user-attachments/assets/9896ae38-d082-413e-8a01-bdb28e687bf7)
+![Soia App Preview](docs/assets/screenshots/Soia.webp)
 > An mpv-powered video player with network streaming and browser-based remote control.
 
 **Soia** is a high-performance video player built on mpv, designed for smooth playback of everything from local Dolby Vision content to remote WebDAV, DLNA, and SMB streams — all in one fast, elegant, cross-platform experience.
@@ -49,22 +49,13 @@
 - Browse and play playlists or configured WebDAV, DLNA, and SMB media sources
 - Continue network browsing from the folder last opened in the desktop app
 - Enable Remote Controller in Settings, then show its QR code there or from the playback context menu to pair and connect in seconds
+- Pair multiple remote devices to control the same player together
+
+![Web Remote Controller](docs/assets/screenshots/remote-controller.webp)
 
 Both interfaces are equal clients of the same backend:
 
-```mermaid
-flowchart TB
-    desktop["Desktop UI"]
-    remote["Web Remote UI"]
-    backend["Shared Backend<br/>Playback · Playlists · Network Browsing"]
-    mpv["mpv Playback Engine"]
-    data["App Data<br/>Playlists · Network Connections · History"]
-
-    desktop <--> |"Tauri"| backend
-    remote <--> |"HTTP / WebSocket"| backend
-    backend <--> mpv
-    backend <--> data
-```
+![Shared Backend Architecture](docs/assets/diagrams/shared-backend.webp)
 
 ### Native Experience
 
