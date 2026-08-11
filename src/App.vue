@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import PlayerControls from "./components/PlayerControls.vue";
 import PlayerHeader from "./components/PlayerHeader.vue";
 import MainPanels from "./components/MainPanels.vue";
@@ -25,6 +26,7 @@ import { usePlaybackOverlays } from "./composables/usePlaybackOverlays";
 import { usePlaylistDrawerUi } from "./composables/usePlaylistDrawerUi";
 import { useUpdateNotePrompt } from "./composables/useUpdateNotePrompt";
 import { useWindowDragRegion } from "./composables/useWindowDragRegion";
+import { useSurroundSound } from "./composables/useSurroundSound";
 import { useMediaInfo } from "./composables/useMediaInfo";
 import { usePlaylistEntriesWithProgress } from "./composables/usePlaylistEntriesWithProgress";
 import { useAppStartupBindings } from "./composables/useAppStartupBindings";
@@ -176,10 +178,16 @@ const {
     seekOverlayRightText,
     seekOverlayLeftTimelineText,
     volumeOverlayText,
+    zoomOverlayText,
+    speedOverlayText,
     seekOverlayLeftPulseToken,
     seekOverlayRightPulseToken,
     showSeekOverlay,
     showVolumeOverlay,
+    showZoomOverlay,
+    showSpeedOverlay,
+    surroundOverlayText,
+    showSurroundOverlay,
 } = usePlaybackOverlays({
     player,
     isLoading,
@@ -266,6 +274,25 @@ const {
     loadingUrl,
 });
 
+// mpv video-zoom is in log2 scale units: 0 = 1×, 1 = 2×, -1 = 0.5×
+// We keep a linear scale in usePlaybackShortcuts and convert here.
+const onZoom = async (linearScale: number) => {
+    showZoomOverlay(linearScale);
+    const mpvZoom = Math.log2(linearScale);
+    await invoke("mpv_run_command", { args: ["set", "video-zoom", String(mpvZoom.toFixed(6))] });
+};
+
+const onSetAspectRatio = async (ratio: string) => {
+    await invoke("mpv_run_command", {
+        args: ["set", "video-aspect-override", ratio],
+    });
+};
+
+const onSpeedStep = async (rate: number) => {
+    showSpeedOverlay(rate);
+    await speed.setSpeed(rate);
+};
+
 const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
     {
         state: player.state,
@@ -277,6 +304,9 @@ const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
     toggleInfo,
     showSeekOverlay,
     showVolumeOverlay,
+    onZoom,
+    onSpeedStep,
+    showSurroundOverlay,
 );
 
 watch(
@@ -365,6 +395,8 @@ const {
         loadingUrl,
     });
 
+const { reapplyFilters: reapplySurround } = useSurroundSound();
+
 const onFileLoaded = async () => {
     await onFileLoadedBase();
     if (subtitlesDisabled.value) {
@@ -372,6 +404,7 @@ const onFileLoaded = async () => {
     }
     await adjustments.applyColorAdjustmentsForMedia(player.state.media.url);
     await subtitleAppearance.applySubtitleAppearanceOptions();
+    reapplySurround();
 };
 
 const onProgressWithLivePlaybackUpdate = (
@@ -519,6 +552,9 @@ useAppStartupBindings({
             :seek-overlay-right-text="seekOverlayRightText"
             :seek-overlay-left-timeline-text="seekOverlayLeftTimelineText"
             :volume-overlay-text="volumeOverlayText"
+            :zoom-overlay-text="zoomOverlayText"
+            :speed-overlay-text="speedOverlayText"
+            :surround-overlay-text="surroundOverlayText"
             :hide-seek-timeline="ui.showControls.value"
             :seek-overlay-left-pulse-token="seekOverlayLeftPulseToken"
             :seek-overlay-right-pulse-token="seekOverlayRightPulseToken"
@@ -618,6 +654,8 @@ useAppStartupBindings({
             :playback-rates="speed.playbackRates"
             :show-speed-menu="speed.showSpeedMenu.value"
             :show-settings-menu="adjustments.showSettingsMenu.value"
+            :show-surround-menu="adjustments.showSurroundMenu.value"
+            :show-crop-menu="adjustments.showCropMenu.value"
             :audio-delay="adjustments.audioDelay.value"
             :sub-delay="adjustments.subDelay.value"
             :secondary-sub-delay="adjustments.secondarySubDelay.value"
@@ -657,6 +695,8 @@ useAppStartupBindings({
             @toggle-menu="toggleMenu"
             @toggle-loop-one="toggleLoopOne"
             @set-speed="speed.setSpeed"
+            @set-zoom="onZoom"
+            @set-aspect-ratio="onSetAspectRatio"
             @set-volume="onSetVolume"
             @toggle-muted="onToggleMuted"
             @set-audio-delay="adjustments.setAudioDelay"

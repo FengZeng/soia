@@ -22,6 +22,8 @@ const props = defineProps<{
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
+    showSurroundMenu: boolean;
+    showCropMenu: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -59,7 +61,7 @@ const emit = defineEmits<{
     (e: "toggle-play-pause"): void;
     (e: "stop-playback"): void;
     (e: "next-track"): void;
-    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
+    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings" | "surround" | "crop"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
     (e: "set-volume", volume: number): void;
@@ -250,6 +252,8 @@ onUnmounted(() => {
                         :playback-rates="playbackRates"
                         :show-speed-menu="showSpeedMenu"
                         :show-settings-menu="showSettingsMenu"
+                        :show-surround-menu="showSurroundMenu"
+                        :show-crop-menu="showCropMenu"
                         :audio-delay="audioDelay"
                         :sub-delay="subDelay"
                         :secondary-sub-delay="secondarySubDelay"
@@ -284,6 +288,8 @@ onUnmounted(() => {
                         @toggle-menu="emit('toggle-menu', $event)"
                         @toggle-loop-one="emit('toggle-loop-one')"
                         @set-speed="emit('set-speed', $event)"
+                        @set-zoom="emit('set-zoom', $event)"
+                        @set-aspect-ratio="emit('set-aspect-ratio', $event)"
                         @set-audio-delay="emit('set-audio-delay', $event)"
                         @set-sub-delay-for-target="
                             emit('set-sub-delay-for-target', $event)

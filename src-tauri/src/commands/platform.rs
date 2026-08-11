@@ -1,5 +1,21 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
+
+/// Returns the absolute path to the bundled hrtf.sofa file.
+/// Works in both dev mode (src-tauri/resources/) and inside the .app bundle.
+#[tauri::command]
+pub(crate) fn get_hrtf_path(app: tauri::AppHandle) -> Result<String, String> {
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("resource_dir error: {e}"))?
+        .join("hrtf.sofa");
+    if !path.exists() {
+        return Err(format!("hrtf.sofa not found at: {}", path.display()));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
 
 #[tauri::command]
 pub(crate) fn is_native_pip_enabled(app: tauri::AppHandle) -> bool {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useSurroundSound, SURROUND_PRESETS, type SurroundPreset } from "../composables/useSurroundSound";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsPanel } from "../composables/useSettingsPanel";
@@ -469,6 +470,24 @@ onBeforeUnmount(() => {
     window.removeEventListener("keydown", onRemoteQrKeydown);
     closeRemoteQrDialog();
 });
+
+// ─── Virtual Surround Sound ─────────────────────────────────────────────────
+const { surroundState, setEnabled: setSurroundEnabled, setPreset: setSurroundPreset, setParam: setSurroundParam } = useSurroundSound();
+
+const PRESET_LABELS: Record<string, string> = {
+    movies: "🎬 Movies",
+    music: "🎵 Music",
+    gaming: "🎮 Gaming",
+    custom: "Custom",
+};
+
+const SURROUND_SLIDERS = [
+    { key: "surroundDepth" as const, label: "Surround Depth", hint: "Stereo field width" },
+    { key: "ambience"      as const, label: "Ambience",       hint: "Room reverb / echo" },
+    { key: "clarity"       as const, label: "Clarity",        hint: "Treble presence" },
+    { key: "bassBoost"     as const, label: "Bass Boost",     hint: "Low-frequency gain" },
+    { key: "dynamicBoost"  as const, label: "Dynamic Boost",  hint: "Loudness levelling" },
+] as const;
 </script>
 
 <template>
@@ -1127,6 +1146,163 @@ onBeforeUnmount(() => {
                         </div>
                     </div>
                 </template>
+            </div>
+            <!-- ── Virtual Surround Sound ─────────────────────────────── -->
+            <div class="panel__section">
+                <div class="panel__subtitle panel__subtitle--large">Virtual Surround Sound</div>
+
+                <!-- Enable toggle -->
+                <div class="panel__remote-row">
+                    <span>
+                        <span class="panel__remote-title">3D Audio Enhancement</span>
+                        <span class="panel__remote-copy">Simulates surround on any headphones using virtual spatial audio filters</span>
+                    </span>
+                    <label class="panel__toggle panel__remote-toggle">
+                        <input
+                            class="panel__toggle-input"
+                            type="checkbox"
+                            :checked="surroundState.enabled"
+                            aria-label="Enable Virtual Surround Sound"
+                            @change="setSurroundEnabled(($event.target as HTMLInputElement).checked)"
+                        />
+                        <span class="panel__toggle-track"><span class="panel__toggle-thumb"></span></span>
+                    </label>
+                </div>
+
+                <!-- Controls (only when enabled) -->
+                <div v-if="surroundState.enabled" class="panel__surround-body">
+
+                    <!-- Preset buttons -->
+                    <div class="panel__surround-presets">
+                        <button
+                            v-for="preset in (['movies', 'music', 'gaming', 'custom'] as SurroundPreset[])"
+                            :key="preset"
+                            class="panel__surround-preset"
+                            :class="{ 'panel__surround-preset--active': surroundState.preset === preset }"
+                            type="button"
+                            @click="setSurroundPreset(preset)"
+                        >
+                            {{ PRESET_LABELS[preset] }}
+                        </button>
+                    </div>
+
+                    <!-- Parameter sliders -->
+                    <div class="panel__surround-sliders">
+                        <div
+                            v-for="slider in SURROUND_SLIDERS"
+                            :key="slider.key"
+                            class="panel__surround-row"
+                        >
+                            <div class="panel__surround-label-col">
+                                <span class="panel__surround-label">{{ slider.label }}</span>
+                                <span class="panel__surround-hint">{{ slider.hint }}</span>
+                            </div>
+                            <input
+                                class="panel__surround-slider"
+                                type="range"
+                                min="0"
+                                max="100"
+                                :value="surroundState[slider.key]"
+                                @input="setSurroundParam(slider.key, Number(($event.target as HTMLInputElement).value))"
+                            />
+                            <span class="panel__surround-value">{{ surroundState[slider.key] }}</span>
+                        </div>
+                    </div>
+
+                    <!-- Tip -->
+                    <p class="panel__surround-tip">
+                        🎧 Uses real HRTF binaural processing (sofalizer) for genuine 3D spatial audio. Best experienced with headphones. High Ambience on speakers may cause phasing.
+                    </p>
+                </div>
+            </div>
+
+            <!-- ── Keyboard Shortcuts ─────────────────────────────────── -->
+            <div class="panel__section">
+                <div class="panel__subtitle panel__subtitle--large">
+                    Keyboard Shortcuts
+                </div>
+                <div class="panel__table panel__table--card">
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Play / Pause</div></div>
+                        <div class="panel__control panel__control--card"><kbd class="panel__kbd">Space</kbd></div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Seek Backward / Forward</div></div>
+                        <div class="panel__control panel__control--card panel__control--kbds">
+                            <kbd class="panel__kbd">←</kbd>
+                            <kbd class="panel__kbd">→</kbd>
+                        </div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Volume Up / Down</div></div>
+                        <div class="panel__control panel__control--card panel__control--kbds">
+                            <kbd class="panel__kbd">↑</kbd>
+                            <kbd class="panel__kbd">↓</kbd>
+                        </div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Toggle Fullscreen</div></div>
+                        <div class="panel__control panel__control--card"><kbd class="panel__kbd">Double-click</kbd></div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Toggle Info Panel</div></div>
+                        <div class="panel__control panel__control--card"><kbd class="panel__kbd">I</kbd></div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Exit Fullscreen</div></div>
+                        <div class="panel__control panel__control--card"><kbd class="panel__kbd">Esc</kbd></div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text">
+                            <div class="panel__card-title">Zoom In / Out</div>
+                            <div class="panel__card-subtitle">Centered zoom · shows Zoom badge</div>
+                        </div>
+                        <div class="panel__control panel__control--card panel__control--kbds">
+                            <kbd class="panel__kbd">⌘ +</kbd>
+                            <kbd class="panel__kbd">⌘ −</kbd>
+                        </div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text">
+                            <div class="panel__card-title">Playback Speed Up / Down</div>
+                            <div class="panel__card-subtitle">0.1× steps · shows Playback badge</div>
+                        </div>
+                        <div class="panel__control panel__control--card panel__control--kbds">
+                            <kbd class="panel__kbd">⌘ ⇧ +</kbd>
+                            <kbd class="panel__kbd">⌘ ⇧ −</kbd>
+                        </div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text">
+                            <div class="panel__card-title">Toggle 3D Audio</div>
+                            <div class="panel__card-subtitle">Enables or disables Virtual Surround</div>
+                        </div>
+                        <div class="panel__control panel__control--card"><kbd class="panel__kbd">⌘ ⇧ E</kbd></div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text">
+                            <div class="panel__card-title">3D Audio Presets</div>
+                            <div class="panel__card-subtitle">Movies (1), Music (2), Gaming (3)</div>
+                        </div>
+                        <div class="panel__control panel__control--card panel__control--kbds">
+                            <kbd class="panel__kbd">⌥ ⇧ 1-3</kbd>
+                        </div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text">
+                            <div class="panel__card-title">3D Audio Adjustments</div>
+                            <div class="panel__card-subtitle">Hold S, A, C, B, or D with ⌥⇧ and press + / -</div>
+                        </div>
+                        <div class="panel__control panel__control--card panel__control--kbds">
+                            <kbd class="panel__kbd">⌥ ⇧ [key] +</kbd>
+                            <kbd class="panel__kbd">⌥ ⇧ [key] −</kbd>
+                        </div>
+                    </div>
+                    <div class="panel__row panel__row--card panel__row--shortcut">
+                        <div class="panel__card-text"><div class="panel__card-title">Hide / Show Controls</div></div>
+                        <div class="panel__control panel__control--card"><kbd class="panel__kbd">Middle-click</kbd></div>
+                    </div>
+                </div>
             </div>
             <div class="panel__section">
                 <div class="panel__subtitle panel__subtitle--large">

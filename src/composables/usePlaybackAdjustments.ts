@@ -63,6 +63,8 @@ const normalizeColorAdjustments = (
 
 export const usePlaybackAdjustments = () => {
     const showSettingsMenu = ref(false);
+    const showSurroundMenu = ref(false);
+    const showCropMenu = ref(false);
     const audioDelay = ref(0);
     const subDelay = ref(0);
     const secondarySubDelay = ref(0);
@@ -259,6 +261,8 @@ export const usePlaybackAdjustments = () => {
 
     return {
         showSettingsMenu,
+        showSurroundMenu,
+        showCropMenu,
         audioDelay,
         subDelay,
         secondarySubDelay,
