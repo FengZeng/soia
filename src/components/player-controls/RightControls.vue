@@ -13,12 +13,26 @@ import {
     getSubtitleTrackTitle,
 } from "../../utils/trackDisplay";
 import ControlSlider from "./ControlSlider.vue";
+import {
+    useSurroundSound,
+    type SurroundPreset,
+} from "../../composables/useSurroundSound";
+
+const PRESET_UI = {
+    movies: { label: "Movies" },
+    music: { label: "Music" },
+    gaming: { label: "Gaming" },
+} as const;
+
+const { surroundState, setEnabled: setSurroundEnabled, setPreset: setSurroundPreset, setParam: setSurroundParam } = useSurroundSound();
 
 const props = defineProps<{
     currentSpeed: number;
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
+    showSurroundMenu: boolean;
+    showCropMenu: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -51,9 +65,11 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
+    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings" | "surround" | "crop"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
+    (e: "set-zoom", scale: number): void;
+    (e: "set-aspect-ratio", ratio: string): void;
     (e: "set-audio-delay", value: number): void;
     (e: "set-sub-delay-for-target", payload: { target: SubtitleTarget; value: number }): void;
     (e: "set-sub-font-family", payload: { target: SubtitleTarget; value: string }): void;
@@ -112,6 +128,11 @@ const subtitleFontOptions = [
 
 const isSameTrackId = (left: MediaTrack["id"], right: MediaTrack["id"]) =>
     String(left) === String(right);
+const showSpeedMenu = computed(() => props.showSpeedMenu);
+const showSettingsMenu = computed(() => props.showSettingsMenu);
+const showSurroundMenu = computed(() => props.showSurroundMenu);
+const showCropMenu = computed(() => props.showCropMenu);
+const currentZoom = ref(1.0);
 const activeSubTarget = computed(() => props.activeSubTarget);
 const activeSubFontFamily = computed(() =>
     props.primarySubFontFamily,
@@ -382,6 +403,20 @@ watch(
                                 rate === 1 ? "Normal" : rate + "x"
                             }}</span>
                         </button>
+                    </div>
+                    <div class="track-menu__footer">
+                        <ControlSlider
+                            label="Custom Speed"
+                            :value="currentSpeed"
+                            :min="0.1"
+                            :max="4.0"
+                            :step="0.1"
+                            unit="x"
+                            :show-sign="false"
+                            :precision="2"
+                            @change="emit('set-speed', $event)"
+                            @reset="emit('set-speed', 1)"
+                        />
                     </div>
                 </div>
             </transition>
@@ -921,6 +956,218 @@ watch(
                             @change="emit('set-hue', $event)"
                             @reset="emit('set-hue', 0)"
                         />
+                    </div>
+                </div>
+            </transition>
+        </div>
+
+        <div class="track-menu-container">
+            <button
+                class="icon-button icon-button--player"
+                @click.stop="emit('toggle-menu', 'surround')"
+                title="3D Audio"
+            >
+                <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="settings-icon"
+                    height="24px"
+                    viewBox="0 -960 960 960"
+                    width="24px"
+                    fill="currentColor"
+                >
+                    <path
+                        d="M480-160q-134 0-227-93t-93-227v-240q0-33 23.5-56.5T240-800h160v280H240v200q0 100 70 170t170 70q100 0 170-70t70-170v-200H560v-280h160q33 0 56.5 23.5T800-720v240q0 134-93 227t-227 93Zm-240-360h80v-200h-80v200Zm400 0h80v-200h-80v200ZM200-520h-40q-17 0-28.5-11.5T120-560v-160q0-17 11.5-28.5T160-760h40v240Zm600 0v-240h40q17 0 28.5 11.5T880-720v160q0 17-11.5 28.5T840-520h-40ZM240-520Zm480 0Z"
+                    />
+                </svg>
+            </button>
+
+            <transition name="fade-up">
+                <div v-if="showSurroundMenu" class="track-menu track-menu--settings track-menu--surround">
+                    <div class="track-menu__header">
+                        <span>3D Audio</span>
+                        <div class="track-menu__header-actions">
+                            <button
+                                class="track-menu__mode-toggle"
+                                type="button"
+                                :aria-pressed="surroundState.enabled"
+                                :title="surroundState.enabled ? '3D Audio enabled' : 'Enable 3D Audio'"
+                                @click.stop="setSurroundEnabled(!surroundState.enabled)"
+                            >
+                                <span class="track-menu__mode-label">Enable</span>
+                                <span
+                                    class="track-menu__mode-switch"
+                                    :class="{ 'track-menu__mode-switch--on': surroundState.enabled }"
+                                >
+                                    <span class="track-menu__mode-thumb"></span>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="track-menu__list track-menu__list--settings panel__surround-body">
+                        <!-- Presets -->
+                        <div class="panel__surround-presets">
+                            <button
+                                v-for="(ui, key) in PRESET_UI"
+                                :key="key"
+                                class="panel__surround-preset"
+                                :class="{ 'panel__surround-preset--active': surroundState.preset === key }"
+                                @click="setSurroundPreset(key as SurroundPreset)"
+                            >
+                                {{ ui.label }}
+                            </button>
+                            <button
+                                class="panel__surround-preset"
+                                :class="{ 'panel__surround-preset--active': surroundState.preset === 'custom' }"
+                                @click="setSurroundPreset('custom')"
+                            >
+                                Custom
+                            </button>
+                        </div>
+
+                        <!-- Sliders -->
+                        <div class="panel__surround-sliders">
+                            <!-- Depth -->
+                            <div class="panel__surround-row">
+                                <div class="panel__surround-label-col">
+                                    <span class="panel__surround-label">Surround Depth</span>
+                                    <span class="panel__surround-hint">Stereo field width</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    class="panel__surround-slider"
+                                    min="0" max="100" step="1"
+                                    :value="surroundState.surroundDepth"
+                                    @input="setSurroundParam('surroundDepth', Number(($event.target as HTMLInputElement).value))"
+                                >
+                                <span class="panel__surround-value">{{ surroundState.surroundDepth }}</span>
+                            </div>
+
+                            <!-- Ambience -->
+                            <div class="panel__surround-row">
+                                <div class="panel__surround-label-col">
+                                    <span class="panel__surround-label">Ambience</span>
+                                    <span class="panel__surround-hint">Room reverb / echo</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    class="panel__surround-slider"
+                                    min="0" max="100" step="1"
+                                    :value="surroundState.ambience"
+                                    @input="setSurroundParam('ambience', Number(($event.target as HTMLInputElement).value))"
+                                >
+                                <span class="panel__surround-value">{{ surroundState.ambience }}</span>
+                            </div>
+
+                            <!-- Clarity -->
+                            <div class="panel__surround-row">
+                                <div class="panel__surround-label-col">
+                                    <span class="panel__surround-label">Clarity</span>
+                                    <span class="panel__surround-hint">Treble presence</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    class="panel__surround-slider"
+                                    min="0" max="100" step="1"
+                                    :value="surroundState.clarity"
+                                    @input="setSurroundParam('clarity', Number(($event.target as HTMLInputElement).value))"
+                                >
+                                <span class="panel__surround-value">{{ surroundState.clarity }}</span>
+                            </div>
+
+                            <!-- Bass Boost -->
+                            <div class="panel__surround-row">
+                                <div class="panel__surround-label-col">
+                                    <span class="panel__surround-label">Bass Boost</span>
+                                    <span class="panel__surround-hint">Low-frequency gain</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    class="panel__surround-slider"
+                                    min="0" max="100" step="1"
+                                    :value="surroundState.bassBoost"
+                                    @input="setSurroundParam('bassBoost', Number(($event.target as HTMLInputElement).value))"
+                                >
+                                <span class="panel__surround-value">{{ surroundState.bassBoost }}</span>
+                            </div>
+
+                            <!-- Dynamic Boost -->
+                            <div class="panel__surround-row">
+                                <div class="panel__surround-label-col">
+                                    <span class="panel__surround-label">Dynamic Boost</span>
+                                    <span class="panel__surround-hint">Loudness levelling</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    class="panel__surround-slider"
+                                    min="0" max="100" step="1"
+                                    :value="surroundState.dynamicBoost"
+                                    @input="setSurroundParam('dynamicBoost', Number(($event.target as HTMLInputElement).value))"
+                                >
+                                <span class="panel__surround-value">{{ surroundState.dynamicBoost }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </transition>
+        </div>
+
+        <div class="track-menu-container">
+            <button
+                class="icon-button icon-button--player"
+                @click.stop="emit('toggle-menu', 'crop')"
+                title="Screen Size & Crop"
+            >
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M17 15h2V7c0-1.1-.9-2-2-2H9v2h8v8zM7 17V1H5v4H1v2h4v10c0 1.1.9 2 2 2h10v4h2v-4h4v-2H7z"/>
+                </svg>
+            </button>
+
+            <transition name="fade-up">
+                <div v-if="showCropMenu" class="track-menu track-menu--settings track-menu--crop">
+                    <div class="track-menu__header">
+                        <span>Screen Size & Crop</span>
+                        <button
+                            class="icon-button track-menu__header-action"
+                            type="button"
+                            title="Close menu"
+                            aria-label="Close menu"
+                            @click.stop="emit('toggle-menu', 'crop')"
+                        >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <div class="track-menu__list track-menu__list--settings panel__surround-body">
+                        <!-- Ratios -->
+                        <div class="panel__surround-presets">
+                            <button class="panel__surround-preset" @click="emit('set-aspect-ratio', 'no')">Auto</button>
+                            <button class="panel__surround-preset" @click="emit('set-aspect-ratio', '16:9')">16:9</button>
+                            <button class="panel__surround-preset" @click="emit('set-aspect-ratio', '16:10')">16:10</button>
+                            <button class="panel__surround-preset" @click="emit('set-aspect-ratio', '4:3')">4:3</button>
+                            <button class="panel__surround-preset" @click="emit('set-aspect-ratio', '21:9')">21:9</button>
+                            <button class="panel__surround-preset" @click="emit('set-aspect-ratio', '2.35:1')">2.35:1</button>
+                        </div>
+
+                        <!-- Zoom Slider -->
+                        <div class="panel__surround-sliders">
+                            <div class="panel__surround-row" style="margin-top: 10px;">
+                                <ControlSlider
+                                    label="Zoom"
+                                    :value="currentZoom"
+                                    :min="0.5"
+                                    :max="3.0"
+                                    :step="0.05"
+                                    unit="x"
+                                    :show-sign="false"
+                                    :precision="2"
+                                    @change="currentZoom = $event; emit('set-zoom', $event)"
+                                    @reset="currentZoom = 1.0; emit('set-zoom', 1.0)"
+                                />
+                            </div>
+                        </div>
                     </div>
                 </div>
             </transition>

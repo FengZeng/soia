@@ -29,7 +29,8 @@
   "bundle": {
     "active": true,
     "resources": {
-      "../dist": "dist"
+      "../dist": "dist",
+      "resources/hrtf.sofa": "hrtf.sofa"
     },
     "targets": "all",
     "icon": [

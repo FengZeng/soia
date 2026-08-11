@@ -34,11 +34,18 @@ export const usePlaybackOverlays = ({
     const seekOverlayRightText = ref("");
     const seekOverlayLeftTimelineText = ref("");
     const volumeOverlayText = ref("");
+    // label: e.g. "Zoom" or "Playback", value: e.g. "1.2x"
+    const zoomOverlayText = ref<{ label: string; value: string } | null>(null);
+    const speedOverlayText = ref<{ label: string; value: string } | null>(null);
+    const surroundOverlayText = ref<{ label: string; value: string } | null>(null);
     const seekOverlayLeftPulseToken = ref(0);
     const seekOverlayRightPulseToken = ref(0);
     let loadingOverlayDelayTimer: ReturnType<typeof setTimeout> | null = null;
     let seekOverlayTimer: ReturnType<typeof setTimeout> | null = null;
     let volumeOverlayTimer: ReturnType<typeof setTimeout> | null = null;
+    let zoomOverlayTimer: ReturnType<typeof setTimeout> | null = null;
+    let speedOverlayTimer: ReturnType<typeof setTimeout> | null = null;
+    let surroundOverlayTimer: ReturnType<typeof setTimeout> | null = null;
     let seekOverlayAccumulatedDelta = 0;
     let seekOverlayBaseTime = 0;
 
@@ -125,6 +132,54 @@ export const usePlaybackOverlays = ({
         }, 700);
     };
 
+    const clearZoomOverlayTimer = () => {
+        if (zoomOverlayTimer !== null) {
+            window.clearTimeout(zoomOverlayTimer);
+            zoomOverlayTimer = null;
+        }
+    };
+
+    const clearSpeedOverlayTimer = () => {
+        if (speedOverlayTimer !== null) {
+            window.clearTimeout(speedOverlayTimer);
+            speedOverlayTimer = null;
+        }
+    };
+
+    const formatScaleValue = (scale: number): string => {
+        const rounded = Math.round(scale * 100) / 100;
+        return `${rounded.toFixed(rounded % 1 === 0 ? 0 : 1)}x`;
+    };
+
+    const showZoomOverlay = (scale: number) => {
+        zoomOverlayText.value = { label: "Zoom", value: formatScaleValue(scale) };
+        clearZoomOverlayTimer();
+        zoomOverlayTimer = window.setTimeout(() => {
+            zoomOverlayText.value = null;
+            zoomOverlayTimer = null;
+        }, 1200);
+    };
+
+    const showSpeedOverlay = (speed: number) => {
+        speedOverlayText.value = { label: "Playback", value: formatScaleValue(speed) };
+        clearSpeedOverlayTimer();
+        speedOverlayTimer = window.setTimeout(() => {
+            speedOverlayText.value = null;
+            speedOverlayTimer = null;
+        }, 1200);
+    };
+
+    const showSurroundOverlay = (label: string, value: string) => {
+        if (surroundOverlayTimer !== null) {
+            window.clearTimeout(surroundOverlayTimer);
+        }
+        surroundOverlayText.value = { label, value };
+        surroundOverlayTimer = setTimeout(() => {
+            surroundOverlayText.value = null;
+            surroundOverlayTimer = null;
+        }, 1500);
+    };
+
     watch(shouldShowPlaybackLoadingOverlay, (shouldShow) => {
         if (!shouldShow) {
             clearLoadingOverlayDelayTimer();
@@ -143,6 +198,8 @@ export const usePlaybackOverlays = ({
         clearLoadingOverlayDelayTimer();
         clearSeekOverlayTimer();
         clearVolumeOverlayTimer();
+        clearZoomOverlayTimer();
+        clearSpeedOverlayTimer();
     });
 
     return {
@@ -152,9 +209,15 @@ export const usePlaybackOverlays = ({
         seekOverlayRightText,
         seekOverlayLeftTimelineText,
         volumeOverlayText,
+        zoomOverlayText,
+        speedOverlayText,
+        surroundOverlayText,
         seekOverlayLeftPulseToken,
         seekOverlayRightPulseToken,
         showSeekOverlay,
         showVolumeOverlay,
+        showZoomOverlay,
+        showSpeedOverlay,
+        showSurroundOverlay,
     };
 };

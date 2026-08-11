@@ -567,6 +567,7 @@ pub fn run() {
             commands::playback::continue_playlist_source_operation,
             commands::platform::pick_media_paths_native,
             commands::platform::pick_paths_native,
+            commands::platform::get_hrtf_path,
             commands::playback::consume_pending_open_files,
             commands::playback::execute_playback_command,
             commands::playback::get_playback_snapshot,
