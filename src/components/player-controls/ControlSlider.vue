@@ -9,6 +9,7 @@ const props = defineProps<{
     step?: number;
     unit?: string;
     showSign?: boolean;
+    showReset?: boolean;
     precision?: number;
 }>();
 
@@ -116,6 +117,7 @@ onUnmounted(() => {
                     </svg>
                 </button>
                 <button
+                    v-if="showReset !== false"
                     class="control-slider__reset"
                     type="button"
                     title="Reset"

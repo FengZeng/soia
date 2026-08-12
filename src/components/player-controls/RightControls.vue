@@ -54,6 +54,7 @@ const emit = defineEmits<{
     (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
+    (e: "set-speed-continuously", rate: number): void;
     (e: "set-audio-delay", value: number): void;
     (e: "set-sub-delay-for-target", payload: { target: SubtitleTarget; value: number }): void;
     (e: "set-sub-font-family", payload: { target: SubtitleTarget; value: string }): void;
@@ -382,6 +383,19 @@ watch(
                                 rate === 1 ? "Normal" : rate + "x"
                             }}</span>
                         </button>
+                    </div>
+                    <div class="track-menu__footer">
+                        <ControlSlider
+                            label="Speed"
+                            :value="currentSpeed"
+                            :min="0.1"
+                            :max="4"
+                            :step="0.1"
+                            unit="×"
+                            :show-reset="false"
+                            :precision="1"
+                            @change="emit('set-speed-continuously', $event)"
+                        />
                     </div>
                 </div>
             </transition>

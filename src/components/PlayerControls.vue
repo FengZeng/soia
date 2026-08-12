@@ -62,6 +62,7 @@ const emit = defineEmits<{
     (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
+    (e: "set-speed-continuously", rate: number): void;
     (e: "set-volume", volume: number): void;
     (e: "toggle-muted"): void;
     (e: "set-audio-delay", value: number): void;
@@ -284,6 +285,7 @@ onUnmounted(() => {
                         @toggle-menu="emit('toggle-menu', $event)"
                         @toggle-loop-one="emit('toggle-loop-one')"
                         @set-speed="emit('set-speed', $event)"
+                        @set-speed-continuously="emit('set-speed-continuously', $event)"
                         @set-audio-delay="emit('set-audio-delay', $event)"
                         @set-sub-delay-for-target="
                             emit('set-sub-delay-for-target', $event)

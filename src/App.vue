@@ -725,6 +725,7 @@ useAppStartupBindings({
             @toggle-menu="toggleMenu"
             @toggle-loop-one="toggleLoopOne"
             @set-speed="speed.setSpeed"
+            @set-speed-continuously="speed.setSpeedContinuously"
             @set-volume="onSetVolume"
             @toggle-muted="onToggleMuted"
             @set-audio-delay="adjustments.setAudioDelay"
