@@ -2,9 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import type { AudioDevice } from "../../types/audio";
 import type { MediaTrack } from "../../types/media";
-import { createAudioDeviceOptions } from "../../utils/audioDevices";
 import type { SubtitleTarget } from "../../composables/useSubtitleState";
 import {
     getAudioTrackDetails,
@@ -15,7 +13,6 @@ import {
     getSubtitleTrackTitle,
 } from "../../utils/trackDisplay";
 import ControlSlider from "./ControlSlider.vue";
-import CustomSelect from "../CustomSelect.vue";
 
 const props = defineProps<{
     currentSpeed: number;
@@ -35,9 +32,6 @@ const props = defineProps<{
     isLoopOne: boolean;
     audioTracks: MediaTrack[];
     showAudioMenu: boolean;
-    audioDevices: AudioDevice[];
-    selectedAudioDevice: string;
-    audioPassthroughEnabled: boolean;
     subTracks: MediaTrack[];
     dualSubEnabled: boolean;
     secondarySubId: MediaTrack["id"];
@@ -75,8 +69,6 @@ const emit = defineEmits<{
     (e: "set-hue", value: number): void;
     (e: "set-global-color-adjustments-enabled", enabled: boolean): void;
     (e: "select-audio", track: MediaTrack): void;
-    (e: "set-audio-output", device: string): void;
-    (e: "set-audio-passthrough", enabled: boolean): void;
     (e: "select-sub-track", payload: { target: SubtitleTarget; track: MediaTrack }): void;
     (e: "set-active-sub-target", target: SubtitleTarget): void;
     (e: "toggle-dual-sub", enabled: boolean): void;
@@ -161,12 +153,6 @@ const audioTrackRows = computed(() =>
         hoverTitle: getAudioTrackHoverTitle(track),
     })),
 );
-const audioDeviceOptions = computed(() =>
-    createAudioDeviceOptions(props.audioDevices, props.selectedAudioDevice),
-);
-const chooseAudioOutputOption = (value: string) => {
-    emit("set-audio-output", value);
-};
 
 const cancelSubtitleRenderFrame = () => {
     if (subtitleRenderFrame == null) return;
@@ -461,45 +447,6 @@ watch(
                                     stroke-linecap="round"
                                 />
                             </svg>
-                        </button>
-                    </div>
-                    <div class="track-menu__audio-controls">
-                        <label
-                            class="track-menu__audio-output"
-                            title="Choose the device used for audio output"
-                        >
-                            <span class="track-menu__audio-control-label">Output</span>
-                            <CustomSelect
-                                class="track-menu__audio-select"
-                                :model-value="selectedAudioDevice"
-                                :options="audioDeviceOptions"
-                                aria-label="Audio output"
-                                @update:model-value="chooseAudioOutputOption"
-                            />
-                        </label>
-                        <button
-                            class="track-menu__audio-toggle"
-                            type="button"
-                            title="Send supported encoded audio directly to the selected output device"
-                            :aria-pressed="audioPassthroughEnabled"
-                            @click.stop="
-                                emit(
-                                    'set-audio-passthrough',
-                                    !audioPassthroughEnabled,
-                                )
-                            "
-                        >
-                            <span>Passthrough</span>
-                            <span
-                                class="track-menu__mode-switch"
-                                :class="{
-                                    'track-menu__mode-switch--on':
-                                        audioPassthroughEnabled,
-                                }"
-                                aria-hidden="true"
-                            >
-                                <span class="track-menu__mode-thumb"></span>
-                            </span>
                         </button>
                     </div>
                     <div class="track-menu__list">
@@ -1201,85 +1148,15 @@ watch(
     align-items: center;
     padding-top: 11px;
     padding-bottom: 11px;
-    width: 100%;
-    min-width: 0;
-    max-width: none;
-    box-sizing: border-box;
+    width: max-content;
+    min-width: 100%;
+    max-width: 360px;
 }
 
 .track-menu--audio {
-    width: min(400px, calc(100vw - 24px));
-    min-width: 300px;
-    max-width: calc(100vw - 24px);
-    max-height: min(480px, calc(100vh - 96px));
-}
-
-.track-menu__audio-controls {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 12px;
-    padding: 9px 14px 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.track-menu__audio-output {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-}
-
-.track-menu__audio-control-label {
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-
-.track-menu__audio-select {
-    min-width: 0;
-    width: 100%;
-    --panel-select-card-bg: rgba(255, 255, 255, 0.045);
-    --panel-select-card-border: rgba(255, 255, 255, 0.2);
-    --panel-select-card-text: #f3f6fb;
-    --panel-select-card-arrow: rgba(210, 226, 255, 0.88);
-    --panel-select-card-hover-bg: rgba(88, 166, 255, 0.1);
-    --panel-select-card-hover-border: rgba(124, 183, 255, 0.45);
-    --panel-select-card-focus-bg: rgba(88, 166, 255, 0.16);
-    --panel-select-card-focus-border: rgba(124, 183, 255, 0.72);
-    --panel-select-card-focus-glow: rgba(88, 166, 255, 0.32);
-    --panel-select-menu-bg: rgba(42, 54, 71, 0.98);
-    --panel-select-menu-border: rgba(185, 202, 225, 0.16);
-    --panel-select-menu-hover-bg: rgba(185, 202, 225, 0.08);
-    --panel-select-menu-selected-bg: rgba(185, 202, 225, 0.12);
-    --panel-select-menu-selected-border: rgba(185, 202, 225, 0.28);
-}
-
-.track-menu__audio-toggle {
-    height: 32px;
-    border: none;
-    border-radius: 7px;
-    padding: 0 8px;
-    background: transparent;
-    color: rgba(255, 255, 255, 0.9);
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-}
-
-.track-menu__audio-toggle:hover {
-    background: rgba(255, 255, 255, 0.09);
-}
-
-.track-menu__audio-toggle:focus-visible {
-    outline: 2px solid rgba(143, 179, 255, 0.8);
-    outline-offset: 1px;
+    width: max-content;
+    min-width: 240px;
+    max-width: 360px;
 }
 
 .track-menu__item--audio .track-menu__check {
@@ -1289,7 +1166,7 @@ watch(
 .track-menu__text--audio {
     min-width: 0;
     width: 100%;
-    max-width: none;
+    max-width: calc(360px - 68px);
     flex: 1;
     display: flex;
     align-items: center;

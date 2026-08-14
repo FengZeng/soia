@@ -37,7 +37,6 @@ import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
 import { useAudioOutput } from "./composables/useAudioOutput";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
-import type { AudioSettings } from "./types/audio";
 import { tauriPlaylistSourceClient } from "./core-client/tauriPlaylistSourceClient";
 
 const {
@@ -192,26 +191,6 @@ const audioOutput = useAudioOutput();
 const isPassthroughActive = computed(
     () => audioOutput.status.value.passthroughActive,
 );
-const applyAudioSettingsPatch = async (patch: Partial<AudioSettings>) => {
-    const current = audioOutput.settings.value;
-    try {
-        await audioOutput.applySettings({
-            ...current,
-            ...patch,
-        });
-    } catch {
-        // The shared audio-output state retains the actionable error.
-    }
-};
-const onSetAudioOutput = (device: string) =>
-    applyAudioSettingsPatch({
-        outputDevice: device,
-    });
-const onSetAudioPassthrough = (enabled: boolean) =>
-    applyAudioSettingsPatch({
-        mode: enabled ? "passthrough" : "pcm",
-    });
-
 const setVolumeWhenAvailable = async (volume: number) => {
     if (isPassthroughActive.value) return;
     await playbackVolume.setVolume(volume);
@@ -671,11 +650,6 @@ useAppStartupBindings({
             :is-loop-one="isLoopOne"
             :audio-tracks="tracks.audioTracks.value"
             :show-audio-menu="tracks.showAudioMenu.value"
-            :audio-devices="audioOutput.devices.value"
-            :selected-audio-device="audioOutput.settings.value.outputDevice"
-            :audio-passthrough-enabled="
-                audioOutput.settings.value.mode === 'passthrough'
-            "
             :sub-tracks="tracks.subTracks.value"
             :dual-sub-enabled="tracks.dualSubEnabled.value"
             :secondary-sub-id="tracks.secondarySubId.value"
@@ -719,8 +693,6 @@ useAppStartupBindings({
                 adjustments.setGlobalColorAdjustmentsEnabled
             "
             @select-audio="tracks.selectAudio"
-            @set-audio-output="onSetAudioOutput"
-            @set-audio-passthrough="onSetAudioPassthrough"
             @select-sub-track="tracks.selectSubTrack"
             @set-active-sub-target="tracks.setActiveSubTarget"
             @toggle-dual-sub="tracks.setDualSubEnabled"

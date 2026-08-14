@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
-import type { AudioDevice } from "../types/audio";
 import type { MediaTrack } from "../types/media";
 import type { SubtitleTarget } from "../composables/useSubtitleState";
 import SeekBar from "./player-controls/SeekBar.vue";
@@ -36,9 +35,6 @@ const props = defineProps<{
     isLoopOne: boolean;
     audioTracks: MediaTrack[];
     showAudioMenu: boolean;
-    audioDevices: AudioDevice[];
-    selectedAudioDevice: string;
-    audioPassthroughEnabled: boolean;
     subTracks: MediaTrack[];
     dualSubEnabled: boolean;
     secondarySubId: MediaTrack["id"];
@@ -83,8 +79,6 @@ const emit = defineEmits<{
     (e: "set-hue", value: number): void;
     (e: "set-global-color-adjustments-enabled", enabled: boolean): void;
     (e: "select-audio", track: MediaTrack): void;
-    (e: "set-audio-output", device: string): void;
-    (e: "set-audio-passthrough", enabled: boolean): void;
     (e: "select-sub-track", payload: { target: SubtitleTarget; track: MediaTrack }): void;
     (e: "set-active-sub-target", target: SubtitleTarget): void;
     (e: "toggle-dual-sub", enabled: boolean): void;
@@ -273,9 +267,6 @@ onUnmounted(() => {
                         :is-loop-one="isLoopOne"
                         :audio-tracks="audioTracks"
                         :show-audio-menu="showAudioMenu"
-                        :audio-devices="audioDevices"
-                        :selected-audio-device="selectedAudioDevice"
-                        :audio-passthrough-enabled="audioPassthroughEnabled"
                         :sub-tracks="subTracks"
                         :dual-sub-enabled="dualSubEnabled"
                         :secondary-sub-id="secondarySubId"
@@ -314,10 +305,6 @@ onUnmounted(() => {
                             emit('set-global-color-adjustments-enabled', $event)
                         "
                         @select-audio="emit('select-audio', $event)"
-                        @set-audio-output="emit('set-audio-output', $event)"
-                        @set-audio-passthrough="
-                            emit('set-audio-passthrough', $event)
-                        "
                         @select-sub-track="emit('select-sub-track', $event)"
                         @set-active-sub-target="emit('set-active-sub-target', $event)"
                         @toggle-dual-sub="emit('toggle-dual-sub', $event)"
