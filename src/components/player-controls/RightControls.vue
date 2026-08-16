@@ -16,10 +16,12 @@ import ControlSlider from "./ControlSlider.vue";
 
 const props = defineProps<{
     currentSpeed: number;
+    currentZoom: number;
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
     speedLocked: boolean;
+    showCropMenu: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -29,8 +31,10 @@ const props = defineProps<{
     gamma: number;
     hue: number;
     globalColorAdjustmentsEnabled: boolean;
+    globalCropZoomEnabled?: boolean;
     isLoopOne: boolean;
     audioTracks: MediaTrack[];
+    videoTracks: MediaTrack[];
     showAudioMenu: boolean;
     subTracks: MediaTrack[];
     dualSubEnabled: boolean;
@@ -52,10 +56,12 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
+    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings" | "crop"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
     (e: "set-speed-continuously", rate: number): void;
+    (e: "set-zoom", scale: number): void;
+    (e: "set-aspect-ratio", ratio: string): void;
     (e: "set-audio-delay", value: number): void;
     (e: "set-sub-delay-for-target", payload: { target: SubtitleTarget; value: number }): void;
     (e: "set-sub-font-family", payload: { target: SubtitleTarget; value: string }): void;
@@ -69,6 +75,8 @@ const emit = defineEmits<{
     (e: "set-gamma", value: number): void;
     (e: "set-hue", value: number): void;
     (e: "set-global-color-adjustments-enabled", enabled: boolean): void;
+    (e: "set-global-crop-zoom-enabled", enabled: boolean): void;
+    (e: "update-crop-zoom", payload: { zoom: number; ratio: string }): void;
     (e: "select-audio", track: MediaTrack): void;
     (e: "select-sub-track", payload: { target: SubtitleTarget; track: MediaTrack }): void;
     (e: "set-active-sub-target", target: SubtitleTarget): void;
@@ -114,6 +122,95 @@ const subtitleFontOptions = [
 
 const isSameTrackId = (left: MediaTrack["id"], right: MediaTrack["id"]) =>
     String(left) === String(right);
+
+const showCropMenu = computed(() => props.showCropMenu);
+const currentRatio = ref<string>("Auto");
+const internalZoom = ref<number>(1.0);
+
+watch(
+    () => props.currentZoom,
+    (val) => {
+        if (typeof val === "number" && !isNaN(val) && val > 0) {
+            internalZoom.value = val;
+        }
+    },
+    { immediate: true },
+);
+
+const CROP_RATIO_PRESETS: Record<string, number | null> = {
+    Auto: null,
+    "16:9": 16 / 9,
+    "16:10": 16 / 10,
+    "4:3": 4 / 3,
+    "21:9": 21 / 9,
+    "2.35:1": 2.35,
+};
+
+const applyCropRatioPreset = async (key: string) => {
+    currentRatio.value = key;
+    const target = CROP_RATIO_PRESETS[key];
+
+    try {
+        await invoke("mpv_run_command", {
+            args: ["set", "video-aspect-override", "no"],
+        });
+    } catch {}
+
+    if (target === null || target === undefined) {
+        internalZoom.value = 1.0;
+        emit("set-zoom", 1.0);
+        emit("set-aspect-ratio", "no");
+        emit("update-crop-zoom", { zoom: 1.0, ratio: "Auto" });
+        try {
+            await invoke("mpv_run_command", {
+                args: ["set", "video-zoom", "0"],
+            });
+        } catch {}
+        return;
+    }
+
+    const activeVideo =
+        props.videoTracks?.find((t) => t.selected) || props.videoTracks?.[0];
+    const w = activeVideo?.demux_w || activeVideo?.w;
+    const h = activeVideo?.demux_h || activeVideo?.h;
+    const baseRatio = w && h && w > 0 && h > 0 ? w / h : 16 / 9;
+
+    const zoomMultiplier = Math.max(target / baseRatio, baseRatio / target);
+    const clampedZoom = Math.min(
+        4.0,
+        Math.max(0.1, Math.round(zoomMultiplier * 100) / 100),
+    );
+
+    internalZoom.value = clampedZoom;
+    emit("set-zoom", clampedZoom);
+    emit("set-aspect-ratio", "no");
+    emit("update-crop-zoom", { zoom: clampedZoom, ratio: key });
+
+    try {
+        const mpvZoom = Math.log2(clampedZoom);
+        await invoke("mpv_run_command", {
+            args: ["set", "video-zoom", String(mpvZoom.toFixed(6))],
+        });
+    } catch (e) {
+        console.error("Failed to apply crop zoom:", e);
+    }
+};
+
+const setZoom = async (val: number) => {
+    internalZoom.value = val;
+    currentRatio.value = "";
+    emit("set-zoom", val);
+    emit("update-crop-zoom", { zoom: val, ratio: "" });
+    try {
+        const mpvZoom = Math.log2(val);
+        await invoke("mpv_run_command", {
+            args: ["set", "video-zoom", String(mpvZoom.toFixed(6))],
+        });
+    } catch (e) {
+        console.error("Failed to set video-zoom:", e);
+    }
+};
+
 const activeSubTarget = computed(() => props.activeSubTarget);
 const activeSubFontFamily = computed(() =>
     props.primarySubFontFamily,
@@ -941,6 +1038,140 @@ watch(
                             @change="emit('set-hue', $event)"
                             @reset="emit('set-hue', 0)"
                         />
+                    </div>
+                </div>
+            </transition>
+        </div>
+
+        <div class="track-menu-container">
+            <button
+                class="icon-button icon-button--player"
+                @click.stop="emit('toggle-menu', 'crop')"
+                title="Crop / Zoom"
+            >
+                <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <!-- Extended outer crop bracket legs -->
+                    <path d="M10 3.5H19a2 2 0 0 1 2 2v8.5" />
+                    <path d="M14 20.5H5a2 2 0 0 1-2-2v-8.5" />
+                    <!-- Magnifying glass with balanced handle -->
+                    <circle cx="10.5" cy="10.5" r="3.8" stroke-width="2.2" />
+                    <path d="M13.4 13.4L17.5 17.5" stroke-width="2.6" />
+                </svg>
+            </button>
+
+            <transition name="fade-up">
+                <div v-if="showCropMenu" class="track-menu track-menu--settings track-menu--crop">
+                    <div class="track-menu__header">
+                        <span>Screen Size & Crop</span>
+                        <div class="track-menu__header-actions">
+                            <button
+                                class="track-menu__mode-toggle"
+                                type="button"
+                                :aria-pressed="globalCropZoomEnabled"
+                                :title="
+                                    globalCropZoomEnabled
+                                        ? 'Global apply enabled'
+                                        : 'Enable global apply'
+                                "
+                                @click.stop="
+                                    emit(
+                                        'set-global-crop-zoom-enabled',
+                                        !globalCropZoomEnabled,
+                                    )
+                                "
+                            >
+                                <span class="track-menu__mode-label">Global</span>
+                                <span
+                                    class="track-menu__mode-switch"
+                                    :class="{
+                                        'track-menu__mode-switch--on':
+                                            globalCropZoomEnabled,
+                                    }"
+                                >
+                                    <span class="track-menu__mode-thumb"></span>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="track-menu__list track-menu__list--settings panel__crop-body">
+                        <!-- Ratios -->
+                        <div class="panel__crop-presets">
+                            <button
+                                type="button"
+                                class="panel__crop-preset"
+                                :class="{ 'panel__crop-preset--active': currentRatio === 'Auto' || currentRatio === 'no' }"
+                                @click="applyCropRatioPreset('Auto')"
+                            >
+                                Auto
+                            </button>
+                            <button
+                                type="button"
+                                class="panel__crop-preset"
+                                :class="{ 'panel__crop-preset--active': currentRatio === '16:9' }"
+                                @click="applyCropRatioPreset('16:9')"
+                            >
+                                16:9
+                            </button>
+                            <button
+                                type="button"
+                                class="panel__crop-preset"
+                                :class="{ 'panel__crop-preset--active': currentRatio === '16:10' }"
+                                @click="applyCropRatioPreset('16:10')"
+                            >
+                                16:10
+                            </button>
+                            <button
+                                type="button"
+                                class="panel__crop-preset"
+                                :class="{ 'panel__crop-preset--active': currentRatio === '4:3' }"
+                                @click="applyCropRatioPreset('4:3')"
+                            >
+                                4:3
+                            </button>
+                            <button
+                                type="button"
+                                class="panel__crop-preset"
+                                :class="{ 'panel__crop-preset--active': currentRatio === '21:9' }"
+                                @click="applyCropRatioPreset('21:9')"
+                            >
+                                21:9
+                            </button>
+                            <button
+                                type="button"
+                                class="panel__crop-preset"
+                                :class="{ 'panel__crop-preset--active': currentRatio === '2.35:1' }"
+                                @click="applyCropRatioPreset('2.35:1')"
+                            >
+                                2.35:1
+                            </button>
+                        </div>
+
+                        <!-- Zoom Slider -->
+                        <div class="panel__crop-sliders">
+                            <div class="panel__crop-row" style="margin-top: 10px;">
+                                <ControlSlider
+                                    label="Zoom"
+                                    :value="internalZoom"
+                                    :min="0.5"
+                                    :max="3.0"
+                                    :step="0.05"
+                                    unit="x"
+                                    :show-sign="false"
+                                    :precision="2"
+                                    @change="setZoom($event)"
+                                    @reset="setZoom(1.0)"
+                                />
+                            </div>
+                        </div>
                     </div>
                 </div>
             </transition>

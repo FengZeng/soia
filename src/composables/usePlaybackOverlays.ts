@@ -34,11 +34,14 @@ export const usePlaybackOverlays = ({
     const seekOverlayRightText = ref("");
     const seekOverlayLeftTimelineText = ref("");
     const volumeOverlayText = ref("");
+    // label: e.g. "Zoom" or "Playback", value: e.g. "1.2x"
+    const zoomOverlayText = ref<{ label: string; value: string } | null>(null);
     const seekOverlayLeftPulseToken = ref(0);
     const seekOverlayRightPulseToken = ref(0);
     let loadingOverlayDelayTimer: ReturnType<typeof setTimeout> | null = null;
     let seekOverlayTimer: ReturnType<typeof setTimeout> | null = null;
     let volumeOverlayTimer: ReturnType<typeof setTimeout> | null = null;
+    let zoomOverlayTimer: ReturnType<typeof setTimeout> | null = null;
     let seekOverlayAccumulatedDelta = 0;
     let seekOverlayBaseTime = 0;
 
@@ -125,6 +128,27 @@ export const usePlaybackOverlays = ({
         }, 700);
     };
 
+    const clearZoomOverlayTimer = () => {
+        if (zoomOverlayTimer !== null) {
+            window.clearTimeout(zoomOverlayTimer);
+            zoomOverlayTimer = null;
+        }
+    };
+
+    const formatScaleValue = (scale: number): string => {
+        const rounded = Math.round(scale * 100) / 100;
+        return `${rounded.toFixed(rounded % 1 === 0 ? 0 : 1)}x`;
+    };
+
+    const showZoomOverlay = (scale: number) => {
+        zoomOverlayText.value = { label: "Zoom", value: formatScaleValue(scale) };
+        clearZoomOverlayTimer();
+        zoomOverlayTimer = window.setTimeout(() => {
+            zoomOverlayText.value = null;
+            zoomOverlayTimer = null;
+        }, 1200);
+    };
+
     watch(shouldShowPlaybackLoadingOverlay, (shouldShow) => {
         if (!shouldShow) {
             clearLoadingOverlayDelayTimer();
@@ -143,6 +167,7 @@ export const usePlaybackOverlays = ({
         clearLoadingOverlayDelayTimer();
         clearSeekOverlayTimer();
         clearVolumeOverlayTimer();
+        clearZoomOverlayTimer();
     });
 
     return {
@@ -152,9 +177,11 @@ export const usePlaybackOverlays = ({
         seekOverlayRightText,
         seekOverlayLeftTimelineText,
         volumeOverlayText,
+        zoomOverlayText,
         seekOverlayLeftPulseToken,
         seekOverlayRightPulseToken,
         showSeekOverlay,
         showVolumeOverlay,
+        showZoomOverlay,
     };
 };
