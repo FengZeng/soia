@@ -15,6 +15,13 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const SEEK_DOWNLOAD_SPEED_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
+fn audio_output_unavailable(current_ao: Option<&str>) -> bool {
+    current_ao.is_none_or(|ao| {
+        let ao = ao.trim();
+        ao.is_empty() || ao == "null"
+    })
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use keepawake::{Builder, KeepAwake};
 
@@ -464,6 +471,67 @@ fn observe_property(client: *mut c_void, id: u64, name: &str, format: mpv_format
     }
 }
 
+unsafe fn read_string_property(client: *mut c_void, name: &str) -> Option<String> {
+    let name = CString::new(name).ok()?;
+    let value_ptr = mpv_get_property_string(client, name.as_ptr());
+    if value_ptr.is_null() {
+        return None;
+    }
+    let value = CStr::from_ptr(value_ptr).to_string_lossy().into_owned();
+    mpv_free(value_ptr as *mut c_void);
+    Some(value)
+}
+
+unsafe fn run_client_command(client: *mut c_void, args: &[&str]) -> c_int {
+    let strings = args
+        .iter()
+        .filter_map(|value| CString::new(*value).ok())
+        .collect::<Vec<_>>();
+    if strings.len() != args.len() {
+        return -1;
+    }
+    let mut raw = strings
+        .iter()
+        .map(|value| value.as_ptr())
+        .collect::<Vec<_>>();
+    raw.push(std::ptr::null());
+    mpv_command(client, raw.as_ptr())
+}
+
+type AudioRouteSignature = (String, String, String);
+
+fn audio_route_signature(
+    audio_spdif: &str,
+    device: &str,
+    exclusive: bool,
+) -> AudioRouteSignature {
+    (
+        audio_spdif.to_string(),
+        device.to_string(),
+        if exclusive { "yes" } else { "no" }.to_string(),
+    )
+}
+
+unsafe fn apply_audio_route(
+    client: *mut c_void,
+    signature: &AudioRouteSignature,
+    context: &str,
+) {
+    for args in [
+        ["set", "audio-spdif", signature.0.as_str()],
+        ["set", "audio-device", signature.1.as_str()],
+        ["set", "audio-exclusive", signature.2.as_str()],
+    ] {
+        let result = run_client_command(client, &args);
+        if result < 0 {
+            warn!(
+                "audio output: {context} command {:?} failed with mpv error {}",
+                args, result
+            );
+        }
+    }
+}
+
 unsafe fn apply_carried_track_ids(client: *mut c_void, sid: i64, aid: i64) {
     let set_cmd = CString::new("set").expect("MPV command contains null byte");
 
@@ -616,6 +684,11 @@ pub(super) fn mpv_event_loop(
     const PLAYLIST_COUNT_ID: u64 = 17;
     const SPEED_ID: u64 = 18;
     const VIDEO_TRANSFER_ID: u64 = 19;
+    const AUDIO_DEVICE_LIST_ID: u64 = 20;
+    const CURRENT_AO_ID: u64 = 21;
+    const AUDIO_OUT_PARAMS_ID: u64 = 22;
+    const AUDIO_CODEC_NAME_ID: u64 = 23;
+    const AUDIO_DECODER_ID: u64 = 24;
 
     let mut last_time_pos: f64 = 0.0;
     let mut last_duration: f64 = 0.0;
@@ -648,6 +721,9 @@ pub(super) fn mpv_event_loop(
     let mut seek_from_time_pos: f64 = 0.0;
     let mut seek_from_buffered_pos: f64 = 0.0;
     let mut last_seekable_ranges: Vec<(f64, f64)> = Vec::new();
+    let mut current_audio_ao: Option<String> = None;
+    let mut pending_audio_reload_at: Option<Instant> = None;
+    let mut last_audio_route_signature: Option<AudioRouteSignature> = None;
     let media_title_name = CString::new("media-title").expect("Property name contains null byte");
     let hwdec_current_name =
         CString::new("hwdec-current").expect("Property name contains null byte");
@@ -748,6 +824,36 @@ pub(super) fn mpv_event_loop(
             "video-params/gamma",
             mpv_format::MPV_FORMAT_STRING,
         );
+        observe_property(
+            event_client,
+            AUDIO_DEVICE_LIST_ID,
+            "audio-device-list",
+            mpv_format::MPV_FORMAT_NODE,
+        );
+        observe_property(
+            event_client,
+            CURRENT_AO_ID,
+            "current-ao",
+            mpv_format::MPV_FORMAT_STRING,
+        );
+        observe_property(
+            event_client,
+            AUDIO_OUT_PARAMS_ID,
+            "audio-out-params",
+            mpv_format::MPV_FORMAT_NODE,
+        );
+        observe_property(
+            event_client,
+            AUDIO_CODEC_NAME_ID,
+            "audio-codec-name",
+            mpv_format::MPV_FORMAT_STRING,
+        );
+        observe_property(
+            event_client,
+            AUDIO_DECODER_ID,
+            "audio-decoder",
+            mpv_format::MPV_FORMAT_STRING,
+        );
 
         debug!("MPV Event Loop: Started observing properties.");
 
@@ -756,6 +862,28 @@ pub(super) fn mpv_event_loop(
                 break;
             }
             let event = mpv_wait_event(event_client, 0.1);
+            if pending_audio_reload_at.is_some_and(|deadline| Instant::now() >= deadline) {
+                pending_audio_reload_at = None;
+                if audio_output_unavailable(current_audio_ao.as_deref()) {
+                    let settings = app_handle.state::<AppState>().audio_output.settings();
+                    let options = crate::audio_output::build_mpv_options(&settings);
+                    let signature = audio_route_signature(
+                        &options.audio_spdif,
+                        &options.audio_device,
+                        options.audio_exclusive,
+                    );
+                    apply_audio_route(event_client, &signature, "device recovery");
+                    let result = run_client_command(event_client, &["ao-reload"]);
+                    if result < 0 {
+                        warn!(
+                            "audio output: debounced ao-reload failed with mpv error {}",
+                            result
+                        );
+                    } else {
+                        info!("audio output: retrying null output after device-list change");
+                    }
+                }
+            }
             if event.is_null() {
                 continue;
             }
@@ -791,6 +919,15 @@ pub(super) fn mpv_event_loop(
                     carried_sid = last_selected_sid;
                     carried_aid = last_selected_aid;
                     is_current_file_loaded = false;
+                    let audio_settings = app_handle.state::<AppState>().audio_output.settings();
+                    let audio_options = crate::audio_output::build_mpv_options(&audio_settings);
+                    let signature = audio_route_signature(
+                        &audio_options.audio_spdif,
+                        &audio_options.audio_device,
+                        audio_options.audio_exclusive,
+                    );
+                    apply_audio_route(event_client, &signature, "file-start route");
+                    last_audio_route_signature = Some(signature);
                     starting_playback = {
                         let state: tauri::State<'_, AppState> = app_handle.state();
                         state
@@ -1251,6 +1388,9 @@ pub(super) fn mpv_event_loop(
                                     let speed = *(value_ptr as *mut f64);
                                     if speed.is_finite() && speed > 0.0 {
                                         update_snapshot(&app_handle, |snapshot| snapshot.speed = speed);
+                                        let state = app_handle.state::<AppState>();
+                                        let status = state.audio_output.update_speed(speed);
+                                        crate::audio_output::emit_status(&app_handle, status);
                                     }
                                 }
                             }
@@ -1278,6 +1418,71 @@ pub(super) fn mpv_event_loop(
                                         mpv_free(transfer_ptr as *mut c_void);
                                     }
                                 }
+                            }
+                            AUDIO_DEVICE_LIST_ID => {
+                                if (*prop_event).format == mpv_format::MPV_FORMAT_NODE
+                                    && !value_ptr.is_null()
+                                {
+                                    let devices_json = parse_node(value_ptr as *mut mpv_node);
+                                    let state = app_handle.state::<AppState>();
+                                    let (changed, devices) =
+                                        state.audio_output.update_devices(&devices_json);
+                                    if changed {
+                                        pending_audio_reload_at =
+                                            Some(Instant::now() + Duration::from_millis(500));
+                                        crate::audio_output::emit_devices(&app_handle, devices);
+                                        crate::audio_output::emit_status(
+                                            &app_handle,
+                                            state.audio_output.status(),
+                                        );
+                                    }
+                                }
+                            }
+                            CURRENT_AO_ID => {
+                                current_audio_ao =
+                                    if (*prop_event).format == mpv_format::MPV_FORMAT_NONE {
+                                        None
+                                    } else {
+                                        read_string_property(event_client, "current-ao")
+                                    };
+                                let state = app_handle.state::<AppState>();
+                                let status = state
+                                    .audio_output
+                                    .update_current_ao(current_audio_ao.clone());
+                                crate::audio_output::emit_status(&app_handle, status);
+                            }
+                            AUDIO_OUT_PARAMS_ID => {
+                                let state = app_handle.state::<AppState>();
+                                let status = if (*prop_event).format == mpv_format::MPV_FORMAT_NODE
+                                    && !value_ptr.is_null()
+                                {
+                                    let params = parse_node(value_ptr as *mut mpv_node);
+                                    state.audio_output.update_output_params(&params)
+                                } else {
+                                    state.audio_output.clear_output()
+                                };
+                                crate::audio_output::emit_status(&app_handle, status);
+                            }
+                            AUDIO_CODEC_NAME_ID => {
+                                let codec = if (*prop_event).format == mpv_format::MPV_FORMAT_NONE {
+                                    None
+                                } else {
+                                    read_string_property(event_client, "audio-codec-name")
+                                };
+                                let state = app_handle.state::<AppState>();
+                                let status = state.audio_output.update_input_codec(codec);
+                                crate::audio_output::emit_status(&app_handle, status);
+                            }
+                            AUDIO_DECODER_ID => {
+                                let decoder = if (*prop_event).format == mpv_format::MPV_FORMAT_NONE
+                                {
+                                    None
+                                } else {
+                                    read_string_property(event_client, "audio-decoder")
+                                };
+                                let state = app_handle.state::<AppState>();
+                                let status = state.audio_output.update_decoder(decoder);
+                                crate::audio_output::emit_status(&app_handle, status);
                             }
                             WIDTH_ID => {
                                 if (*prop_event).format == mpv_format::MPV_FORMAT_INT64
@@ -1426,6 +1631,64 @@ pub(super) fn mpv_event_loop(
                                         update_snapshot(&app_handle, |snapshot| {
                                             snapshot.tracks = snapshot_tracks;
                                         });
+                                        if let Some(selected_audio) = list.iter().find(|item| {
+                                            item.get("type").and_then(|value| value.as_str())
+                                                == Some("audio")
+                                                && item
+                                                    .get("selected")
+                                                    .and_then(|value| value.as_bool())
+                                                    .unwrap_or(false)
+                                        }) {
+                                            let string_value = |key: &str| {
+                                                selected_audio
+                                                    .get(key)
+                                                    .and_then(|value| value.as_str())
+                                                    .map(ToString::to_string)
+                                            };
+                                            let codec = string_value("codec");
+                                            let state = app_handle.state::<AppState>();
+                                            state.audio_output.update_selected_track(
+                                                codec.clone(),
+                                                string_value("codec-profile")
+                                                    .or_else(|| string_value("codec-desc")),
+                                                string_value("demux-channels"),
+                                            );
+
+                                            let settings = state.audio_output.settings();
+                                            let use_passthrough =
+                                                codec.as_deref().is_some_and(|codec| {
+                                                    crate::audio_output::codec_is_enabled(
+                                                        &settings, codec,
+                                                    )
+                                                });
+                                            let options =
+                                                crate::audio_output::build_mpv_options(&settings);
+                                            let device = options.audio_device.as_str();
+                                            let audio_spdif = if use_passthrough {
+                                                options.audio_spdif
+                                            } else {
+                                                String::new()
+                                            };
+                                            let signature = audio_route_signature(
+                                                &audio_spdif,
+                                                device,
+                                                options.audio_exclusive && use_passthrough,
+                                            );
+                                            if last_audio_route_signature.as_ref()
+                                                != Some(&signature)
+                                            {
+                                                apply_audio_route(
+                                                    event_client,
+                                                    &signature,
+                                                    "track route",
+                                                );
+                                                last_audio_route_signature = Some(signature);
+                                            }
+                                            let status = state
+                                                .audio_output
+                                                .update_selected_device(device.to_string());
+                                            crate::audio_output::emit_status(&app_handle, status);
+                                        }
                                     }
                                 }
                             }
@@ -1545,7 +1808,7 @@ pub(super) fn mpv_event_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::is_hdr_transfer;
+    use super::{audio_output_unavailable, is_hdr_transfer};
 
     #[test]
     fn identifies_canonical_hdr_transfer_functions() {
@@ -1555,5 +1818,13 @@ mod tests {
         assert!(!is_hdr_transfer("bt.2100-hlg"));
         assert!(!is_hdr_transfer("bt.1886"));
         assert!(!is_hdr_transfer("srgb"));
+    }
+
+    #[test]
+    fn treats_missing_and_null_audio_outputs_as_unavailable() {
+        assert!(audio_output_unavailable(None));
+        assert!(audio_output_unavailable(Some("")));
+        assert!(audio_output_unavailable(Some("null")));
+        assert!(!audio_output_unavailable(Some("wasapi")));
     }
 }

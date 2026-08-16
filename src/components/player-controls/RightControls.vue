@@ -19,6 +19,7 @@ const props = defineProps<{
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
+    speedLocked: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -347,8 +348,13 @@ watch(
         <div class="track-menu-container">
             <button
                 class="icon-button icon-button--player"
+                :disabled="speedLocked"
                 @click.stop="emit('toggle-menu', 'speed')"
-                title="Playback Speed"
+                :title="
+                    speedLocked
+                        ? 'Playback speed is fixed during audio passthrough'
+                        : 'Playback Speed'
+                "
             >
                 {{ currentSpeed }}x
             </button>

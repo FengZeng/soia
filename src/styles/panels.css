@@ -2684,3 +2684,13 @@
         rgba(255, 255, 255, 0.06) 63%
     );
 }
+.panel__audio-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 28px;
+    padding: 6px 4px 0;
+    color: var(--panel-muted, rgba(255, 255, 255, 0.68));
+    font-size: 12px;
+}

@@ -37,6 +37,8 @@ pub struct UiState {
     #[serde(default)]
     pub rendering: Option<RenderingState>,
     #[serde(default)]
+    pub audio: Option<crate::audio_output::AudioSettings>,
+    #[serde(default)]
     pub playback_adjustments: Option<PlaybackAdjustmentsState>,
     #[serde(default)]
     pub playback: Option<PlaybackState>,
@@ -62,6 +64,7 @@ impl Default for UiState {
             network: None,
             settings: None,
             rendering: None,
+            audio: None,
             playback_adjustments: None,
             playback: None,
             subtitle_appearance: None,
@@ -82,6 +85,7 @@ impl UiState {
             network: incoming.network.or(self.network),
             settings: incoming.settings.or(self.settings),
             rendering: incoming.rendering.or(self.rendering),
+            audio: incoming.audio.or(self.audio),
             playback_adjustments: incoming
                 .playback_adjustments
                 .or(self.playback_adjustments),
@@ -394,6 +398,19 @@ pub fn save_ui_state(app: &tauri::AppHandle, state: UiState) -> Result<(), Strin
     Ok(())
 }
 
+pub fn save_audio_settings(
+    app: &tauri::AppHandle,
+    settings: crate::audio_output::AudioSettings,
+) -> Result<(), String> {
+    save_ui_state(
+        app,
+        UiState {
+            audio: Some(settings.normalized()),
+            ..UiState::default()
+        },
+    )
+}
+
 pub fn reset_ui_state(app: &tauri::AppHandle) -> Result<(), String> {
     let path = ui_state_file_path(app)?;
     let legacy_path = legacy_ui_state_file_path(app)?;
@@ -444,6 +461,25 @@ mod tests {
             .remove(0)
             .title;
         assert_eq!(title.as_deref(), Some("News Channel"));
+    }
+
+    #[test]
+    fn audio_settings_survive_ui_state_json_round_trip() {
+        let state = UiState {
+            audio: Some(crate::audio_output::AudioSettings {
+                mode: crate::audio_output::AudioMode::Passthrough,
+                ..crate::audio_output::AudioSettings::default()
+            }),
+            ..UiState::default()
+        };
+
+        let json = serde_json::to_string(&state).expect("serialize ui state");
+        let restored: UiState = serde_json::from_str(&json).expect("deserialize ui state");
+
+        assert!(restored
+            .audio
+            .expect("audio settings")
+            .passthrough_enabled());
     }
 
     #[test]

@@ -9,6 +9,7 @@ const props = defineProps<{
     volume: number;
     formatTime: (seconds: number) => string;
     badges: string[];
+    passthroughActive: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -66,10 +67,32 @@ const onVolumeInput = (event: Event) => {
                 <path d="M16 6v12h2V6h-2zm-1.5 6L6 18V6l8.5 6z" />
             </svg>
         </button>
-        <div class="volume-control" :style="{ '--volume-percent': `${volumePercent}%` }">
+        <div
+            v-if="passthroughActive"
+            class="passthrough-indicator"
+            role="img"
+            aria-label="Audio passthrough active. Volume is controlled by the receiver."
+            title="Audio passthrough active · Volume controlled by receiver"
+        >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 9v6h4l5 5V4L7 9H3Zm2 2h2.83L10 8.83v6.34L7.83 13H5v-2Z" />
+                <circle cx="15" cy="12" r="1" />
+                <circle cx="18" cy="12" r="1" />
+                <circle cx="21" cy="12" r="1" />
+            </svg>
+        </div>
+        <div
+            v-else
+            class="volume-control"
+            :style="{ '--volume-percent': `${volumePercent}%` }"
+        >
             <button
                 class="icon-button icon-button--player volume-control__button"
-                :title="volumePercent > 0 ? `Mute volume ${volumePercent}%` : 'Restore volume'"
+                :title="
+                    volumePercent > 0
+                        ? `Mute volume ${volumePercent}%`
+                        : 'Restore volume'
+                "
                 @click="emit('toggle-muted')"
             >
                 <svg viewBox="0 -960 960 960" fill="currentColor">
@@ -135,6 +158,25 @@ const onVolumeInput = (event: Event) => {
 .volume-control__button svg {
     width: 22px;
     height: 22px;
+}
+
+.passthrough-indicator {
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.passthrough-indicator svg {
+    width: 23px;
+    height: 23px;
+}
+
+.passthrough-indicator path,
+.passthrough-indicator circle {
+    fill: currentColor;
 }
 
 .volume-control__popover {

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod app_bootstrap;
+mod audio_output;
 pub mod protocol;
 mod core;
 mod check_update;
@@ -28,6 +29,7 @@ const STARTUP_WINDOW_SHOW_FALLBACK_MS: u64 = 3000;
 
 pub struct AppState {
     pub mpv_player: Arc<Mutex<MpvHandle>>,
+    pub(crate) audio_output: audio_output::AudioOutputRuntime,
     pub pending_play_history_entry: Mutex<Option<store::play_history::PlayHistoryEntry>>,
     pub current_playback_key: Mutex<Option<String>>,
     pub(crate) pending_playback_loads: Mutex<VecDeque<(u64, String)>>,
@@ -624,6 +626,11 @@ pub fn run() {
             commands::persistence::apply_ytdl_settings,
             commands::persistence::apply_proxy_settings,
             commands::persistence::apply_stream_proxy_settings,
+            commands::audio::get_audio_settings,
+            commands::audio::apply_audio_settings,
+            commands::audio::get_audio_devices,
+            commands::audio::get_audio_output_status,
+            commands::audio::retry_audio_output,
             commands::persistence::apply_rendering_settings,
             commands::persistence::set_brightness_adjustment,
             commands::persistence::resolve_shader_candidates,

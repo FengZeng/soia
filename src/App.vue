@@ -35,6 +35,7 @@ import { usePlaybackVolumePersistence } from "./composables/usePlaybackVolumePer
 import { usePlaylistCreationPrompt } from "./composables/usePlaylistCreationPrompt";
 import { usePlaybackContextMenu } from "./composables/usePlaybackContextMenu";
 import { useRemoteControlQrDialog } from "./composables/useRemoteControlQrDialog";
+import { useAudioOutput } from "./composables/useAudioOutput";
 import { tauriCoreClient } from "./core-client/tauriPlaybackClient";
 import { tauriPlaylistSourceClient } from "./core-client/tauriPlaylistSourceClient";
 
@@ -186,13 +187,23 @@ const {
 });
 
 const playbackVolume = usePlaybackVolumePersistence(player);
+const audioOutput = useAudioOutput();
+const isPassthroughActive = computed(
+    () => audioOutput.status.value.passthroughActive,
+);
+const setVolumeWhenAvailable = async (volume: number) => {
+    if (isPassthroughActive.value) return;
+    await playbackVolume.setVolume(volume);
+};
 
 const onSetVolume = async (volume: number) => {
-    await playbackVolume.setVolume(volume);
+    if (isPassthroughActive.value) return;
+    await setVolumeWhenAvailable(volume);
     showVolumeOverlay(player.state.playback.volume);
 };
 
 const onToggleMuted = async () => {
+    if (isPassthroughActive.value) return;
     await playbackVolume.toggleMuted();
     showVolumeOverlay(player.state.playback.volume);
 };
@@ -271,12 +282,14 @@ const { onKeydown, onDoubleClick: onPlaybackAreaDoubleClick } = usePlaybackShort
         state: player.state,
         togglePlayPause: player.togglePlayPause,
         seekRelative: onSeekRelative,
-        setVolume: playbackVolume.setVolume,
+        setVolume: setVolumeWhenAvailable,
     },
     onToggleFullscreen,
     toggleInfo,
     showSeekOverlay,
-    showVolumeOverlay,
+    (volume) => {
+        if (!isPassthroughActive.value) showVolumeOverlay(volume);
+    },
 );
 
 const PLAYBACK_SURFACE_CLICK_DELAY_MS = 300;
@@ -380,6 +393,10 @@ const onDragRegionTouchStart = (event: TouchEvent) => {
     onWindowDragRegionTouchStart(event);
 };
 const { mediaInfo, statusBadges } = useMediaInfo(player);
+const onSetSpeed = (rate: number) => {
+    if (isPassthroughActive.value) return;
+    speed.setSpeed(rate);
+};
 const currentOrLastPlaybackUrl = computed(
     () => player.state.media.url || player.state.media.lastLoadedUrl,
 );
@@ -682,6 +699,7 @@ useAppStartupBindings({
                 !player.state.media.isFileLoaded || !ui.showControls.value
             "
             :status-badges="statusBadges"
+            :audio-passthrough-active="isPassthroughActive"
             :current-speed="speed.currentSpeed.value"
             :playback-rates="speed.playbackRates"
             :show-speed-menu="speed.showSpeedMenu.value"
@@ -724,7 +742,7 @@ useAppStartupBindings({
             @next-track="onNextTrack"
             @toggle-menu="toggleMenu"
             @toggle-loop-one="toggleLoopOne"
-            @set-speed="speed.setSpeed"
+            @set-speed="onSetSpeed"
             @set-speed-continuously="speed.setSpeedContinuously"
             @set-volume="onSetVolume"
             @toggle-muted="onToggleMuted"

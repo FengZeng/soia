@@ -18,6 +18,7 @@ const props = defineProps<{
     controlsVisible?: boolean;
     isHidden: boolean;
     statusBadges: string[];
+    audioPassthroughActive: boolean;
     currentSpeed: number;
     playbackRates: number[];
     showSpeedMenu: boolean;
@@ -239,6 +240,7 @@ onUnmounted(() => {
                         :volume="volume"
                         :format-time="formatTime"
                         :badges="props.statusBadges"
+                        :passthrough-active="audioPassthroughActive"
                         @prev-track="emit('prev-track')"
                         @toggle-play-pause="emit('toggle-play-pause')"
                         @stop-playback="emit('stop-playback')"
@@ -251,6 +253,7 @@ onUnmounted(() => {
                         :playback-rates="playbackRates"
                         :show-speed-menu="showSpeedMenu"
                         :show-settings-menu="showSettingsMenu"
+                        :speed-locked="audioPassthroughActive"
                         :audio-delay="audioDelay"
                         :sub-delay="subDelay"
                         :secondary-sub-delay="secondarySubDelay"

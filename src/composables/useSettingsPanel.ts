@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { SETTINGS_UPDATED_EVENT } from "../mock/settings";
@@ -16,7 +16,9 @@ import {
     useAboutSection,
     useUpdateSection,
     useMediaAssociationSection,
+    useAudioSettingsSection,
 } from "./settings-sections";
+import type { AudioSettings } from "../types/audio";
 
 export const useSettingsPanel = () => {
     const isMacOS =
@@ -35,6 +37,19 @@ export const useSettingsPanel = () => {
     const about = useAboutSection();
     const update = useUpdateSection();
     const mediaAssociation = useMediaAssociationSection(isMacOS);
+    const audio = useAudioSettingsSection();
+    const settingGroups = computed(() => {
+        const groups = [...general.settingGroups.value];
+        const playbackIndex = groups.findIndex(
+            (group) => group.title === "Playback",
+        );
+        groups.splice(
+            playbackIndex >= 0 ? playbackIndex + 1 : groups.length,
+            0,
+            audio.settingGroup.value,
+        );
+        return groups;
+    });
 
     const emitSettingsUpdated = () => {
         if (typeof window === "undefined") return;
@@ -43,6 +58,7 @@ export const useSettingsPanel = () => {
                 detail: {
                     groups: general.toPersistedGroups(),
                     rendering: rendering.toPersistedRendering(),
+                    audio: audio.toPersistedAudio(),
                 },
             }),
         );
@@ -67,16 +83,19 @@ export const useSettingsPanel = () => {
         const stored = await loadUiState<{
             settings?: { groups?: StoredSettingGroup[] };
             rendering?: StoredRenderingState;
+            audio?: AudioSettings;
         }>();
 
         await general.loadGeneralSettings(stored?.settings?.groups);
         await rendering.loadRenderingSettings(stored?.rendering);
+        await audio.loadAudioSettings(stored?.audio);
         isLoading.value = false;
     };
 
     const resetAllSettings = () => {
         general.resetGeneralSettings();
         rendering.resetRenderingSettings();
+        audio.resetAudioSettings();
     };
 
     const factoryReset = async () => {
@@ -155,6 +174,17 @@ export const useSettingsPanel = () => {
     );
 
     watch(
+        audio.settingGroup,
+        () => {
+            if (isLoading.value) return;
+            void audio.applySectionSideEffects();
+            saveStateImmediately();
+            emitSettingsUpdated();
+        },
+        { deep: true },
+    );
+
+    watch(
         [
             rendering.renderingMode,
             rendering.selectedShaderFiles,
@@ -170,7 +200,10 @@ export const useSettingsPanel = () => {
     );
 
     return {
-        settingGroups: general.settingGroups,
+        settingGroups,
+        audioOutputStatus: audio.outputStatus,
+        audioOutputError: audio.outputError,
+        retryAudioOutput: audio.retryOutput,
         runtimeVersions: about.runtimeVersions,
         mediaAssociationStatus: mediaAssociation.mediaAssociationStatus,
         canManageMediaAssociation: mediaAssociation.canManageMediaAssociation,
