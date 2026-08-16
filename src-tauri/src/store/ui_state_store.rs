@@ -39,6 +39,8 @@ pub struct UiState {
     #[serde(default)]
     pub audio: Option<crate::audio_output::AudioSettings>,
     #[serde(default)]
+    pub surround_sound: Option<SurroundSoundState>,
+    #[serde(default)]
     pub playback_adjustments: Option<PlaybackAdjustmentsState>,
     #[serde(default)]
     pub playback: Option<PlaybackState>,
@@ -65,6 +67,7 @@ impl Default for UiState {
             settings: None,
             rendering: None,
             audio: None,
+            surround_sound: None,
             playback_adjustments: None,
             playback: None,
             subtitle_appearance: None,
@@ -86,6 +89,12 @@ impl UiState {
             settings: incoming.settings.or(self.settings),
             rendering: incoming.rendering.or(self.rendering),
             audio: incoming.audio.or(self.audio),
+            surround_sound: match (self.surround_sound, incoming.surround_sound) {
+                (Some(curr), Some(inc)) => Some(curr.merge(inc)),
+                (None, Some(inc)) => Some(inc),
+                (Some(curr), None) => Some(curr),
+                (None, None) => None,
+            },
             playback_adjustments: incoming
                 .playback_adjustments
                 .or(self.playback_adjustments),
@@ -144,6 +153,42 @@ pub struct ColorAdjustmentsState {
     pub gamma: Option<f64>,
     #[serde(default)]
     pub hue: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SurroundSoundState {
+    #[serde(default)]
+    pub global_enabled: Option<bool>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub surround_depth: Option<f64>,
+    #[serde(default)]
+    pub ambience: Option<f64>,
+    #[serde(default)]
+    pub clarity: Option<f64>,
+    #[serde(default)]
+    pub bass_boost: Option<f64>,
+    #[serde(default)]
+    pub dynamic_boost: Option<f64>,
+}
+
+impl SurroundSoundState {
+    fn merge(self, incoming: SurroundSoundState) -> SurroundSoundState {
+        SurroundSoundState {
+            global_enabled: incoming.global_enabled.or(self.global_enabled),
+            enabled: incoming.enabled.or(self.enabled),
+            preset: incoming.preset.or(self.preset),
+            surround_depth: incoming.surround_depth.or(self.surround_depth),
+            ambience: incoming.ambience.or(self.ambience),
+            clarity: incoming.clarity.or(self.clarity),
+            bass_boost: incoming.bass_boost.or(self.bass_boost),
+            dynamic_boost: incoming.dynamic_boost.or(self.dynamic_boost),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]

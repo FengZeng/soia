@@ -2694,3 +2694,169 @@
     color: var(--panel-muted, rgba(255, 255, 255, 0.68));
     font-size: 12px;
 }
+
+/* ─── Virtual Surround Sound & Audio Filter Panels ────────────────────── */
+
+.panel__surround-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 14px 16px 16px;
+    border-radius: 10px;
+    margin: 8px 0 0;
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.panel__surround-presets {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.panel__surround-preset {
+    padding: 5px 14px;
+    border-radius: 20px;
+    border: 1px solid rgba(0, 0, 0, 0.16);
+    background: rgba(0, 0, 0, 0.05);
+    color: rgba(0, 0, 0, 0.65);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    font-family: inherit;
+}
+
+.panel__surround-preset:hover {
+    background: rgba(0, 0, 0, 0.1);
+    color: rgba(0, 0, 0, 0.82);
+}
+
+.panel__surround-preset--active {
+    background: rgba(99, 102, 241, 0.15);
+    border-color: rgba(99, 102, 241, 0.45);
+    color: rgba(79, 70, 229, 0.9);
+}
+
+.panel__surround-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.panel__surround-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 36px;
+    align-items: center;
+    gap: 10px;
+}
+
+.panel__surround-label-col {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.panel__surround-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: rgba(0, 0, 0, 0.78);
+    line-height: 1.2;
+}
+
+.panel__surround-hint {
+    font-size: 10px;
+    color: rgba(0, 0, 0, 0.42);
+    line-height: 1.2;
+}
+
+.panel__surround-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.14);
+    outline: none;
+    cursor: pointer;
+    accent-color: rgb(99, 102, 241);
+}
+
+.panel__surround-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgb(99, 102, 241);
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(99, 102, 241, 0.4);
+    transition: transform 0.12s;
+}
+
+.panel__surround-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+.panel__surround-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    color: rgba(0, 0, 0, 0.55);
+    text-align: right;
+    min-width: 28px;
+}
+
+.panel__surround-tip {
+    font-size: 11px;
+    color: rgba(0, 0, 0, 0.4);
+    margin: 0;
+    line-height: 1.5;
+    padding: 8px 10px;
+    background: rgba(255, 180, 0, 0.07);
+    border-radius: 6px;
+    border-left: 3px solid rgba(255, 180, 0, 0.4);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-body {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-preset {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.6);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-preset:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.85);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-preset--active {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: rgba(129, 140, 248, 0.5);
+    color: rgba(165, 180, 252, 0.95);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-label {
+    color: rgba(255, 255, 255, 0.82);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-hint {
+    color: rgba(255, 255, 255, 0.36);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-slider {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-value {
+    color: rgba(255, 255, 255, 0.45);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__surround-tip {
+    color: rgba(255, 255, 255, 0.35);
+    background: rgba(255, 180, 0, 0.06);
+    border-left-color: rgba(255, 180, 0, 0.3);
+}
