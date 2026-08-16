@@ -9,6 +9,10 @@ import {
 import RemoteControlQrDialog from "../components/RemoteControlQrDialog.vue";
 import CustomSelect from "../components/CustomSelect.vue";
 import { AUDIO_GROUP_TITLE } from "../composables/settings-sections";
+import {
+    useSurroundSound,
+    type SurroundPreset,
+} from "../composables/useSurroundSound";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 import {
     ENABLE_COMPACT_MODE_SETTING_LABEL,
@@ -69,6 +73,43 @@ const {
     retryAudioOutput,
     isLoading,
 } = useSettingsPanel();
+
+const {
+    surroundState,
+    globalSurroundEnabled,
+    setGlobalSurroundEnabled,
+    setEnabled: setSurroundEnabled,
+    setPreset: setSurroundPreset,
+    setParam: setSurroundParam,
+} = useSurroundSound();
+
+const SURROUND_SLIDERS = [
+    {
+        key: "surroundDepth" as const,
+        label: "Surround Depth",
+        hint: "Stereo field width",
+    },
+    {
+        key: "ambience" as const,
+        label: "Ambience",
+        hint: "Room reverb / echo",
+    },
+    {
+        key: "clarity" as const,
+        label: "Clarity",
+        hint: "Treble presence",
+    },
+    {
+        key: "bassBoost" as const,
+        label: "Bass Boost",
+        hint: "Low-frequency gain",
+    },
+    {
+        key: "dynamicBoost" as const,
+        label: "Dynamic Boost",
+        hint: "Loudness levelling",
+    },
+];
 
 const audioStatusText = computed(() => {
     const status = audioOutputStatus.value;
@@ -650,6 +691,138 @@ onBeforeUnmount(() => {
                         Retry
                     </button>
                 </div>
+
+                <template v-if="group.title === AUDIO_GROUP_TITLE">
+                    <div class="panel__subtitle panel__subtitle--large">
+                        Virtual Surround Sound
+                    </div>
+                    <div class="panel__table panel__table--card">
+                        <div class="panel__row panel__row--card">
+                            <div class="panel__card-text">
+                                <div class="panel__card-title">Enable 3D Audio</div>
+                                <span class="panel__remote-copy">
+                                    Simulates spatial surround sound on headphones using audio filters
+                                </span>
+                            </div>
+                            <div class="panel__control">
+                                <label class="toggle" style="margin: 0">
+                                    <input
+                                        type="checkbox"
+                                        class="toggle__input"
+                                        :checked="surroundState.enabled"
+                                        aria-label="Enable Virtual Surround Sound"
+                                        @change="
+                                            setSurroundEnabled(
+                                                ($event.target as HTMLInputElement).checked,
+                                            )
+                                        "
+                                    />
+                                    <span class="toggle__track">
+                                        <span class="toggle__thumb"></span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="panel__row panel__row--card">
+                            <div class="panel__card-text">
+                                <div class="panel__card-title">Apply Globally</div>
+                                <span class="panel__remote-copy">
+                                    Apply 3D Audio settings across all media and persist on startup
+                                </span>
+                            </div>
+                            <div class="panel__control">
+                                <label class="toggle" style="margin: 0">
+                                    <input
+                                        type="checkbox"
+                                        class="toggle__input"
+                                        :checked="globalSurroundEnabled"
+                                        aria-label="Apply Virtual Surround Sound Globally"
+                                        @change="
+                                            setGlobalSurroundEnabled(
+                                                ($event.target as HTMLInputElement).checked,
+                                            )
+                                        "
+                                    />
+                                    <span class="toggle__track">
+                                        <span class="toggle__thumb"></span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="surroundState.enabled" class="panel__surround-body">
+                        <!-- Preset Pills -->
+                        <div class="panel__surround-presets">
+                            <button
+                                v-for="preset in (['movies', 'music', 'gaming'] as const)"
+                                :key="preset"
+                                class="panel__surround-preset"
+                                :class="{
+                                    'panel__surround-preset--active':
+                                        surroundState.preset === preset,
+                                }"
+                                type="button"
+                                @click="setSurroundPreset(preset as SurroundPreset)"
+                            >
+                                {{ preset.charAt(0).toUpperCase() + preset.slice(1) }}
+                            </button>
+                            <button
+                                class="panel__surround-preset"
+                                :class="{
+                                    'panel__surround-preset--active':
+                                        surroundState.preset === 'custom',
+                                }"
+                                type="button"
+                                @click="setSurroundPreset('custom')"
+                            >
+                                Custom
+                            </button>
+                        </div>
+
+                        <!-- Sliders -->
+                        <div class="panel__surround-sliders">
+                            <div
+                                v-for="slider in SURROUND_SLIDERS"
+                                :key="slider.key"
+                                class="panel__surround-row"
+                            >
+                                <div class="panel__surround-label-col">
+                                    <span class="panel__surround-label">{{
+                                        slider.label
+                                    }}</span>
+                                    <span class="panel__surround-hint">{{
+                                        slider.hint
+                                    }}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    class="panel__surround-slider"
+                                    :value="surroundState[slider.key]"
+                                    @input="
+                                        setSurroundParam(
+                                            slider.key,
+                                            Number(
+                                                ($event.target as HTMLInputElement).value,
+                                            ),
+                                        )
+                                    "
+                                />
+                                <span class="panel__surround-value">{{
+                                    surroundState[slider.key]
+                                }}</span>
+                            </div>
+                        </div>
+
+                        <p class="panel__surround-tip">
+                            Tip: Best experienced with headphones or stereo speakers.
+                        </p>
+                    </div>
+                </template>
+
                 <template v-if="group.title === 'Playback'">
                     <div class="panel__subtitle panel__subtitle--large">
                         Rendering
