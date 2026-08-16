@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import PlayerControls from "./components/PlayerControls.vue";
 import PlayerHeader from "./components/PlayerHeader.vue";
 import MainPanels from "./components/MainPanels.vue";
@@ -277,7 +277,7 @@ const {
     loadingUrl,
 });
 
-const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
+const { onKeydown, onDoubleClick: onPlaybackAreaDoubleClick } = usePlaybackShortcuts(
     {
         state: player.state,
         togglePlayPause: player.togglePlayPause,
@@ -291,6 +291,54 @@ const { onKeydown, onDoubleClick } = usePlaybackShortcuts(
         if (!isPassthroughActive.value) showVolumeOverlay(volume);
     },
 );
+
+const PLAYBACK_SURFACE_CLICK_DELAY_MS = 300;
+
+let playbackSurfaceClickTimer: number | null = null;
+let shouldSuppressPlaybackSurfaceClick = false;
+
+const isNonCompactPlaybackSurfaceClick = (event: MouseEvent | TouchEvent) =>
+    player.state.media.isFileLoaded &&
+    !compactModeEnabled.value &&
+    event.target === event.currentTarget;
+
+const clearPlaybackSurfaceClickTimer = () => {
+    if (playbackSurfaceClickTimer === null) return;
+    window.clearTimeout(playbackSurfaceClickTimer);
+    playbackSurfaceClickTimer = null;
+};
+
+const isPlaybackMenuOpen = () =>
+    playbackContextMenu.isOpen.value ||
+    isInfoOpen.value ||
+    isPlaylistOpen.value ||
+    tracks.showAudioMenu.value ||
+    tracks.showSubMenu.value ||
+    tracks.showSubtitleAdvancedSettings.value ||
+    speed.showSpeedMenu.value ||
+    adjustments.showSettingsMenu.value;
+
+const onPlaybackSurfaceClick = (event: MouseEvent) => {
+    if (shouldSuppressPlaybackSurfaceClick) {
+        shouldSuppressPlaybackSurfaceClick = false;
+        return;
+    }
+    if (isPlaybackMenuOpen()) return;
+    if (!isNonCompactPlaybackSurfaceClick(event)) return;
+
+    clearPlaybackSurfaceClickTimer();
+    playbackSurfaceClickTimer = window.setTimeout(() => {
+        playbackSurfaceClickTimer = null;
+        void player.togglePlayPause();
+    }, PLAYBACK_SURFACE_CLICK_DELAY_MS);
+};
+
+const onDoubleClick = (event: MouseEvent) => {
+    clearPlaybackSurfaceClickTimer();
+    void onPlaybackAreaDoubleClick(event);
+};
+
+onBeforeUnmount(clearPlaybackSurfaceClickTimer);
 
 watch(
     subtitlesDisabled,
@@ -320,11 +368,30 @@ const {
     settingsPanelId: "settings",
 });
 const {
-    onAppMouseDownCapture,
-    onAppTouchStartCapture,
-    onDragRegionMouseDown,
-    onDragRegionTouchStart,
+    onAppMouseDownCapture: onWindowDragMouseDownCapture,
+    onAppTouchStartCapture: onWindowDragTouchStartCapture,
+    onDragRegionMouseDown: onWindowDragRegionMouseDown,
+    onDragRegionTouchStart: onWindowDragRegionTouchStart,
 } = useWindowDragRegion();
+const onAppMouseDownCapture = (event: MouseEvent) => {
+    if (event.button === 0) {
+        shouldSuppressPlaybackSurfaceClick = isPlaybackMenuOpen();
+    }
+    if (!compactModeEnabled.value) return;
+    onWindowDragMouseDownCapture(event);
+};
+const onAppTouchStartCapture = (event: TouchEvent) => {
+    if (!compactModeEnabled.value) return;
+    onWindowDragTouchStartCapture(event);
+};
+const onDragRegionMouseDown = (event: MouseEvent) => {
+    if (!compactModeEnabled.value) return;
+    onWindowDragRegionMouseDown(event);
+};
+const onDragRegionTouchStart = (event: TouchEvent) => {
+    if (!compactModeEnabled.value) return;
+    onWindowDragRegionTouchStart(event);
+};
 const { mediaInfo, statusBadges } = useMediaInfo(player);
 const onSetSpeed = (rate: number) => {
     if (isPassthroughActive.value) return;
@@ -481,6 +548,7 @@ useAppStartupBindings({
         }"
         @mousedown.capture="onAppMouseDownCapture"
         @touchstart.capture="onAppTouchStartCapture"
+        @click="onPlaybackSurfaceClick"
         @contextmenu="playbackContextMenu.onContextMenu"
     >
         <SideActionsNav
@@ -675,6 +743,7 @@ useAppStartupBindings({
             @toggle-menu="toggleMenu"
             @toggle-loop-one="toggleLoopOne"
             @set-speed="onSetSpeed"
+            @set-speed-continuously="speed.setSpeedContinuously"
             @set-volume="onSetVolume"
             @toggle-muted="onToggleMuted"
             @set-audio-delay="adjustments.setAudioDelay"
