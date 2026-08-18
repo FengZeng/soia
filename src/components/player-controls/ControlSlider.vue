@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from "vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
     label: string;
     value: number;
     min: number;
@@ -11,7 +11,9 @@ const props = defineProps<{
     showSign?: boolean;
     showReset?: boolean;
     precision?: number;
-}>();
+}>(), {
+    showReset: true,
+});
 
 const emit = defineEmits<{
     (e: "change", value: number): void;

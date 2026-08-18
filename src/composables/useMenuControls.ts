@@ -12,7 +12,6 @@ type SpeedRefs = {
 
 type SettingsRefs = {
     showSettingsMenu: Ref<boolean>;
-    showCropMenu: Ref<boolean>;
 };
 
 export const useMenuControls = (
@@ -26,16 +25,14 @@ export const useMenuControls = (
         tracks.showSubtitleAdvancedSettings.value = false;
         speed.showSpeedMenu.value = false;
         settings.showSettingsMenu.value = false;
-        settings.showCropMenu.value = false;
     };
 
-    const toggleMenu = (menuName: "audio" | "sub" | "speed" | "settings" | "crop") => {
+    const toggleMenu = (menuName: "audio" | "sub" | "speed" | "settings") => {
         const wasOpen = {
             audio: tracks.showAudioMenu.value,
             sub: tracks.showSubMenu.value,
             speed: speed.showSpeedMenu.value,
             settings: settings.showSettingsMenu.value,
-            crop: settings.showCropMenu.value,
         };
 
         hideAllMenus();
@@ -51,9 +48,6 @@ export const useMenuControls = (
         }
         if (menuName === "settings" && !wasOpen.settings) {
             settings.showSettingsMenu.value = true;
-        }
-        if (menuName === "crop" && !wasOpen.crop) {
-            settings.showCropMenu.value = true;
         }
     };
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type { MediaTrack } from "../../types/media";
 import type { SubtitleTarget } from "../../composables/useSubtitleState";
 import {
@@ -21,7 +21,6 @@ const props = defineProps<{
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
     speedLocked: boolean;
-    showCropMenu: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -56,7 +55,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings" | "crop"): void;
+    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
     (e: "set-speed-continuously", rate: number): void;
@@ -123,9 +122,34 @@ const subtitleFontOptions = [
 const isSameTrackId = (left: MediaTrack["id"], right: MediaTrack["id"]) =>
     String(left) === String(right);
 
-const showCropMenu = computed(() => props.showCropMenu);
 const currentRatio = ref<string>("Auto");
 const internalZoom = ref<number>(1.0);
+type VideoSettingsTab = "picture" | "framing";
+const activeVideoSettingsTab = ref<VideoSettingsTab>("picture");
+const pictureVideoSettingsTab = ref<HTMLButtonElement | null>(null);
+const framingVideoSettingsTab = ref<HTMLButtonElement | null>(null);
+
+const selectVideoSettingsTab = (
+    tab: VideoSettingsTab,
+    shouldFocus = false,
+) => {
+    activeVideoSettingsTab.value = tab;
+    if (!shouldFocus) return;
+    void nextTick(() => {
+        const tabButton =
+            tab === "picture"
+                ? pictureVideoSettingsTab.value
+                : framingVideoSettingsTab.value;
+        tabButton?.focus();
+    });
+};
+
+const moveVideoSettingsTabFocus = () => {
+    selectVideoSettingsTab(
+        activeVideoSettingsTab.value === "picture" ? "framing" : "picture",
+        true,
+    );
+};
 
 watch(
     () => props.currentZoom,
@@ -174,7 +198,6 @@ const applyCropRatioPreset = async (key: string) => {
     const w = activeVideo?.demux_w || activeVideo?.w;
     const h = activeVideo?.demux_h || activeVideo?.h;
     const baseRatio = w && h && w > 0 && h > 0 ? w / h : 16 / 9;
-
     const zoomMultiplier = Math.max(target / baseRatio, baseRatio / target);
     const clampedZoom = Math.min(
         4.0,
@@ -944,11 +967,15 @@ watch(
             </button>
 
             <transition name="fade-up">
-                <div v-if="showSettingsMenu" class="track-menu track-menu--settings">
+                <div
+                    v-if="showSettingsMenu"
+                    class="track-menu track-menu--settings track-menu--video-settings"
+                >
                     <div class="track-menu__header">
                         <span>Video</span>
                         <div class="track-menu__header-actions">
                             <button
+                                v-if="activeVideoSettingsTab === 'picture'"
                                 class="track-menu__mode-toggle"
                                 type="button"
                                 :aria-pressed="globalColorAdjustmentsEnabled"
@@ -975,9 +1002,45 @@ watch(
                                     <span class="track-menu__mode-thumb"></span>
                                 </span>
                             </button>
+                            <button
+                                v-else
+                                class="track-menu__mode-toggle"
+                                type="button"
+                                :aria-pressed="globalCropZoomEnabled"
+                                :title="
+                                    globalCropZoomEnabled
+                                        ? 'Global apply enabled'
+                                        : 'Enable global apply'
+                                "
+                                @click.stop="
+                                    emit(
+                                        'set-global-crop-zoom-enabled',
+                                        !globalCropZoomEnabled,
+                                    )
+                                "
+                            >
+                                <span class="track-menu__mode-label">Global</span>
+                                <span
+                                    class="track-menu__mode-switch"
+                                    :class="{
+                                        'track-menu__mode-switch--on':
+                                            globalCropZoomEnabled,
+                                    }"
+                                >
+                                    <span class="track-menu__mode-thumb"></span>
+                                </span>
+                            </button>
                         </div>
                     </div>
-                    <div class="track-menu__list track-menu__list--settings">
+                    <div class="video-settings">
+                        <div class="video-settings__content">
+                            <div
+                                v-show="activeVideoSettingsTab === 'picture'"
+                                id="video-settings-panel-picture"
+                                class="track-menu__list track-menu__list--settings"
+                                role="tabpanel"
+                                aria-labelledby="video-settings-tab-picture"
+                            >
                         <ControlSlider
                             label="Brightness"
                             :value="brightness"
@@ -1038,140 +1101,131 @@ watch(
                             @change="emit('set-hue', $event)"
                             @reset="emit('set-hue', 0)"
                         />
-                    </div>
-                </div>
-            </transition>
-        </div>
-
-        <div class="track-menu-container">
-            <button
-                class="icon-button icon-button--player"
-                @click.stop="emit('toggle-menu', 'crop')"
-                title="Crop / Zoom"
-            >
-                <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                >
-                    <!-- Extended outer crop bracket legs -->
-                    <path d="M10 3.5H19a2 2 0 0 1 2 2v8.5" />
-                    <path d="M14 20.5H5a2 2 0 0 1-2-2v-8.5" />
-                    <!-- Magnifying glass with balanced handle -->
-                    <circle cx="10.5" cy="10.5" r="3.8" stroke-width="2.2" />
-                    <path d="M13.4 13.4L17.5 17.5" stroke-width="2.6" />
-                </svg>
-            </button>
-
-            <transition name="fade-up">
-                <div v-if="showCropMenu" class="track-menu track-menu--settings track-menu--crop">
-                    <div class="track-menu__header">
-                        <span>Screen Size & Crop</span>
-                        <div class="track-menu__header-actions">
-                            <button
-                                class="track-menu__mode-toggle"
-                                type="button"
-                                :aria-pressed="globalCropZoomEnabled"
-                                :title="
-                                    globalCropZoomEnabled
-                                        ? 'Global apply enabled'
-                                        : 'Enable global apply'
-                                "
-                                @click.stop="
-                                    emit(
-                                        'set-global-crop-zoom-enabled',
-                                        !globalCropZoomEnabled,
-                                    )
-                                "
-                            >
-                                <span class="track-menu__mode-label">Global</span>
-                                <span
-                                    class="track-menu__mode-switch"
-                                    :class="{
-                                        'track-menu__mode-switch--on':
-                                            globalCropZoomEnabled,
-                                    }"
-                                >
-                                    <span class="track-menu__mode-thumb"></span>
-                                </span>
-                            </button>
                         </div>
-                    </div>
-                    
-                    <div class="track-menu__list track-menu__list--settings panel__crop-body">
-                        <!-- Ratios -->
-                        <div class="panel__crop-presets">
-                            <button
-                                type="button"
-                                class="panel__crop-preset"
-                                :class="{ 'panel__crop-preset--active': currentRatio === 'Auto' || currentRatio === 'no' }"
-                                @click="applyCropRatioPreset('Auto')"
-                            >
-                                Auto
-                            </button>
-                            <button
-                                type="button"
-                                class="panel__crop-preset"
-                                :class="{ 'panel__crop-preset--active': currentRatio === '16:9' }"
-                                @click="applyCropRatioPreset('16:9')"
-                            >
-                                16:9
-                            </button>
-                            <button
-                                type="button"
-                                class="panel__crop-preset"
-                                :class="{ 'panel__crop-preset--active': currentRatio === '16:10' }"
-                                @click="applyCropRatioPreset('16:10')"
-                            >
-                                16:10
-                            </button>
-                            <button
-                                type="button"
-                                class="panel__crop-preset"
-                                :class="{ 'panel__crop-preset--active': currentRatio === '4:3' }"
-                                @click="applyCropRatioPreset('4:3')"
-                            >
-                                4:3
-                            </button>
-                            <button
-                                type="button"
-                                class="panel__crop-preset"
-                                :class="{ 'panel__crop-preset--active': currentRatio === '21:9' }"
-                                @click="applyCropRatioPreset('21:9')"
-                            >
-                                21:9
-                            </button>
-                            <button
-                                type="button"
-                                class="panel__crop-preset"
-                                :class="{ 'panel__crop-preset--active': currentRatio === '2.35:1' }"
-                                @click="applyCropRatioPreset('2.35:1')"
-                            >
-                                2.35:1
-                            </button>
-                        </div>
-
-                        <!-- Zoom Slider -->
-                        <div class="panel__crop-sliders">
-                            <div class="panel__crop-row" style="margin-top: 10px;">
-                                <ControlSlider
-                                    label="Zoom"
-                                    :value="internalZoom"
-                                    :min="0.5"
-                                    :max="3.0"
-                                    :step="0.05"
-                                    unit="x"
-                                    :show-sign="false"
-                                    :precision="2"
-                                    @change="setZoom($event)"
-                                    @reset="setZoom(1.0)"
-                                />
+                        <div
+                            v-show="activeVideoSettingsTab === 'framing'"
+                            id="video-settings-panel-framing"
+                            class="track-menu__list track-menu__list--settings"
+                            role="tabpanel"
+                            aria-labelledby="video-settings-tab-framing"
+                        >
+                            <div class="framing-ratio-control">
+                                <div class="framing-ratio-control__header">
+                                    <span>Aspect Ratio</span>
+                                </div>
+                                <div class="panel__crop-presets">
+                                    <button
+                                        type="button"
+                                        class="panel__crop-preset"
+                                        :class="{ 'panel__crop-preset--active': currentRatio === 'Auto' }"
+                                        @click="applyCropRatioPreset('Auto')"
+                                    >
+                                        Auto
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="panel__crop-preset"
+                                        :class="{ 'panel__crop-preset--active': currentRatio === '16:9' }"
+                                        @click="applyCropRatioPreset('16:9')"
+                                    >
+                                        16:9
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="panel__crop-preset"
+                                        :class="{ 'panel__crop-preset--active': currentRatio === '16:10' }"
+                                        @click="applyCropRatioPreset('16:10')"
+                                    >
+                                        16:10
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="panel__crop-preset"
+                                        :class="{ 'panel__crop-preset--active': currentRatio === '4:3' }"
+                                        @click="applyCropRatioPreset('4:3')"
+                                    >
+                                        4:3
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="panel__crop-preset"
+                                        :class="{ 'panel__crop-preset--active': currentRatio === '21:9' }"
+                                        @click="applyCropRatioPreset('21:9')"
+                                    >
+                                        21:9
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="panel__crop-preset"
+                                        :class="{ 'panel__crop-preset--active': currentRatio === '2.35:1' }"
+                                        @click="applyCropRatioPreset('2.35:1')"
+                                    >
+                                        2.35:1
+                                    </button>
+                                </div>
                             </div>
+                            <ControlSlider
+                                label="Zoom"
+                                :value="internalZoom"
+                                :min="0.5"
+                                :max="3.0"
+                                :step="0.05"
+                                unit="x"
+                                :show-sign="false"
+                                :precision="2"
+                                @change="setZoom($event)"
+                                @reset="setZoom(1.0)"
+                            />
                         </div>
+                        </div>
+                        <nav
+                            class="video-settings__tabs"
+                            aria-label="Video settings"
+                            role="tablist"
+                        >
+                            <button
+                                id="video-settings-tab-picture"
+                                ref="pictureVideoSettingsTab"
+                                class="video-settings__tab"
+                                type="button"
+                                role="tab"
+                                :class="{
+                                    'video-settings__tab--active':
+                                        activeVideoSettingsTab === 'picture',
+                                }"
+                                :aria-selected="activeVideoSettingsTab === 'picture'"
+                                aria-controls="video-settings-panel-picture"
+                                :tabindex="activeVideoSettingsTab === 'picture' ? 0 : -1"
+                                @click="selectVideoSettingsTab('picture')"
+                                @keydown.left.prevent="moveVideoSettingsTabFocus"
+                                @keydown.right.prevent="moveVideoSettingsTabFocus"
+                                @keydown.home.prevent="selectVideoSettingsTab('picture', true)"
+                                @keydown.end.prevent="selectVideoSettingsTab('framing', true)"
+                            >
+                                Picture
+                            </button>
+                            <button
+                                id="video-settings-tab-framing"
+                                ref="framingVideoSettingsTab"
+                                class="video-settings__tab"
+                                type="button"
+                                role="tab"
+                                :class="{
+                                    'video-settings__tab--active':
+                                        activeVideoSettingsTab === 'framing',
+                                }"
+                                :aria-selected="activeVideoSettingsTab === 'framing'"
+                                aria-controls="video-settings-panel-framing"
+                                :tabindex="activeVideoSettingsTab === 'framing' ? 0 : -1"
+                                @click="selectVideoSettingsTab('framing')"
+                                @keydown.left.prevent="moveVideoSettingsTabFocus"
+                                @keydown.right.prevent="moveVideoSettingsTabFocus"
+                                @keydown.home.prevent="selectVideoSettingsTab('picture', true)"
+                                @keydown.end.prevent="selectVideoSettingsTab('framing', true)"
+                            >
+                                Crop &amp; Zoom
+                            </button>
+                        </nav>
                     </div>
                 </div>
             </transition>
@@ -1553,6 +1607,111 @@ watch(
     font-weight: 600;
     letter-spacing: 0.03em;
     text-transform: uppercase;
+}
+
+.video-settings {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+}
+
+.video-settings__tabs {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 4px;
+    padding: 0 10px 10px;
+}
+
+.video-settings__tab {
+    position: relative;
+    min-height: 30px;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.6);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+    cursor: pointer;
+    transition:
+        color 0.18s ease,
+        background-color 0.18s ease,
+        border-color 0.18s ease;
+}
+
+.video-settings__tab:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.video-settings__tab--active {
+    color: #8fb3ff;
+}
+
+.video-settings__tab--active::after {
+    position: absolute;
+    bottom: -5px;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-right: 5px solid transparent;
+    border-bottom: 6px solid rgba(255, 255, 255, 0.92);
+    border-left: 5px solid transparent;
+    content: "";
+    transform: translateX(-50%);
+}
+
+.video-settings__content {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+}
+
+.framing-ratio-control {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.framing-ratio-control__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 12px;
+}
+
+.track-menu--video-settings
+    .framing-ratio-control
+    .panel__crop-preset--active {
+    background: rgba(143, 179, 255, 0.22) !important;
+    border-color: rgba(143, 179, 255, 0.75) !important;
+    color: #dfeaff !important;
+}
+
+.track-menu--video-settings {
+    width: min(340px, calc(100vw - 24px));
+    max-height: min(430px, calc(100vh - 90px));
+}
+
+.track-menu--video-settings > .track-menu__header {
+    margin-bottom: 0;
+}
+
+@media (max-width: 520px) {
+    .video-settings__tabs {
+        padding: 0 8px 8px;
+    }
+
+    .video-settings__tab {
+        padding: 5px 10px;
+        font-size: 11px;
+    }
 }
 
 .track-menu__footer {

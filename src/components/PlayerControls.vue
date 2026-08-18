@@ -24,7 +24,6 @@ const props = defineProps<{
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
-    showCropMenu: boolean;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -64,7 +63,7 @@ const emit = defineEmits<{
     (e: "toggle-play-pause"): void;
     (e: "stop-playback"): void;
     (e: "next-track"): void;
-    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings" | "crop"): void;
+    (e: "toggle-menu", menuName: "audio" | "sub" | "speed" | "settings"): void;
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
     (e: "set-speed-continuously", rate: number): void;
@@ -263,7 +262,6 @@ onUnmounted(() => {
                         :show-speed-menu="showSpeedMenu"
                         :show-settings-menu="showSettingsMenu"
                         :speed-locked="audioPassthroughActive"
-                        :show-crop-menu="showCropMenu"
                         :audio-delay="audioDelay"
                         :sub-delay="subDelay"
                         :secondary-sub-delay="secondarySubDelay"

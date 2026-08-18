@@ -724,7 +724,6 @@ useAppStartupBindings({
             :playback-rates="speed.playbackRates"
             :show-speed-menu="speed.showSpeedMenu.value"
             :show-settings-menu="adjustments.showSettingsMenu.value"
-            :show-crop-menu="adjustments.showCropMenu.value"
             :audio-delay="adjustments.audioDelay.value"
             :sub-delay="adjustments.subDelay.value"
             :secondary-sub-delay="adjustments.secondarySubDelay.value"
