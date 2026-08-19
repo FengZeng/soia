@@ -20,6 +20,7 @@ const props = defineProps<{
     statusBadges: string[];
     audioPassthroughActive: boolean;
     currentSpeed: number;
+    currentZoom: number;
     playbackRates: number[];
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
@@ -32,8 +33,10 @@ const props = defineProps<{
     gamma: number;
     hue: number;
     globalColorAdjustmentsEnabled: boolean;
+    globalCropZoomEnabled?: boolean;
     isLoopOne: boolean;
     audioTracks: MediaTrack[];
+    videoTracks: MediaTrack[];
     showAudioMenu: boolean;
     subTracks: MediaTrack[];
     dualSubEnabled: boolean;
@@ -64,6 +67,8 @@ const emit = defineEmits<{
     (e: "toggle-loop-one"): void;
     (e: "set-speed", rate: number): void;
     (e: "set-speed-continuously", rate: number): void;
+    (e: "set-zoom", scale: number): void;
+    (e: "set-aspect-ratio", ratio: string): void;
     (e: "set-volume", volume: number): void;
     (e: "toggle-muted"): void;
     (e: "set-audio-delay", value: number): void;
@@ -79,6 +84,8 @@ const emit = defineEmits<{
     (e: "set-gamma", value: number): void;
     (e: "set-hue", value: number): void;
     (e: "set-global-color-adjustments-enabled", enabled: boolean): void;
+    (e: "set-global-crop-zoom-enabled", enabled: boolean): void;
+    (e: "update-crop-zoom", payload: { zoom: number; ratio: string }): void;
     (e: "select-audio", track: MediaTrack): void;
     (e: "select-sub-track", payload: { target: SubtitleTarget; track: MediaTrack }): void;
     (e: "set-active-sub-target", target: SubtitleTarget): void;
@@ -250,6 +257,7 @@ onUnmounted(() => {
                     />
                     <RightControls
                         :current-speed="currentSpeed"
+                        :current-zoom="currentZoom"
                         :playback-rates="playbackRates"
                         :show-speed-menu="showSpeedMenu"
                         :show-settings-menu="showSettingsMenu"
@@ -265,8 +273,10 @@ onUnmounted(() => {
                         :global-color-adjustments-enabled="
                             globalColorAdjustmentsEnabled
                         "
+                        :global-crop-zoom-enabled="globalCropZoomEnabled"
                         :is-loop-one="isLoopOne"
                         :audio-tracks="audioTracks"
+                        :video-tracks="videoTracks"
                         :show-audio-menu="showAudioMenu"
                         :sub-tracks="subTracks"
                         :dual-sub-enabled="dualSubEnabled"
@@ -288,6 +298,8 @@ onUnmounted(() => {
                         @toggle-menu="emit('toggle-menu', $event)"
                         @toggle-loop-one="emit('toggle-loop-one')"
                         @set-speed="emit('set-speed', $event)"
+                        @set-zoom="emit('set-zoom', $event)"
+                        @set-aspect-ratio="emit('set-aspect-ratio', $event)"
                         @set-speed-continuously="emit('set-speed-continuously', $event)"
                         @set-audio-delay="emit('set-audio-delay', $event)"
                         @set-sub-delay-for-target="
@@ -305,6 +317,12 @@ onUnmounted(() => {
                         @set-hue="emit('set-hue', $event)"
                         @set-global-color-adjustments-enabled="
                             emit('set-global-color-adjustments-enabled', $event)
+                        "
+                        @set-global-crop-zoom-enabled="
+                            emit('set-global-crop-zoom-enabled', $event)
+                        "
+                        @update-crop-zoom="
+                            emit('update-crop-zoom', $event)
                         "
                         @select-audio="emit('select-audio', $event)"
                         @select-sub-track="emit('select-sub-track', $event)"

@@ -19,9 +19,16 @@ type ColorAdjustmentKey =
 
 type ColorAdjustmentsState = Record<ColorAdjustmentKey, number>;
 
+export type CropZoomState = {
+    zoom: number;
+    ratio: string;
+};
+
 type PersistedPlaybackAdjustmentsState = {
     globalColorAdjustmentsEnabled?: boolean;
     globalColorAdjustments?: Partial<ColorAdjustmentsState>;
+    globalCropZoomEnabled?: boolean;
+    globalCropZoom?: Partial<CropZoomState>;
 };
 
 const COLOR_ADJUSTMENT_KEYS: ColorAdjustmentKey[] = [
@@ -38,6 +45,10 @@ const DEFAULT_COLOR_ADJUSTMENTS: ColorAdjustmentsState = {
     saturation: 0,
     gamma: 0,
     hue: 0,
+};
+const DEFAULT_CROP_ZOOM: CropZoomState = {
+    zoom: 1.0,
+    ratio: "Auto",
 };
 const LOCAL_ADJUSTMENTS_MAX_ENTRIES = 100;
 
@@ -75,6 +86,12 @@ export const usePlaybackAdjustments = () => {
         ...DEFAULT_COLOR_ADJUSTMENTS,
     });
     const globalColorAdjustmentsEnabled = ref(false);
+
+    const localCropZoom = ref<CropZoomState>({ ...DEFAULT_CROP_ZOOM });
+    const localCropZoomByMediaKey = new Map<string, CropZoomState>();
+    const globalCropZoom = ref<CropZoomState>({ ...DEFAULT_CROP_ZOOM });
+    const globalCropZoomEnabled = ref(false);
+
     const persistedStateSaver = createDebouncedUiStateSaver(350);
 
     const activeColorAdjustments = computed(() =>
@@ -83,21 +100,32 @@ export const usePlaybackAdjustments = () => {
             : localColorAdjustments.value,
     );
 
+    const activeCropZoom = computed(() =>
+        globalCropZoomEnabled.value
+            ? globalCropZoom.value
+            : localCropZoom.value,
+    );
+
     const brightness = computed(() => activeColorAdjustments.value.brightness);
     const contrast = computed(() => activeColorAdjustments.value.contrast);
     const saturation = computed(() => activeColorAdjustments.value.saturation);
     const gamma = computed(() => activeColorAdjustments.value.gamma);
     const hue = computed(() => activeColorAdjustments.value.hue);
 
+    const currentCropZoom = computed(() => activeCropZoom.value.zoom);
+    const currentCropRatio = computed(() => activeCropZoom.value.ratio);
+
     const buildPersistedPlaybackAdjustmentsState = () => ({
         playbackAdjustments: {
             globalColorAdjustmentsEnabled: globalColorAdjustmentsEnabled.value,
             globalColorAdjustments: { ...globalColorAdjustments.value },
+            globalCropZoomEnabled: globalCropZoomEnabled.value,
+            globalCropZoom: { ...globalCropZoom.value },
         } satisfies PersistedPlaybackAdjustmentsState,
     });
 
     const persistPlaybackAdjustmentsDebounced = () => {
-        if (!globalColorAdjustmentsEnabled.value) return;
+        if (!globalColorAdjustmentsEnabled.value && !globalCropZoomEnabled.value) return;
         persistedStateSaver.saveDebounced(buildPersistedPlaybackAdjustmentsState());
     };
 
@@ -243,18 +271,102 @@ export const usePlaybackAdjustments = () => {
         await persistPlaybackAdjustmentsNow();
     };
 
+    const applyCropZoomToMpv = async (zoom: number) => {
+        try {
+            const clamped = clamp(zoom, 0.1, 4.0);
+            const mpvZoom = Math.log2(clamped);
+            await invoke("mpv_run_command", {
+                args: ["set", "video-zoom", String(mpvZoom.toFixed(6))],
+            });
+            await invoke("mpv_run_command", {
+                args: ["set", "video-aspect-override", "no"],
+            });
+        } catch (e) {
+            console.error("Failed to apply crop zoom to mpv:", e);
+        }
+    };
+
+    const setCropZoom = async (zoom: number, ratio: string) => {
+        const next: CropZoomState = {
+            zoom: clamp(zoom, 0.1, 4.0),
+            ratio: ratio || "Auto",
+        };
+        activeCropZoom.value.zoom = next.zoom;
+        activeCropZoom.value.ratio = next.ratio;
+
+        if (!globalCropZoomEnabled.value && currentLocalMediaKey.value) {
+            const mediaKey = currentLocalMediaKey.value;
+            localCropZoomByMediaKey.delete(mediaKey);
+            localCropZoomByMediaKey.set(mediaKey, { ...localCropZoom.value });
+            if (localCropZoomByMediaKey.size > LOCAL_ADJUSTMENTS_MAX_ENTRIES) {
+                const oldestKey = localCropZoomByMediaKey.keys().next().value;
+                if (oldestKey) {
+                    localCropZoomByMediaKey.delete(oldestKey);
+                }
+            }
+        }
+
+        await applyCropZoomToMpv(next.zoom);
+        if (globalCropZoomEnabled.value) {
+            persistPlaybackAdjustmentsDebounced();
+        }
+    };
+
+    const reapplyGlobalCropZoom = async () => {
+        if (!globalCropZoomEnabled.value) return;
+        await applyCropZoomToMpv(globalCropZoom.value.zoom);
+    };
+
+    const applyCropZoomForMedia = async (mediaKey: string) => {
+        const normalizedKey = mediaKey.trim();
+        if (globalCropZoomEnabled.value) {
+            await reapplyGlobalCropZoom();
+            return;
+        }
+
+        const storedPerMedia = normalizedKey
+            ? localCropZoomByMediaKey.get(normalizedKey)
+            : undefined;
+        localCropZoom.value = storedPerMedia
+            ? { ...storedPerMedia }
+            : { ...DEFAULT_CROP_ZOOM };
+        await applyCropZoomToMpv(localCropZoom.value.zoom);
+    };
+
+    const setGlobalCropZoomEnabled = async (enabled: boolean) => {
+        if (globalCropZoomEnabled.value === enabled) return;
+        persistedStateSaver.cancel();
+        globalCropZoomEnabled.value = enabled;
+        await applyCropZoomToMpv(activeCropZoom.value.zoom);
+        await persistPlaybackAdjustmentsNow();
+    };
+
     void (async () => {
         const stored = await loadUiState<{
             playbackAdjustments?: PersistedPlaybackAdjustmentsState;
         }>();
         const persisted = stored?.playbackAdjustments;
-        const enabled = persisted?.globalColorAdjustmentsEnabled === true;
+        const colorEnabled = persisted?.globalColorAdjustmentsEnabled === true;
         globalColorAdjustments.value = normalizeColorAdjustments(
             persisted?.globalColorAdjustments,
         );
-        globalColorAdjustmentsEnabled.value = enabled;
-        if (!enabled) return;
-        await reapplyGlobalColorAdjustments();
+        globalColorAdjustmentsEnabled.value = colorEnabled;
+
+        const cropEnabled = persisted?.globalCropZoomEnabled === true;
+        if (persisted?.globalCropZoom) {
+            globalCropZoom.value = {
+                zoom: persisted.globalCropZoom.zoom ?? 1.0,
+                ratio: persisted.globalCropZoom.ratio ?? "Auto",
+            };
+        }
+        globalCropZoomEnabled.value = cropEnabled;
+
+        if (colorEnabled) {
+            await reapplyGlobalColorAdjustments();
+        }
+        if (cropEnabled) {
+            await reapplyGlobalCropZoom();
+        }
     })();
 
     return {
@@ -268,6 +380,9 @@ export const usePlaybackAdjustments = () => {
         gamma,
         hue,
         globalColorAdjustmentsEnabled,
+        globalCropZoomEnabled,
+        currentCropZoom,
+        currentCropRatio,
         setAudioDelay,
         setSubDelay,
         setSecondarySubDelay,
@@ -278,7 +393,11 @@ export const usePlaybackAdjustments = () => {
         setGamma,
         setHue,
         setGlobalColorAdjustmentsEnabled,
+        setGlobalCropZoomEnabled,
+        setCropZoom,
         reapplyGlobalColorAdjustments,
+        reapplyGlobalCropZoom,
         applyColorAdjustmentsForMedia,
+        applyCropZoomForMedia,
     };
 };

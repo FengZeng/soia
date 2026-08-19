@@ -2684,6 +2684,7 @@
         rgba(255, 255, 255, 0.06) 63%
     );
 }
+
 .panel__audio-status {
     display: flex;
     align-items: center;
@@ -2693,4 +2694,84 @@
     padding: 6px 4px 0;
     color: var(--panel-muted, rgba(255, 255, 255, 0.68));
     font-size: 12px;
+}
+
+/* ─── Screen Size & Crop Panel ───────────────────────────────────────── */
+
+.panel__crop-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 14px 16px 16px;
+    border-radius: 10px;
+    margin: 8px 0 0;
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* Preset pills */
+.panel__crop-presets {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.panel__crop-preset {
+    padding: 5px 14px;
+    border-radius: 20px;
+    border: 1px solid rgba(0, 0, 0, 0.16);
+    background: rgba(0, 0, 0, 0.05);
+    color: rgba(0, 0, 0, 0.65);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    font-family: inherit;
+}
+
+.panel__crop-preset:hover {
+    background: rgba(0, 0, 0, 0.1);
+    color: rgba(0, 0, 0, 0.82);
+}
+
+.panel__crop-preset--active {
+    background: rgba(99, 102, 241, 0.15);
+    border-color: rgba(99, 102, 241, 0.45);
+    color: rgba(79, 70, 229, 0.9);
+}
+
+/* Sliders area */
+.panel__crop-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.panel__crop-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Dark / Graphite theme overrides */
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__crop-body {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__crop-preset {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.6);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__crop-preset:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.85);
+}
+
+:root:is([data-theme="dark"], [data-theme="graphite"]) .panel__crop-preset--active {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: rgba(129, 140, 248, 0.5);
+    color: rgba(165, 180, 252, 0.95);
 }

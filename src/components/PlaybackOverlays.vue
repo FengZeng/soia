@@ -12,6 +12,7 @@ const props = defineProps<{
     seekOverlayRightText?: string;
     seekOverlayLeftTimelineText?: string;
     volumeOverlayText?: string;
+    zoomOverlayText?: { label: string; value: string } | null;
     hideSeekTimeline?: boolean;
     seekOverlayLeftPulseToken?: number;
     seekOverlayRightPulseToken?: number;
@@ -86,6 +87,11 @@ const seekOverlayRightDisplay = computed(() =>
         <transition name="fade-in">
             <div v-if="volumeOverlayText" class="volume-overlay__text">
                 {{ volumeOverlayText }}
+            </div>
+        </transition>
+        <transition name="fade-in">
+            <div v-if="zoomOverlayText" class="zoom-overlay__text">
+                {{ zoomOverlayText.label }} {{ zoomOverlayText.value }}
             </div>
         </transition>
         <transition name="fade-in">
@@ -308,6 +314,21 @@ const seekOverlayRightDisplay = computed(() =>
     font-feature-settings: "tnum";
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(8px);
+}
+
+.zoom-overlay__text {
+    position: absolute;
+    top: clamp(42px, 5.5vh, 66px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 5px 9px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.48);
+    color: rgba(255, 255, 255, 0.96);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
 }
 
 .fade-in-enter-active,
