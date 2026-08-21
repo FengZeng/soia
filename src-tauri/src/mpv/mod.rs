@@ -5,7 +5,6 @@ mod series_match;
 mod ytdlp_resolver;
 mod ytdlp_settings;
 mod stream_https;
-mod stream_proxy;
 
 #[cfg(target_os = "macos")]
 pub(crate) use ffi::SoiaUtils;
@@ -15,19 +14,12 @@ pub(crate) use ytdlp_resolver::resolve_playlist as resolve_ytdlp_playlist;
 pub(crate) use ytdlp_settings::store_runtime_settings as store_runtime_ytdlp_settings;
 pub(crate) use ytdlp_settings::YtdlpFormatSettings;
 pub(crate) use ytdlp_settings::YtdlpSettings;
-pub(crate) use stream_proxy::rewrite_http_stream_url;
-pub(crate) use stream_proxy::rewrite_https_stream_url;
-pub(crate) use stream_proxy::rewrite_smb_stream_url;
-pub(crate) use stream_proxy::set_parallel_range_enabled;
-pub(crate) use stream_proxy::begin_download_speed_activation;
-pub(crate) use stream_proxy::begin_download_speed_generation;
-pub(crate) use stream_proxy::is_stream_proxy_url;
 
 pub(crate) const USE_SMB_STREAM_PROXY: bool = true;
 pub(crate) const USE_WEBDAV_STREAM_PROXY: bool = true;
 
 pub(crate) fn register_stream_basic_auth(playback_url: &str, username: &str, password: &str) {
-    stream_proxy::register_basic_auth(playback_url, username, password);
+    crate::media_gateway::register_basic_auth(playback_url, username, password);
     stream_https::register_basic_auth(playback_url, username, password);
 }
 
@@ -60,21 +52,23 @@ pub(crate) fn rewrite_network_stream_url(protocol: &str, url: &str) -> Option<St
     match protocol.as_str() {
         "webdav" => {
             if USE_WEBDAV_STREAM_PROXY {
-                rewrite_http_stream_url(url).or_else(|| rewrite_https_stream_url(url))
+                crate::media_gateway::create_loopback_http_media_url(url)
+                    .or_else(|| crate::media_gateway::create_loopback_https_media_url(url))
             } else {
-                rewrite_https_callback_url(url).or_else(|| rewrite_http_stream_url(url))
+                rewrite_https_callback_url(url)
+                    .or_else(|| crate::media_gateway::create_loopback_http_media_url(url))
             }
         }
         "smb" | "samba" => {
             if USE_SMB_STREAM_PROXY {
-                rewrite_smb_stream_url(url)
+                crate::media_gateway::create_loopback_smb_media_url(url)
             } else {
                 None
             }
         }
-        _ => rewrite_http_stream_url(url)
-            .or_else(|| rewrite_https_stream_url(url))
-            .or_else(|| rewrite_smb_stream_url(url))
+        _ => crate::media_gateway::create_loopback_http_media_url(url)
+            .or_else(|| crate::media_gateway::create_loopback_https_media_url(url))
+            .or_else(|| crate::media_gateway::create_loopback_smb_media_url(url))
             .or_else(|| rewrite_https_callback_url(url)),
     }
 }

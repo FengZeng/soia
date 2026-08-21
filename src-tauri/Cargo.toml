@@ -43,7 +43,7 @@ cfg-if = "1.0"
 log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
-uuid = { version = "1", features = ["v7"] }
+uuid = { version = "1", features = ["v4", "v7"] }
 qrcode = "0.14"
 if-addrs = "0.14"
 base64 = "0.22"

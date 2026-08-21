@@ -307,7 +307,7 @@ pub(crate) async fn resolve(app: &AppHandle, raw_url: &str) -> Result<Option<Res
     let playback_url = proxied_candidate_url(&candidate);
     let title = extract_media_title(&value);
 
-    info!("yt-dlp: resolved url through stream proxy");
+    info!("yt-dlp: resolved url through media gateway");
     Ok(Some(ResolvedMedia {
         url: playback_url,
         title,
@@ -551,7 +551,7 @@ fn select_best_combined_candidate(value: &Value, top_headers: &[(String, String)
 }
 
 fn proxied_candidate_url(candidate: &Candidate) -> String {
-    super::stream_proxy::rewrite_stream_url_with_headers(&candidate.url, &candidate.headers)
+    crate::media_gateway::create_loopback_media_url_with_headers(&candidate.url, &candidate.headers)
         .unwrap_or_else(|| candidate.url.clone())
 }
 

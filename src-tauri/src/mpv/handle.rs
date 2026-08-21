@@ -254,8 +254,8 @@ impl MpvHandle {
             return Err("Failed to create SoiaUtils instance".to_string());
         }
 
-        if let Err(error) = super::stream_proxy::start(app_handle.clone()) {
-            log::warn!("stream proxy: failed to start: {error}");
+        if let Err(error) = crate::media_gateway::start_loopback_listener(app_handle.clone()) {
+            log::warn!("media gateway: failed to start loopback listener: {error}");
         }
         let mut https_stream_registry = Box::new(HttpsStreamRegistry::new(app_handle.clone()));
         if let Err(error) = https_stream_registry.register(soia_utils) {

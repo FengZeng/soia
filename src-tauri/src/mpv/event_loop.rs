@@ -263,7 +263,7 @@ fn publish_playback_snapshot(
         snapshot.is_playing = is_playing;
         snapshot.is_buffering = is_buffering;
         snapshot.download_speed_bps = if include_download_speed {
-            crate::mpv::stream_proxy::download_speed_bps()
+            crate::media_gateway::download_speed_bps()
         } else {
             0.0
         };
@@ -891,7 +891,7 @@ pub(super) fn mpv_event_loop(
             if seek_speed_refresh_active {
                 let now = Instant::now();
                 if next_seek_speed_refresh_at.is_some_and(|refresh_at| now >= refresh_at) {
-                    let download_speed_bps = crate::mpv::stream_proxy::download_speed_bps();
+                    let download_speed_bps = crate::media_gateway::download_speed_bps();
                     if download_speed_bps != last_download_speed_bps {
                         last_download_speed_bps = download_speed_bps;
                         update_snapshot(&app_handle, |snapshot| {
@@ -1347,7 +1347,7 @@ pub(super) fn mpv_event_loop(
                                     let json_cache_state = parse_node(node);
                                     last_seekable_ranges = parse_seekable_ranges(&json_cache_state);
                                     last_download_speed_bps =
-                                        crate::mpv::stream_proxy::download_speed_bps();
+                                        crate::media_gateway::download_speed_bps();
                                     #[cfg(debug_assertions)]
                                     trace!(
                                         "cache-state-ranges-updated: count={}",

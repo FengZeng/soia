@@ -614,7 +614,7 @@ pub(crate) fn apply_stream_proxy_settings(
     parallel_download_enabled: Option<bool>,
 ) -> Result<StreamProxySettingsState, String> {
     let enabled = parallel_download_enabled.unwrap_or(false);
-    crate::mpv::set_parallel_range_enabled(enabled);
+    crate::media_gateway::set_parallel_range_enabled(enabled);
     Ok(StreamProxySettingsState {
         parallel_download_enabled: enabled,
     })

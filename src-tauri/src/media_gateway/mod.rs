@@ -1,3 +1,5 @@
+mod lease;
+
 use log::{debug, info, warn};
 use percent_encoding::percent_decode_str;
 use reqwest::header::{
@@ -356,7 +358,7 @@ impl StreamBackendRegistry {
         self.last_cleanup = now;
         let removed = before.saturating_sub(self.entries.len());
         if removed > 0 {
-            debug!("stream proxy: cleaned up {removed} idle backend token(s)");
+            debug!("media gateway: cleaned up {removed} idle backend token(s)");
         }
     }
 
@@ -379,7 +381,7 @@ impl StreamBackendRegistry {
         }
         self.last_cleanup = now;
         debug!(
-            "stream proxy: evicted {remove_count} backend token(s) to enforce registry limit"
+            "media gateway: evicted {remove_count} backend token(s) to enforce registry limit"
         );
     }
 }
@@ -509,7 +511,7 @@ impl SmbStreamBackend {
             .map(u64::from)
             .unwrap_or(SMB_STREAM_CHUNK_BYTES);
         let chunk_size = negotiated.min(SMB_STREAM_CHUNK_BYTES).max(64 * 1024);
-        debug!("stream proxy: SMB chunk size negotiated={negotiated} effective={chunk_size}");
+        debug!("media gateway: SMB chunk size negotiated={negotiated} effective={chunk_size}");
         chunk_size
     }
 
@@ -522,7 +524,7 @@ impl SmbStreamBackend {
             Ok(result) => Ok(result),
             Err(first_error) => {
                 warn!(
-                    "stream proxy: SMB persistent read failed, reconnecting url={} offset={} length={} error={first_error}",
+                    "media gateway: SMB persistent read failed, reconnecting url={} offset={} length={} error={first_error}",
                     redact_url(&self.url),
                     offset,
                     length
@@ -559,7 +561,7 @@ impl SmbStreamBackend {
             Ok(result) => Ok(result),
             Err(first_error) => {
                 warn!(
-                    "stream proxy: SMB pipeline read failed, reconnecting url={} error={first_error}",
+                    "media gateway: SMB pipeline read failed, reconnecting url={} error={first_error}",
                     redact_url(&self.url),
                 );
                 self.clear_playback_file();
@@ -630,7 +632,7 @@ enum RequestHeaderRead {
 pub(crate) fn set_parallel_range_enabled(enabled: bool) {
     STREAM_PROXY_PARALLEL_RANGE_ENABLED.store(enabled, Ordering::Release);
     info!(
-        "stream proxy: parallel range download {}",
+        "media gateway: parallel range download {}",
         if enabled { "enabled" } else { "disabled" }
     );
 }
@@ -667,7 +669,7 @@ pub(crate) fn register_basic_auth(playback_url: &str, username: &str, password: 
     }
 }
 
-pub(crate) fn rewrite_stream_url_with_headers(
+pub(crate) fn create_loopback_media_url_with_headers(
     url: &str,
     headers: &[(String, String)],
 ) -> Option<String> {
@@ -676,7 +678,7 @@ pub(crate) fn rewrite_stream_url_with_headers(
     }
     register_headers(url, headers);
     let proxied = proxy_url_for(url)?;
-    info!("stream proxy: rewrote yt-dlp stream url={}", redact_url(url));
+    info!("media gateway: rewrote yt-dlp stream url={}", redact_url(url));
     Some(proxied)
 }
 
@@ -693,7 +695,7 @@ pub(crate) fn register_headers(playback_url: &str, headers: &[(String, String)])
     }
 }
 
-pub(crate) fn start(app_handle: AppHandle) -> Result<(), String> {
+pub(crate) fn start_loopback_listener(app_handle: AppHandle) -> Result<(), String> {
     initialize_parallel_range_setting(&app_handle);
 
     if STREAM_PROXY_BASE_URL.get().is_some() {
@@ -710,54 +712,54 @@ pub(crate) fn start(app_handle: AppHandle) -> Result<(), String> {
     let _ = STREAM_PROXY_BASE_URL.set(base_url);
 
     std::thread::Builder::new()
-        .name("soia-stream-proxy".to_string())
+        .name("soia-media-gateway".to_string())
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_io()
                 .enable_time()
-                .thread_name("soia-stream-proxy-worker")
+                .thread_name("soia-media-gateway-worker")
                 .build()
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    warn!("stream proxy: failed to create async runtime: {error}");
+                    warn!("media gateway: failed to create async runtime: {error}");
                     return;
                 }
             };
             runtime.block_on(async move {
                 match TcpListener::from_std(listener) {
                     Ok(listener) => serve(listener, app_handle).await,
-                    Err(error) => warn!("stream proxy: failed to adopt listener: {error}"),
+                    Err(error) => warn!("media gateway: failed to adopt listener: {error}"),
                 }
             });
         })
         .map_err(|error| error.to_string())?;
 
-    info!("stream proxy: listening on http://{addr}");
+    info!("media gateway: loopback listener on http://{addr}");
     Ok(())
 }
 
-pub(crate) fn rewrite_https_stream_url(url: &str) -> Option<String> {
+pub(crate) fn create_loopback_https_media_url(url: &str) -> Option<String> {
     if !is_https_url(url) {
         return None;
     }
     let proxied = proxy_url_for(url)?;
-    info!("stream proxy: rewrote HTTPS stream url={}", redact_url(url));
+    info!("media gateway: rewrote HTTPS stream url={}", redact_url(url));
     Some(proxied)
 }
 
-pub(crate) fn rewrite_http_stream_url(url: &str) -> Option<String> {
+pub(crate) fn create_loopback_http_media_url(url: &str) -> Option<String> {
     if !is_http_url(url) {
         return None;
     }
     let proxied = proxy_url_for(url)?;
-    info!("stream proxy: rewrote HTTP stream url={}", redact_url(url));
+    info!("media gateway: rewrote HTTP stream url={}", redact_url(url));
     Some(proxied)
 }
 
-pub(crate) fn rewrite_smb_stream_url(url: &str) -> Option<String> {
-    if !super::USE_SMB_STREAM_PROXY {
+pub(crate) fn create_loopback_smb_media_url(url: &str) -> Option<String> {
+    if !crate::mpv::USE_SMB_STREAM_PROXY {
         return None;
     }
     if !is_smb_url(url) {
@@ -765,7 +767,7 @@ pub(crate) fn rewrite_smb_stream_url(url: &str) -> Option<String> {
     }
     // Reuse an existing backend for the same origin URL if available
     if let Some(proxied) = proxy_url_for_existing_origin(url) {
-        info!("stream proxy: reused SMB backend url={}", redact_url(url));
+        info!("media gateway: reused SMB backend url={}", redact_url(url));
         return Some(proxied);
     }
     let open_url = lookup_basic_auth(url)
@@ -782,7 +784,7 @@ pub(crate) fn rewrite_smb_stream_url(url: &str) -> Option<String> {
         url.to_string(),
         open_url,
     )))?;
-    info!("stream proxy: rewrote SMB stream url={}", redact_url(url));
+    info!("media gateway: rewrote SMB stream url={}", redact_url(url));
     Some(proxied)
 }
 
@@ -887,7 +889,7 @@ pub(crate) fn begin_download_speed_generation() -> Option<DownloadSpeedGeneratio
     })
 }
 
-pub(crate) fn is_stream_proxy_url(url: &str) -> bool {
+pub(crate) fn is_loopback_media_url(url: &str) -> bool {
     let Some(base_url) = STREAM_PROXY_BASE_URL.get() else {
         return false;
     };
@@ -1000,14 +1002,14 @@ async fn serve(listener: TcpListener, app_handle: AppHandle) {
                 tokio::spawn(async move {
                     if let Err(error) = handle_connection(stream, &app_handle).await {
                         if is_client_disconnect_error(&error) {
-                            debug!("stream proxy: client disconnected: {error}");
+                            debug!("media gateway: client disconnected: {error}");
                         } else {
-                            warn!("stream proxy: request failed: {error}");
+                            warn!("media gateway: request failed: {error}");
                         }
                     }
                 });
             }
-            Err(error) => warn!("stream proxy: accept failed: {error}"),
+            Err(error) => warn!("media gateway: accept failed: {error}"),
         }
     }
 }
@@ -1045,7 +1047,7 @@ async fn handle_connection(mut stream: TcpStream, app_handle: &AppHandle) -> Res
     };
 
     debug!(
-        "stream proxy: dispatch backend={} origin={}",
+        "media gateway: dispatch backend={} origin={}",
         backend.label(),
         redact_url(backend.origin())
     );
@@ -1062,13 +1064,13 @@ async fn handle_http_stream_source(
     range: Option<&str>,
     download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(), String> {
-    debug!("stream proxy: fetch {}", redact_url(remote_url));
+    debug!("media gateway: fetch {}", redact_url(remote_url));
 
     let response = match fetch_remote(app_handle, remote_url, range).await {
         Ok(response) => response,
         Err(error) => {
             warn!(
-                "stream proxy: upstream fetch failed url={} error={error}",
+                "media gateway: upstream fetch failed url={} error={error}",
                 redact_url(remote_url)
             );
             write_status(stream, 502, "Bad Gateway", error.as_bytes()).await?;
@@ -1143,7 +1145,7 @@ async fn handle_smb_stream_source(
 ) -> Result<(), String> {
     let download_speed_recorder =
         DownloadSpeedRecorder::new(backend.download_speed_meter.clone());
-    debug!("stream proxy: fetch {}", redact_url(remote_url));
+    debug!("media gateway: fetch {}", redact_url(remote_url));
     let total_size = match backend.file_size().await {
         Ok(Some(size)) => size,
         Ok(None) => {
@@ -1152,7 +1154,7 @@ async fn handle_smb_stream_source(
         }
         Err(error) => {
             warn!(
-                "stream proxy: SMB metadata failed url={} error={error}",
+                "media gateway: SMB metadata failed url={} error={error}",
                 redact_url(remote_url)
             );
             return Err(error);
@@ -1243,7 +1245,7 @@ async fn handle_smb_stream_source(
                 Ok(chunk) => chunk,
                 Err(error) => {
                     warn!(
-                        "stream proxy: SMB read failed url={} offset={} length={} error={error}",
+                        "media gateway: SMB read failed url={} offset={} length={} error={error}",
                         redact_url(remote_url),
                         next,
                         length
@@ -1271,7 +1273,7 @@ async fn handle_smb_stream_source(
                 Ok(batch) => batch,
                 Err(error) => {
                     warn!(
-                        "stream proxy: SMB pipeline read failed url={} offset={} count={} error={error}",
+                        "media gateway: SMB pipeline read failed url={} offset={} count={} error={error}",
                         redact_url(remote_url),
                         next,
                         requests.len()
@@ -1371,7 +1373,7 @@ async fn fetch_remote(
     for attempt in 0..=FETCH_REMOTE_MAX_RETRIES {
         if attempt > 0 {
             debug!(
-                "stream proxy: retrying fetch attempt={} url={}",
+                "media gateway: retrying fetch attempt={} url={}",
                 attempt,
                 redact_url(remote_url)
             );
@@ -1818,7 +1820,7 @@ async fn stream_parallel_range_response(
     download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(), String> {
     info!(
-        "stream proxy: parallel range enabled url={} start={} end={} total={} chunk={} connections={}",
+        "media gateway: parallel range enabled url={} start={} end={} total={} chunk={} connections={}",
         redact_url(remote_url),
         plan.response_start,
         plan.response_end,
@@ -1928,7 +1930,7 @@ async fn stream_response(
             Ok((start, bytes)) if start == plan.response_start => Some(bytes),
             Ok((start, _)) => {
                 warn!(
-                    "stream proxy: parallel range preflight returned unexpected start={} expected={} url={}",
+                    "media gateway: parallel range preflight returned unexpected start={} expected={} url={}",
                     start,
                     plan.response_start,
                     redact_url(remote_url)
@@ -1937,7 +1939,7 @@ async fn stream_response(
             }
             Err(error) => {
                 debug!(
-                    "stream proxy: parallel range disabled after preflight url={} error={}",
+                    "media gateway: parallel range disabled after preflight url={} error={}",
                     redact_url(remote_url),
                     error
                 );

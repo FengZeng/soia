@@ -338,7 +338,7 @@ fn configure_mpv_startup(app: &tauri::App) -> Result<(), Box<dyn Error>> {
     )
     .map(|value| !value.eq_ignore_ascii_case("off"))
     .unwrap_or(false);
-    crate::mpv::set_parallel_range_enabled(parallel_download_enabled);
+    crate::media_gateway::set_parallel_range_enabled(parallel_download_enabled);
 
     mpv_guard.set_option_string("cache", "auto");
     mpv_guard.set_option_string("cache-pause", "yes");

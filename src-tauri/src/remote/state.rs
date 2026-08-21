@@ -233,44 +233,5 @@ pub(super) fn is_connection_active(
 }
 
 fn local_network_ip() -> Result<String, String> {
-    let mut candidates: Vec<(u8, std::net::Ipv4Addr)> = if_addrs::get_if_addrs()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|interface| !is_virtual_interface(&interface.name))
-        .filter_map(|interface| match interface.addr {
-            if_addrs::IfAddr::V4(address) => Some(address.ip),
-            if_addrs::IfAddr::V6(_) => None,
-        })
-        .filter(|ip| is_usable_private_ipv4(*ip))
-        .map(|ip| (private_ip_priority(ip), ip))
-        .collect();
-
-    candidates.sort_by_key(|(priority, ip)| (*priority, *ip));
-    candidates
-        .first()
-        .map(|(_, ip)| ip.to_string())
-        .ok_or_else(|| "No private local network address found".to_string())
-}
-
-fn is_virtual_interface(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    ["lo", "utun", "tun", "tap", "docker", "vbox", "vmnet", "bridge"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-}
-
-fn is_usable_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    ip.is_private()
-        && !ip.is_loopback()
-        && !ip.is_unspecified()
-        && !(ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19))
-}
-
-fn private_ip_priority(ip: std::net::Ipv4Addr) -> u8 {
-    match ip.octets() {
-        [192, 168, ..] => 0,
-        [10, ..] => 1,
-        [172, 16..=31, ..] => 2,
-        _ => 3,
-    }
+    Ok(crate::network::local_address::preferred_private_ipv4()?.to_string())
 }

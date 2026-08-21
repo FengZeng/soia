@@ -12,6 +12,7 @@ mod core;
 mod check_update;
 mod commands;
 mod media_extensions;
+mod media_gateway;
 mod mpv;
 mod network;
 mod online_subtitles;
@@ -257,12 +258,12 @@ fn mpv_command_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
     let download_speed_activation = if loadfile_replaces_current(&command_args) {
         command_args
             .get(1)
-            .map(|url| crate::mpv::begin_download_speed_activation(url))
+            .map(|url| crate::media_gateway::begin_download_speed_activation(url))
     } else {
         None
     };
     let download_speed_generation = if command_args.first().copied() == Some("seek") {
-        crate::mpv::begin_download_speed_generation()
+        crate::media_gateway::begin_download_speed_generation()
     } else {
         None
     };
@@ -287,12 +288,12 @@ fn mpv_command_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
 fn mpv_command_direct_checked(mpv: &MpvHandle, args: &[&str]) -> AppResult<()> {
     let download_speed_activation = if loadfile_replaces_current(args) {
         args.get(1)
-            .map(|url| crate::mpv::begin_download_speed_activation(url))
+            .map(|url| crate::media_gateway::begin_download_speed_activation(url))
     } else {
         None
     };
     let download_speed_generation = if args.first().copied() == Some("seek") {
-        crate::mpv::begin_download_speed_generation()
+        crate::media_gateway::begin_download_speed_generation()
     } else {
         None
     };
@@ -370,16 +371,16 @@ fn rewrite_mpv_command_urls(args: &[&str]) -> Option<Vec<String>> {
         return None;
     }
 
-    if crate::mpv::is_stream_proxy_url(args[1]) {
+    if crate::media_gateway::is_loopback_media_url(args[1]) {
         return Some(args.iter().map(|arg| (*arg).to_string()).collect());
     }
 
-    // Remote protocol credentials, headers, cookies, and connection state belong in stream_proxy
+    // Remote protocol credentials, headers, cookies, and connection state belong in media_gateway
     // backends. mpv should receive only localhost token URLs so secrets do not leak into mpv
     // command logs, options, or protocol-specific URL handling.
-    let rewritten_url = crate::mpv::rewrite_http_stream_url(args[1])
-        .or_else(|| crate::mpv::rewrite_https_stream_url(args[1]))
-        .or_else(|| crate::mpv::rewrite_smb_stream_url(args[1]))
+    let rewritten_url = crate::media_gateway::create_loopback_http_media_url(args[1])
+        .or_else(|| crate::media_gateway::create_loopback_https_media_url(args[1]))
+        .or_else(|| crate::media_gateway::create_loopback_smb_media_url(args[1]))
         .or_else(|| crate::mpv::rewrite_https_callback_url(args[1]))?;
     let mut rewritten: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     rewritten[1] = rewritten_url;
