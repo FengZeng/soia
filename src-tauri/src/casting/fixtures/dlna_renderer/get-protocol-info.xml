@@ -1,0 +1,8 @@
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+      <Source></Source>
+      <Sink>http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_BL_CIF15_AAC_520;DLNA.ORG_FLAGS=8D700000000000000000000000000000,http-get:*:video/mkv:*,http-get:*:video/x-matroska:*,http-get:*:application/octet-stream:*</Sink>
+    </u:GetProtocolInfoResponse>
+  </s:Body>
+</s:Envelope>

@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+CACHE-CONTROL: max-age=300
+EXT:
+LOCATION: http://192.0.2.20:25826/description.xml
+SERVER: Linux/4.9; UPnP/1.0; Portable SDK for UPnP devices/1.6.24
+ST: urn:schemas-upnp-org:device:MediaRenderer:1
+USN: uuid:00000000-0000-0000-0000-000000000000::urn:schemas-upnp-org:device:MediaRenderer:1
+

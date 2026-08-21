@@ -1,0 +1,9 @@
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetTransportInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <CurrentTransportState>STOPPED</CurrentTransportState>
+      <CurrentTransportStatus>OK</CurrentTransportStatus>
+      <CurrentSpeed>1</CurrentSpeed>
+    </u:GetTransportInfoResponse>
+  </s:Body>
+</s:Envelope>

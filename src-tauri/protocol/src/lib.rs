@@ -393,6 +393,119 @@ pub struct PlaybackSnapshotDto {
     pub playlist_count: i64,
 }
 
+/// Protocol-neutral receiver family. Protocol-specific transport details stay in Core adapters.
+#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum CastProtocolDto {
+    Dlna,
+    Chromecast,
+}
+
+/// Operations a receiver reports as safe to expose through the shared playback controls.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CastCapabilitiesDto {
+    pub play: bool,
+    pub pause: bool,
+    pub seek: bool,
+    pub stop: bool,
+    pub volume: bool,
+}
+
+/// A discovered receiver. `id` is protocol-stable (UDN for DLNA, UUID for Chromecast), never an IP address.
+#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CastDeviceDto {
+    pub id: String,
+    pub protocol: CastProtocolDto,
+    pub name: String,
+    pub model_name: Option<String>,
+    pub address: String,
+    pub capabilities: CastCapabilitiesDto,
+    #[ts(type = "number")]
+    pub last_seen_at: u64,
+}
+
+/// Lifecycle state shared by all receiver adapters.
+#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum CastPhaseDto {
+    Idle,
+    Discovering,
+    Connecting,
+    Loading,
+    Playing,
+    Paused,
+    Buffering,
+    Stopped,
+    Disconnected,
+    Error,
+}
+
+/// User-safe error category. Adapter diagnostics must not expose URLs, credentials, or protocol frames.
+#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum CastErrorCodeDto {
+    DiscoveryFailed,
+    ConnectionFailed,
+    LoadFailed,
+    DeviceUnsupported,
+    MediaUnavailable,
+    DeviceDisconnected,
+    CommandFailed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CastErrorDto {
+    pub code: CastErrorCodeDto,
+    pub message: String,
+    pub device_id: Option<String>,
+}
+
+/// Transport-safe state for the active casting session. Receiver state is authoritative while a session is active.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CastSnapshotDto {
+    #[ts(type = "number")]
+    pub revision: u64,
+    pub phase: CastPhaseDto,
+    pub session_id: Option<String>,
+    pub device: Option<CastDeviceDto>,
+    pub media_title: Option<String>,
+    pub position: f64,
+    pub duration: f64,
+    pub volume: f64,
+    pub muted: bool,
+    pub seekable: bool,
+    pub last_error: Option<CastErrorDto>,
+}
+
+impl Default for CastSnapshotDto {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            phase: CastPhaseDto::Idle,
+            session_id: None,
+            device: None,
+            media_title: None,
+            position: 0.0,
+            duration: 0.0,
+            volume: 100.0,
+            muted: false,
+            seekable: false,
+            last_error: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -520,6 +633,13 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     PlaylistMutationResultDto::export_all_to(path).map_err(|error| error.to_string())?;
     MediaTrackDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaybackSnapshotDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastProtocolDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastCapabilitiesDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastDeviceDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastPhaseDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastErrorCodeDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastErrorDto::export_all_to(path).map_err(|error| error.to_string())?;
+    CastSnapshotDto::export_all_to(path).map_err(|error| error.to_string())?;
     ProtocolVersionDto::export_all_to(path).map_err(|error| error.to_string())?;
     PlaybackCommandDto::export_all_to(path).map_err(|error| error.to_string())?;
     CommandEnvelopeDto::export_all_to(path).map_err(|error| error.to_string())?;
@@ -531,8 +651,9 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CoreErrorDto, MediaTrackDto, PlaybackCommandDto, PlaybackSnapshotDto,
-        GetPlaylistEntriesPageDto, PlaylistLoopModeDto, PlaylistMutationDto,
+        CastCapabilitiesDto, CastDeviceDto, CastPhaseDto, CastProtocolDto, CoreErrorDto,
+        GetPlaylistEntriesPageDto, MediaTrackDto, PlaybackCommandDto, PlaybackSnapshotDto,
+        PlaylistLoopModeDto, PlaylistMutationDto,
     };
 
     #[test]
@@ -575,6 +696,31 @@ mod tests {
         let command_json = serde_json::to_value(command).unwrap();
         assert_eq!(command_json["type"], "selectSubtitleTrack");
         assert_eq!(command_json["trackId"], 12);
+    }
+
+    #[test]
+    fn serializes_protocol_neutral_casting_device_fields() {
+        let device = CastDeviceDto {
+            id: "uuid:renderer-1".to_string(),
+            protocol: CastProtocolDto::Dlna,
+            name: "Living Room TV".to_string(),
+            model_name: Some("Example TV".to_string()),
+            address: "192.0.2.20".to_string(),
+            capabilities: CastCapabilitiesDto {
+                play: true,
+                pause: true,
+                seek: true,
+                stop: true,
+                volume: true,
+            },
+            last_seen_at: 1_234,
+        };
+        let json = serde_json::to_value(device).unwrap();
+
+        assert_eq!(json["protocol"], "dlna");
+        assert_eq!(json["modelName"], "Example TV");
+        assert_eq!(json["lastSeenAt"], 1_234);
+        assert_eq!(serde_json::to_value(CastPhaseDto::Disconnected).unwrap(), "disconnected");
     }
 
     #[test]

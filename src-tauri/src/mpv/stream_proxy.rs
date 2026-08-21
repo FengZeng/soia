@@ -1600,11 +1600,7 @@ fn rewrite_playlist_url(
     inherited_headers: Option<&[(String, String)]>,
     download_speed_meter: &DownloadSpeedMeterHandle,
 ) -> Option<String> {
-    let resolved = if let Ok(url) = Url::parse(value) {
-        url
-    } else {
-        base?.join(value).ok()?
-    };
+    let resolved = resolve_playlist_url(base, value)?;
     if let Some(headers) = inherited_headers {
         register_headers(resolved.as_str(), headers);
     }
@@ -1616,6 +1612,14 @@ fn rewrite_playlist_url(
             ),
         )),
         _ => None,
+    }
+}
+
+fn resolve_playlist_url(base: Option<&Url>, value: &str) -> Option<Url> {
+    if let Ok(url) = Url::parse(value) {
+        Some(url)
+    } else {
+        base?.join(value).ok()
     }
 }
 
@@ -2042,8 +2046,48 @@ async fn write_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{edl_stream_urls, DownloadSpeedMeter};
+    use super::{
+        edl_stream_urls, lookup_stream_backend, parse_content_range, parse_request,
+        parse_single_byte_range, rewrite_playlist, DownloadSpeedMeter, DownloadSpeedMeterHandle,
+        StreamBackend, StreamBackendRegistry, STREAM_BACKEND_IDLE_TIMEOUT, STREAM_PROXY_BASE_URL,
+    };
+    use futures_util::future::BoxFuture;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+    use tauri::AppHandle;
+    use tokio::net::TcpStream;
+
+    struct TestBackend {
+        origin: String,
+        meter: DownloadSpeedMeterHandle,
+    }
+
+    impl TestBackend {
+        fn new(origin: &str) -> Self {
+            Self {
+                origin: origin.to_string(),
+                meter: Arc::new(Mutex::new(DownloadSpeedMeter::default())),
+            }
+        }
+    }
+
+    impl StreamBackend for TestBackend {
+        fn label(&self) -> &'static str { "test" }
+
+        fn origin(&self) -> &str { &self.origin }
+
+        fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle { &self.meter }
+
+        fn handle<'a>(
+            &'a self,
+            _app_handle: &'a AppHandle,
+            _stream: &'a mut TcpStream,
+            _method: &'a str,
+            _range: Option<&'a str>,
+        ) -> BoxFuture<'a, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     #[test]
     fn download_speed_meter_uses_a_bounded_rolling_window() {
@@ -2156,5 +2200,78 @@ mod tests {
         );
 
         assert_eq!(edl_stream_urls(&edl), vec![video, audio]);
+    }
+
+    #[test]
+    fn range_parser_characterizes_single_range_semantics() {
+        assert_eq!(parse_single_byte_range("bytes=0-9", 100), Some((0, 9)));
+        assert_eq!(parse_single_byte_range("bytes=90-", 100), Some((90, 99)));
+        assert_eq!(parse_single_byte_range("bytes=-10", 100), Some((90, 99)));
+        assert_eq!(parse_single_byte_range("bytes=-200", 100), Some((0, 99)));
+        assert_eq!(parse_single_byte_range("bytes=100-", 100), None);
+        assert_eq!(parse_single_byte_range("bytes=9-8", 100), None);
+        assert_eq!(parse_single_byte_range("bytes=0-1,3-4", 100), None);
+    }
+
+    #[test]
+    fn request_parser_keeps_head_and_range_contract() {
+        let request = "HEAD /stream/token HTTP/1.1\r\nHost: 127.0.0.1\r\nRange: bytes=10-\r\n\r\n";
+        assert_eq!(
+            parse_request(request).unwrap(),
+            ("HEAD".to_string(), "/stream/token".to_string(), Some("bytes=10-".to_string()))
+        );
+        assert_eq!(parse_content_range("bytes 10-99/100"), Some((10, 99, 100)));
+    }
+
+    #[test]
+    fn hls_rewrite_keeps_relative_segments_and_key_uris_behind_tokens() {
+        STREAM_PROXY_BASE_URL
+            .get_or_init(|| "http://127.0.0.1:39001".to_string());
+        let meter = Arc::new(Mutex::new(DownloadSpeedMeter::default()));
+        let playlist = rewrite_playlist(
+            "https://media.example.test/live/master.m3u8",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"keys/session.key\"\nsegments/0001.ts",
+            Some(&[("Referer".to_string(), "https://app.example.test/".to_string())]),
+            &meter,
+        );
+        let rewritten = playlist.lines().collect::<Vec<_>>();
+        let key_url = rewritten[1]
+            .split("URI=\"")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches('"');
+        let segment_url = rewritten[2];
+
+        assert!(key_url.starts_with("http://127.0.0.1:39001/stream/"));
+        assert!(segment_url.starts_with("http://127.0.0.1:39001/stream/"));
+        let key_target = url::Url::parse(key_url).unwrap().path().to_string();
+        let segment_target = url::Url::parse(segment_url).unwrap().path().to_string();
+        assert_eq!(
+            lookup_stream_backend(&key_target).unwrap().origin(),
+            "https://media.example.test/live/keys/session.key"
+        );
+        assert_eq!(
+            lookup_stream_backend(&segment_target).unwrap().origin(),
+            "https://media.example.test/live/segments/0001.ts"
+        );
+    }
+
+    #[test]
+    fn backend_registry_reuses_origin_and_removes_idle_entries() {
+        let mut registry = StreamBackendRegistry::new();
+        registry.insert("token-a".to_string(), Arc::new(TestBackend::new("https://example.test/a.mp4")));
+
+        assert_eq!(
+            registry
+                .find_token_by_origin("https://example.test/a.mp4")
+                .as_deref(),
+            Some("token-a")
+        );
+        assert_eq!(registry.get("token-a").unwrap().label(), "test");
+
+        let now = Instant::now();
+        registry.entries.get_mut("token-a").unwrap().last_access = now - STREAM_BACKEND_IDLE_TIMEOUT - Duration::from_secs(1);
+        registry.cleanup_idle(now);
+        assert!(registry.get("token-a").is_none());
     }
 }

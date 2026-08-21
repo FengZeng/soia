@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 mod app_bootstrap;
 mod audio_output;
+mod casting;
 pub mod protocol;
 mod core;
 mod check_update;

@@ -1,0 +1,7 @@
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetVolumeResponse xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">
+      <CurrentVolume>0</CurrentVolume>
+    </u:GetVolumeResponse>
+  </s:Body>
+</s:Envelope>
