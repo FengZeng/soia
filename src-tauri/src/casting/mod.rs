@@ -2,11 +2,13 @@
 
 //! Protocol-neutral casting boundary.
 //!
-//! This module intentionally contains no discovery sockets, receiver transport, or AppState
-//! integration yet.
+//! Discovery sockets and receiver transports remain behind adapters; Core only owns the shared
+//! session lifecycle and client-safe state.
 
 pub(crate) mod source;
 mod service;
+#[cfg(test)]
+mod fixture;
 
 pub(crate) use service::CastingService;
 pub(crate) use source::CastMediaSource;

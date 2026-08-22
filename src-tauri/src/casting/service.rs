@@ -378,6 +378,7 @@ fn stale_session_error(device_id: &str) -> CastErrorDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::casting::fixture;
     use futures_util::future::BoxFuture;
     use soia_protocol::{CastCapabilitiesDto, CastProtocolDto};
 
@@ -508,5 +509,15 @@ mod tests {
         assert_eq!(current.session_id, second.session_id);
         assert_eq!(current.device.unwrap().id, "device-b");
         assert_eq!(current.phase, CastPhaseDto::Playing);
+    }
+
+    #[tokio::test]
+    async fn development_fixture_adapters_remain_test_only_and_protocol_neutral() {
+        let service = CastingService::new(fixture::adapters());
+        let devices = service.discover().await.unwrap();
+
+        assert_eq!(devices.len(), 2);
+        assert!(devices.iter().any(|device| device.protocol == CastProtocolDto::Dlna));
+        assert!(devices.iter().any(|device| device.protocol == CastProtocolDto::Chromecast));
     }
 }

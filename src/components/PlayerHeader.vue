@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ContextMenu from "./ContextMenu.vue";
+import CastDevicePopover from "./CastDevicePopover.vue";
 import type { MediaInfo } from "../mock/mediaInfo";
 import {
     SETTINGS_UPDATED_EVENT,
@@ -950,6 +951,8 @@ watch(
                     @select="onUrlContextMenuSelect"
                     @close="closeUrlContextMenu"
                 />
+
+                <CastDevicePopover :is-file-loaded="props.isFileLoaded" />
 
                 <button
                     v-if="props.isUrlModified"

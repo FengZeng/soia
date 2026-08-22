@@ -1,4 +1,7 @@
-use crate::protocol::{CommandEnvelopeDto, CommandResultDto, CoreErrorDto, PlaybackCommandDto};
+use crate::protocol::{
+    CastPhaseDto, CastSnapshotDto, CommandEnvelopeDto, CommandResultDto, CoreErrorDto,
+    PlaybackCommandDto,
+};
 use crate::{mpv_command_checked, AppState};
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
@@ -6,6 +9,34 @@ use std::time::Duration;
 
 const COMMAND_RESULT_CACHE_CAPACITY: usize = 256;
 const SNAPSHOT_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The receiver currently authoritative for playback controls. This stays inside Core so clients
+/// keep sending the same `PlaybackCommandDto` regardless of whether output is local or remote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PlaybackOutputTarget {
+    LocalMpv,
+    Cast { session_id: String },
+}
+
+impl PlaybackOutputTarget {
+    fn from_cast_snapshot(snapshot: &CastSnapshotDto) -> Self {
+        let Some(session_id) = snapshot.session_id.as_ref() else {
+            return Self::LocalMpv;
+        };
+        if matches!(
+            snapshot.phase,
+            CastPhaseDto::Playing
+                | CastPhaseDto::Paused
+                | CastPhaseDto::Buffering
+                | CastPhaseDto::Stopped
+        ) {
+            return Self::Cast {
+                session_id: session_id.clone(),
+            };
+        }
+        Self::LocalMpv
+    }
+}
 
 pub(crate) struct PlaybackService {
     sender: mpsc::Sender<QueuedCommand>,
@@ -53,6 +84,13 @@ impl PlaybackService {
         )
     }
 
+    /// Resolves the active output without exposing protocol details to Tauri or WebSocket clients.
+    /// A receiver becomes authoritative only after its load completed; connecting and loading keep
+    /// local mpv active so a failed handoff cannot interrupt local playback.
+    pub(crate) fn current_output_target(state: &AppState) -> PlaybackOutputTarget {
+        PlaybackOutputTarget::from_cast_snapshot(&state.casting_service.current_snapshot())
+    }
+
     pub(crate) async fn execute(
         &self,
         state: &AppState,
@@ -68,6 +106,15 @@ impl PlaybackService {
         }
         let _admission_lock = state.playback_command_lock.lock().await;
         if let Some(result) = self.cached_result(&envelope.client_id, &envelope.command_id) {
+            return result;
+        }
+
+        let output_target = Self::current_output_target(state);
+        if matches!(output_target, PlaybackOutputTarget::Cast { .. }) {
+            let result = Err(CoreErrorDto::InvalidCommand {
+                message: "playback commands for an active cast output are not available until a receiver adapter is installed".into(),
+            });
+            self.cache_result(&envelope.client_id, &envelope.command_id, result.clone());
             return result;
         }
 
@@ -297,9 +344,12 @@ fn execute_command(
 
 #[cfg(test)]
 mod playback_session_tests {
-    use super::{validate_playback_session, validate_track_selection};
+    use super::{
+        validate_playback_session, validate_track_selection, PlaybackOutputTarget,
+    };
     use crate::protocol::{
-        CoreErrorDto, MediaTrackDto, PlaybackCommandDto, PlaybackSnapshotDto,
+        CastPhaseDto, CastSnapshotDto, CoreErrorDto, MediaTrackDto, PlaybackCommandDto,
+        PlaybackSnapshotDto,
     };
 
     #[test]
@@ -468,5 +518,62 @@ mod playback_session_tests {
         );
 
         assert!(matches!(result, Err(CoreErrorDto::InvalidCommand { .. })));
+    }
+
+    #[test]
+    fn output_target_keeps_mpv_authoritative_until_receiver_load_is_confirmed() {
+        for phase in [
+            CastPhaseDto::Idle,
+            CastPhaseDto::Discovering,
+            CastPhaseDto::Connecting,
+            CastPhaseDto::Loading,
+            CastPhaseDto::Disconnected,
+            CastPhaseDto::Error,
+        ] {
+            let snapshot = CastSnapshotDto {
+                phase,
+                session_id: Some("cast-a".to_string()),
+                ..Default::default()
+            };
+            assert_eq!(
+                PlaybackOutputTarget::from_cast_snapshot(&snapshot),
+                PlaybackOutputTarget::LocalMpv,
+            );
+        }
+    }
+
+    #[test]
+    fn output_target_uses_confirmed_cast_session_as_identity() {
+        for phase in [
+            CastPhaseDto::Playing,
+            CastPhaseDto::Paused,
+            CastPhaseDto::Buffering,
+            CastPhaseDto::Stopped,
+        ] {
+            let snapshot = CastSnapshotDto {
+                phase,
+                session_id: Some("cast-b".to_string()),
+                ..Default::default()
+            };
+            assert_eq!(
+                PlaybackOutputTarget::from_cast_snapshot(&snapshot),
+                PlaybackOutputTarget::Cast {
+                    session_id: "cast-b".to_string(),
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn output_target_requires_a_cast_session_identity() {
+        let snapshot = CastSnapshotDto {
+            phase: CastPhaseDto::Playing,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            PlaybackOutputTarget::from_cast_snapshot(&snapshot),
+            PlaybackOutputTarget::LocalMpv,
+        );
     }
 }
