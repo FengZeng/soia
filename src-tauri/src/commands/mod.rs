@@ -1,4 +1,5 @@
 pub(crate) mod audio;
+pub(crate) mod casting;
 pub(crate) mod navigation;
 pub(crate) mod network;
 pub(crate) mod now_playing;

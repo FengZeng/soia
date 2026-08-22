@@ -5,7 +5,11 @@
 //! This module intentionally contains no discovery sockets, receiver transport, or AppState
 //! integration yet.
 
-mod source;
+pub(crate) mod source;
+mod service;
+
+pub(crate) use service::CastingService;
+pub(crate) use source::CastMediaSource;
 
 use futures_util::future::BoxFuture;
 use soia_protocol::{
