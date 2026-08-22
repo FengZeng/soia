@@ -6,10 +6,13 @@
 //! session lifecycle and client-safe state.
 
 pub(crate) mod source;
+pub(crate) mod discovery;
+mod protocols;
 mod service;
 #[cfg(test)]
 mod fixture;
 
+pub(crate) use protocols::DlnaRendererAdapter;
 pub(crate) use service::CastingService;
 pub(crate) use source::CastMediaSource;
 

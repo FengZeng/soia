@@ -1,14 +1,9 @@
 use crate::store::network_connection_store::NetworkConnectionRecord;
 use roxmltree::Document;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-use std::time::{Duration, Instant};
-use tokio::net::UdpSocket;
-use tokio::time;
+use std::time::Duration;
 use url::Url;
 
-const SSDP_MULTICAST_ADDR: &str = "239.255.255.250:1900";
 const SSDP_ST_MEDIA_SERVER: &str = "urn:schemas-upnp-org:device:MediaServer:1";
 
 #[derive(Clone)]
@@ -48,106 +43,29 @@ pub async fn discover_devices_with_callback<F>(
 where
     F: FnMut(DlnaDevice),
 {
-    log::info!(
-        "SSDP scan started: st={}, timeout={}s",
+    let responses = crate::casting::discovery::ssdp::discover(
         SSDP_ST_MEDIA_SERVER,
-        timeout_secs.max(1)
-    );
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .map_err(|e| format!("Failed to bind UDP socket: {}", e))?;
-    let local_addr = socket
-        .local_addr()
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    log::debug!("SSDP socket bound on {}", local_addr);
-
-    let target: SocketAddr = SSDP_MULTICAST_ADDR
-        .parse()
-        .map_err(|e| format!("Invalid SSDP multicast address: {}", e))?;
-
-    let request = [
-        "M-SEARCH * HTTP/1.1",
-        &format!("HOST: {}", SSDP_MULTICAST_ADDR),
-        "MAN: \"ssdp:discover\"",
-        "MX: 2",
-        &format!("ST: {}", SSDP_ST_MEDIA_SERVER),
-        "",
-        "",
-    ]
-    .join("\r\n");
-
-    socket
-        .send_to(request.as_bytes(), target)
-        .await
-        .map_err(|e| format!("Failed to send SSDP discovery packet: {}", e))?;
-    log::info!(
-        "SSDP M-SEARCH sent to {} (mx=2, st={})",
-        SSDP_MULTICAST_ADDR,
-        SSDP_ST_MEDIA_SERVER
-    );
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
-    let mut found = Vec::new();
-    let mut dedup = HashSet::new();
-    let mut buffer = [0u8; 8192];
-    let mut response_count = 0usize;
-    let mut ignored_no_location = 0usize;
-    let mut duplicate_count = 0usize;
-
-    while Instant::now() < deadline {
-        let remain = deadline.saturating_duration_since(Instant::now());
-        let recv = time::timeout(remain, socket.recv_from(&mut buffer)).await;
-        let Ok(Ok((len, addr))) = recv else {
-            break;
-        };
-        response_count += 1;
-        log::debug!("SSDP response received: bytes={}, from={}", len, addr);
-
-        let packet = String::from_utf8_lossy(&buffer[..len]).to_string();
-        let headers = parse_ssdp_headers(&packet);
-
-        let Some(location) = headers.get("location").cloned() else {
-            ignored_no_location += 1;
-            log::debug!("SSDP response ignored: missing LOCATION header");
-            continue;
-        };
-
-        let usn = headers
-            .get("usn")
-            .cloned()
-            .unwrap_or_else(|| location.clone());
-
-        let key = format!("{}|{}", usn, location);
-        if dedup.contains(&key) {
-            duplicate_count += 1;
-            log::debug!("SSDP duplicate ignored: usn={}, location={}", usn, location);
-            continue;
-        }
-        dedup.insert(key);
-
-        let server = headers.get("server").cloned();
-        let st = headers
-            .get("st")
-            .cloned()
-            .unwrap_or_else(|| SSDP_ST_MEDIA_SERVER.to_string());
-        log::info!(
-            "SSDP device discovered: usn={}, st={}, location={}, server={}",
-            usn,
-            st,
-            location,
-            server.clone().unwrap_or_else(|| "-".to_string())
-        );
-        let device = DlnaDevice {
-            usn,
-            location,
-            friendly_name: None,
-            server,
-            st,
-        };
-        on_device(device.clone());
-        found.push(device);
-    }
+        Duration::from_secs(timeout_secs.max(1)),
+    )
+    .await?;
+    let mut found = responses
+        .into_iter()
+        .filter_map(|response| {
+            let location = response.location?;
+            let usn = response.usn.unwrap_or_else(|| location.clone());
+            let device = DlnaDevice {
+                usn,
+                location,
+                friendly_name: None,
+                server: response.server,
+                st: response
+                    .search_target
+                    .unwrap_or_else(|| SSDP_ST_MEDIA_SERVER.to_string()),
+            };
+            on_device(device.clone());
+            Some(device)
+        })
+        .collect::<Vec<_>>();
 
     let client = crate::network::proxy::configure_client_builder(
         app,
@@ -156,13 +74,7 @@ where
     .build()
         .map_err(|e| format!("Failed to create DLNA discovery HTTP client: {}", e))?;
 
-    log::info!(
-        "SSDP scan finished: discovered={}, responses={}, duplicates={}, ignored_no_location={}",
-        found.len(),
-        response_count,
-        duplicate_count,
-        ignored_no_location
-    );
+    log::info!("DLNA MediaServer discovery finished: discovered={}", found.len());
 
     for device in &mut found {
         let friendly_name = fetch_device_friendly_name(&client, &device.location).await;
@@ -191,21 +103,6 @@ pub async fn browse_directory(
     let result_xml = soap_browse(app, &service, object_id).await?;
 
     parse_browse_result(object_id, &result_xml)
-}
-
-fn parse_ssdp_headers(response: &str) -> HashMap<String, String> {
-    response
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            let (k, v) = trimmed.split_once(':')?;
-            Some((k.trim().to_lowercase(), v.trim().to_string()))
-        })
-        .collect()
 }
 
 async fn fetch_content_directory_service(
