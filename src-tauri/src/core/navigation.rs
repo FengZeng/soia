@@ -49,7 +49,10 @@ impl NavigationService {
         }
     }
 
-    pub(crate) fn initialize(&self, new_state: NavigationState) {
+    pub(crate) fn initialize(&self, mut new_state: NavigationState) {
+        if new_state.playback_playlist_id.is_none() {
+            new_state.playback_playlist_id = new_state.active_playlist_id.clone();
+        }
         let mut state = self
             .state
             .lock()

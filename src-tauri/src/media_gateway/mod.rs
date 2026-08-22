@@ -610,7 +610,7 @@ impl StreamBackend for LocalFileMediaSourceBackend {
     }
 }
 
-fn infer_media_mime(path: &Path) -> &'static str {
+pub(crate) fn infer_media_mime(path: &Path) -> &'static str {
     match path.extension().and_then(|extension| extension.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
         "mp4" | "m4v" => "video/mp4",
         "mkv" => "video/x-matroska",
@@ -1030,6 +1030,34 @@ pub(crate) fn create_cast_local_file_media_url(
 ) -> Result<String, String> {
     let backend = LocalFileMediaSourceBackend::new(file_path)?;
     create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, Arc::new(backend))
+}
+
+#[allow(dead_code)]
+pub(crate) fn create_cast_smb_media_url(
+    app_handle: AppHandle,
+    session_id: &str,
+    receiver_ip: Ipv4Addr,
+    source_url: &str,
+) -> Result<String, String> {
+    if !is_smb_url(source_url) {
+        return Err("cast media gateway only accepts SMB media sources".to_string());
+    }
+    let open_url = lookup_basic_auth(source_url)
+        .and_then(|(username, password)| {
+            crate::network::protocols::smb::playback_url_with_credentials(
+                source_url,
+                &username,
+                &password,
+            )
+            .ok()
+        })
+        .unwrap_or_else(|| source_url.to_string());
+    create_cast_media_url_for_backend(
+        app_handle,
+        session_id,
+        receiver_ip,
+        Arc::new(SmbStreamBackend::new(source_url.to_string(), open_url)),
+    )
 }
 
 fn create_cast_media_url_for_backend(

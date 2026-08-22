@@ -145,6 +145,7 @@ impl PlaybackStatePublisher {
 #[cfg(test)]
 mod tests {
     use super::PlaybackStatePublisher;
+    use crate::protocol::PROTOCOL_VERSION;
 
     #[test]
     fn publishes_playback_session_identity_in_snapshot() {
@@ -153,7 +154,7 @@ mod tests {
             snapshot.playback_session_id = Some("session-b".to_string());
         });
 
-        assert_eq!(published.protocol_version, 3);
+        assert_eq!(published.protocol_version, PROTOCOL_VERSION);
         assert_eq!(published.playback_session_id.as_deref(), Some("session-b"));
         assert_eq!(
             publisher.current().playback_session_id.as_deref(),

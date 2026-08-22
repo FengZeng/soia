@@ -5,6 +5,8 @@
 //! This module intentionally contains no discovery sockets, receiver transport, or AppState
 //! integration yet.
 
+mod source;
+
 use futures_util::future::BoxFuture;
 use soia_protocol::{
     CastDeviceDto, CastErrorDto, CastPhaseDto, CastProtocolDto,
