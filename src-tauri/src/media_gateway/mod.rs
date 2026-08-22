@@ -1,6 +1,6 @@
 mod lease;
 
-use lease::{CastMediaLease, CastMediaLeaseRegistry};
+use lease::{CastMediaLease, CastMediaLeaseRegistry, ResourceRegistration};
 
 use log::{debug, info, warn};
 use percent_encoding::percent_decode_str;
@@ -34,28 +34,29 @@ const PARALLEL_RANGE_CONNECTIONS: usize = 3;
 const PARALLEL_RANGE_SETTING_LABEL: &str = "NETWORK_PARALLEL_DOWNLOAD";
 const SMB_STREAM_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const SMB_PIPELINE_DEPTH: usize = 4;
-const STREAM_BACKEND_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-const STREAM_BACKEND_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-const STREAM_BACKEND_MAX_ENTRIES: usize = 4096;
-const STREAM_BACKEND_TARGET_ENTRIES: usize = 3072;
+const MEDIA_SOURCE_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const MEDIA_SOURCE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const MEDIA_SOURCE_MAX_ENTRIES: usize = 4096;
+const MEDIA_SOURCE_TARGET_ENTRIES: usize = 3072;
 const DOWNLOAD_SPEED_WINDOW: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_STALE_AFTER: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_MIN_SAMPLE_DURATION: Duration = Duration::from_millis(250);
 const LOCAL_FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
 #[allow(dead_code)]
 const CAST_MEDIA_LEASE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
+const CAST_MEDIA_LEASE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 type BasicAuth = (String, String);
 pub(crate) type ProxyHeaders = Vec<(String, String)>;
 
-static STREAM_PROXY_BASE_URL: OnceLock<String> = OnceLock::new();
-static STREAM_PROXY_BASIC_AUTH: OnceLock<Mutex<HashMap<String, BasicAuth>>> = OnceLock::new();
-static STREAM_PROXY_HEADERS: OnceLock<Mutex<HashMap<String, ProxyHeaders>>> = OnceLock::new();
-static STREAM_PROXY_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
-static STREAM_PROXY_PARALLEL_RANGE_ENABLED: AtomicBool = AtomicBool::new(false);
-static STREAM_PROXY_BACKENDS: OnceLock<Mutex<StreamBackendRegistry>> =
+static LOOPBACK_MEDIA_BASE_URL: OnceLock<String> = OnceLock::new();
+static MEDIA_SOURCE_BASIC_AUTH: OnceLock<Mutex<HashMap<String, BasicAuth>>> = OnceLock::new();
+static MEDIA_SOURCE_HEADERS: OnceLock<Mutex<HashMap<String, ProxyHeaders>>> = OnceLock::new();
+static MEDIA_GATEWAY_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
+static MEDIA_GATEWAY_PARALLEL_RANGE_ENABLED: AtomicBool = AtomicBool::new(false);
+static MEDIA_SOURCE_REGISTRY: OnceLock<Mutex<MediaSourceRegistry>> =
     OnceLock::new();
-static ACTIVE_STREAM_PROXY_BACKENDS: OnceLock<Mutex<Option<Vec<Arc<dyn StreamBackend>>>>> =
+static ACTIVE_MEDIA_SOURCES: OnceLock<Mutex<Option<Vec<Arc<dyn MediaSourceBackend>>>>> =
     OnceLock::new();
 #[allow(dead_code)]
 static CAST_MEDIA_LEASES: OnceLock<Mutex<CastMediaLeaseRegistry>> = OnceLock::new();
@@ -215,7 +216,7 @@ impl DownloadSpeedSample {
 }
 
 pub(crate) struct DownloadSpeedActivation {
-    previous_backends: Option<Vec<Arc<dyn StreamBackend>>>,
+    previous_backends: Option<Vec<Arc<dyn MediaSourceBackend>>>,
     previous_meters: Vec<(DownloadSpeedMeterHandle, DownloadSpeedMeter)>,
     committed: bool,
 }
@@ -236,7 +237,7 @@ impl Drop for DownloadSpeedActivation {
                 *current_meter = previous_meter;
             }
         }
-        if let Ok(mut active_backends) = ACTIVE_STREAM_PROXY_BACKENDS
+        if let Ok(mut active_backends) = ACTIVE_MEDIA_SOURCES
             .get_or_init(|| Mutex::new(None))
             .lock()
         {
@@ -302,17 +303,17 @@ struct ParallelRangePlan {
     content_length: u64,
 }
 
-struct StreamBackendEntry {
-    backend: Arc<dyn StreamBackend>,
+struct MediaSourceEntry {
+    backend: Arc<dyn MediaSourceBackend>,
     last_access: Instant,
 }
 
-struct StreamBackendRegistry {
-    entries: HashMap<String, StreamBackendEntry>,
+struct MediaSourceRegistry {
+    entries: HashMap<String, MediaSourceEntry>,
     last_cleanup: Instant,
 }
 
-impl StreamBackendRegistry {
+impl MediaSourceRegistry {
     fn new() -> Self {
         let now = Instant::now();
         Self {
@@ -321,12 +322,12 @@ impl StreamBackendRegistry {
         }
     }
 
-    fn insert(&mut self, token: String, backend: Arc<dyn StreamBackend>) {
+    fn insert(&mut self, token: String, backend: Arc<dyn MediaSourceBackend>) {
         let now = Instant::now();
         self.cleanup_if_due(now);
         self.entries.insert(
             token,
-            StreamBackendEntry {
+            MediaSourceEntry {
                 backend,
                 last_access: now,
             },
@@ -334,7 +335,7 @@ impl StreamBackendRegistry {
         self.enforce_limit(now);
     }
 
-    fn get(&mut self, token: &str) -> Option<Arc<dyn StreamBackend>> {
+    fn get(&mut self, token: &str) -> Option<Arc<dyn MediaSourceBackend>> {
         let now = Instant::now();
         self.cleanup_if_due(now);
         let entry = self.entries.get_mut(token)?;
@@ -343,8 +344,14 @@ impl StreamBackendRegistry {
     }
 
     #[allow(dead_code)] // Used by cast-session revocation once CastingService is registered.
-    fn remove(&mut self, token: &str) {
-        self.entries.remove(token);
+    fn remove(&mut self, token: &str) -> Option<Arc<dyn MediaSourceBackend>> {
+        self.entries.remove(token).map(|entry| entry.backend)
+    }
+
+    fn has_origin(&self, origin: &str) -> bool {
+        self.entries
+            .values()
+            .any(|entry| entry.backend.origin() == origin)
     }
 
     fn find_token_by_origin(&mut self, origin: &str) -> Option<String> {
@@ -360,8 +367,8 @@ impl StreamBackendRegistry {
     }
 
     fn cleanup_if_due(&mut self, now: Instant) {
-        if now.duration_since(self.last_cleanup) < STREAM_BACKEND_CLEANUP_INTERVAL
-            && self.entries.len() <= STREAM_BACKEND_MAX_ENTRIES
+        if now.duration_since(self.last_cleanup) < MEDIA_SOURCE_CLEANUP_INTERVAL
+            && self.entries.len() <= MEDIA_SOURCE_MAX_ENTRIES
         {
             return;
         }
@@ -371,7 +378,7 @@ impl StreamBackendRegistry {
     fn cleanup_idle(&mut self, now: Instant) {
         let before = self.entries.len();
         self.entries
-            .retain(|_, entry| now.duration_since(entry.last_access) <= STREAM_BACKEND_IDLE_TIMEOUT);
+            .retain(|_, entry| now.duration_since(entry.last_access) <= MEDIA_SOURCE_IDLE_TIMEOUT);
         self.last_cleanup = now;
         let removed = before.saturating_sub(self.entries.len());
         if removed > 0 {
@@ -380,13 +387,13 @@ impl StreamBackendRegistry {
     }
 
     fn enforce_limit(&mut self, now: Instant) {
-        if self.entries.len() <= STREAM_BACKEND_MAX_ENTRIES {
+        if self.entries.len() <= MEDIA_SOURCE_MAX_ENTRIES {
             return;
         }
         let remove_count = self
             .entries
             .len()
-            .saturating_sub(STREAM_BACKEND_TARGET_ENTRIES);
+            .saturating_sub(MEDIA_SOURCE_TARGET_ENTRIES);
         let mut oldest = self
             .entries
             .iter()
@@ -403,7 +410,7 @@ impl StreamBackendRegistry {
     }
 }
 
-trait StreamBackend: Send + Sync {
+trait MediaSourceBackend: Send + Sync {
     fn label(&self) -> &'static str;
 
     fn origin(&self) -> &str;
@@ -412,19 +419,26 @@ trait StreamBackend: Send + Sync {
 
     fn handle<'a>(
         &'a self,
-        app_handle: &'a AppHandle,
+        app_handle: Option<&'a AppHandle>,
         stream: &'a mut TcpStream,
         method: &'a str,
         range: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>>;
 }
 
-struct HttpStreamBackend {
-    url: String,
-    download_speed_meter: DownloadSpeedMeterHandle,
+#[derive(Clone)]
+struct CastMediaEndpoint {
+    public_base_url: String,
+    lease_token: String,
 }
 
-impl HttpStreamBackend {
+struct HttpMediaSourceBackend {
+    url: String,
+    download_speed_meter: DownloadSpeedMeterHandle,
+    cast_endpoint: Option<CastMediaEndpoint>,
+}
+
+impl HttpMediaSourceBackend {
     fn new(url: String) -> Self {
         Self::with_download_speed_meter(url, Arc::new(Mutex::new(DownloadSpeedMeter::default())))
     }
@@ -433,11 +447,32 @@ impl HttpStreamBackend {
         Self {
             url,
             download_speed_meter,
+            cast_endpoint: None,
+        }
+    }
+
+    fn for_cast(url: String, cast_endpoint: CastMediaEndpoint) -> Self {
+        Self::for_cast_with_download_speed_meter(
+            url,
+            cast_endpoint,
+            Arc::new(Mutex::new(DownloadSpeedMeter::default())),
+        )
+    }
+
+    fn for_cast_with_download_speed_meter(
+        url: String,
+        cast_endpoint: CastMediaEndpoint,
+        download_speed_meter: DownloadSpeedMeterHandle,
+    ) -> Self {
+        Self {
+            url,
+            download_speed_meter,
+            cast_endpoint: Some(cast_endpoint),
         }
     }
 }
 
-impl StreamBackend for HttpStreamBackend {
+impl MediaSourceBackend for HttpMediaSourceBackend {
     fn label(&self) -> &'static str {
         "http"
     }
@@ -452,12 +487,14 @@ impl StreamBackend for HttpStreamBackend {
 
     fn handle<'a>(
         &'a self,
-        app_handle: &'a AppHandle,
+        app_handle: Option<&'a AppHandle>,
         stream: &'a mut TcpStream,
         method: &'a str,
         range: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            let app_handle = app_handle
+                .ok_or_else(|| "HTTP media sources require an application handle".to_string())?;
             let download_speed_recorder =
                 DownloadSpeedRecorder::new(self.download_speed_meter.clone());
             handle_http_stream_source(
@@ -467,6 +504,7 @@ impl StreamBackend for HttpStreamBackend {
                 &self.url,
                 range,
                 &download_speed_recorder,
+                self.cast_endpoint.as_ref(),
             )
             .await
         })
@@ -592,7 +630,7 @@ impl LocalFileMediaSourceBackend {
     }
 }
 
-impl StreamBackend for LocalFileMediaSourceBackend {
+impl MediaSourceBackend for LocalFileMediaSourceBackend {
     fn label(&self) -> &'static str { "local-file" }
 
     fn origin(&self) -> &str { &self.origin_label }
@@ -601,7 +639,7 @@ impl StreamBackend for LocalFileMediaSourceBackend {
 
     fn handle<'a>(
         &'a self,
-        _app_handle: &'a AppHandle,
+        _app_handle: Option<&'a AppHandle>,
         stream: &'a mut TcpStream,
         method: &'a str,
         range: Option<&'a str>,
@@ -626,14 +664,14 @@ pub(crate) fn infer_media_mime(path: &Path) -> &'static str {
     }
 }
 
-struct SmbStreamBackend {
+struct SmbMediaSourceBackend {
     url: String,
     open_url: String,
     file: Arc<Mutex<Option<crate::network::protocols::smb::SmbPlaybackFile>>>,
     download_speed_meter: DownloadSpeedMeterHandle,
 }
 
-impl SmbStreamBackend {
+impl SmbMediaSourceBackend {
     fn new(url: String, open_url: String) -> Self {
         Self {
             url,
@@ -768,7 +806,7 @@ impl SmbStreamBackend {
     }
 }
 
-impl StreamBackend for SmbStreamBackend {
+impl MediaSourceBackend for SmbMediaSourceBackend {
     fn label(&self) -> &'static str {
         "smb"
     }
@@ -783,7 +821,7 @@ impl StreamBackend for SmbStreamBackend {
 
     fn handle<'a>(
         &'a self,
-        _app_handle: &'a AppHandle,
+        _app_handle: Option<&'a AppHandle>,
         stream: &'a mut TcpStream,
         method: &'a str,
         range: Option<&'a str>,
@@ -800,7 +838,7 @@ enum RequestHeaderRead {
 }
 
 pub(crate) fn set_parallel_range_enabled(enabled: bool) {
-    STREAM_PROXY_PARALLEL_RANGE_ENABLED.store(enabled, Ordering::Release);
+    MEDIA_GATEWAY_PARALLEL_RANGE_ENABLED.store(enabled, Ordering::Release);
     info!(
         "media gateway: parallel range download {}",
         if enabled { "enabled" } else { "disabled" }
@@ -808,7 +846,7 @@ pub(crate) fn set_parallel_range_enabled(enabled: bool) {
 }
 
 fn parallel_range_enabled() -> bool {
-    STREAM_PROXY_PARALLEL_RANGE_ENABLED.load(Ordering::Acquire)
+    MEDIA_GATEWAY_PARALLEL_RANGE_ENABLED.load(Ordering::Acquire)
 }
 
 fn initialize_parallel_range_setting(app_handle: &AppHandle) {
@@ -828,7 +866,7 @@ pub(crate) fn register_basic_auth(playback_url: &str, username: &str, password: 
     if username.is_empty() {
         return;
     }
-    if let Ok(mut auth_map) = STREAM_PROXY_BASIC_AUTH
+    if let Ok(mut auth_map) = MEDIA_SOURCE_BASIC_AUTH
         .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
         .lock()
     {
@@ -847,7 +885,7 @@ pub(crate) fn create_loopback_media_url_with_headers(
         return None;
     }
     register_headers(url, headers);
-    let proxied = proxy_url_for(url)?;
+    let proxied = create_loopback_media_url_for_http(url)?;
     info!("media gateway: rewrote yt-dlp stream url={}", redact_url(url));
     Some(proxied)
 }
@@ -857,7 +895,7 @@ pub(crate) fn register_headers(playback_url: &str, headers: &[(String, String)])
     if normalized.is_empty() {
         return;
     }
-    if let Ok(mut headers_map) = STREAM_PROXY_HEADERS
+    if let Ok(mut headers_map) = MEDIA_SOURCE_HEADERS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
     {
@@ -868,7 +906,7 @@ pub(crate) fn register_headers(playback_url: &str, headers: &[(String, String)])
 pub(crate) fn start_loopback_listener(app_handle: AppHandle) -> Result<(), String> {
     initialize_parallel_range_setting(&app_handle);
 
-    if STREAM_PROXY_BASE_URL.get().is_some() {
+    if LOOPBACK_MEDIA_BASE_URL.get().is_some() {
         return Ok(());
     }
 
@@ -879,7 +917,7 @@ pub(crate) fn start_loopback_listener(app_handle: AppHandle) -> Result<(), Strin
         .map_err(|error| error.to_string())?;
 
     let base_url = format!("http://{addr}");
-    let _ = STREAM_PROXY_BASE_URL.set(base_url);
+    let _ = LOOPBACK_MEDIA_BASE_URL.set(base_url);
 
     std::thread::Builder::new()
         .name("soia-media-gateway".to_string())
@@ -940,7 +978,15 @@ fn start_lan_listener(app_handle: AppHandle) -> Result<u16, String> {
             };
             runtime.block_on(async move {
                 match TcpListener::from_std(listener) {
-                    Ok(listener) => serve_lan(listener, app_handle).await,
+                    Ok(listener) => {
+                        tokio::spawn(async {
+                            loop {
+                                tokio::time::sleep(CAST_MEDIA_LEASE_CLEANUP_INTERVAL).await;
+                                cleanup_expired_cast_media_leases();
+                            }
+                        });
+                        serve_lan(listener, app_handle).await;
+                    }
                     Err(error) => warn!("media gateway: failed to adopt LAN listener: {error}"),
                 }
             });
@@ -955,7 +1001,7 @@ pub(crate) fn create_loopback_https_media_url(url: &str) -> Option<String> {
     if !is_https_url(url) {
         return None;
     }
-    let proxied = proxy_url_for(url)?;
+    let proxied = create_loopback_media_url_for_http(url)?;
     info!("media gateway: rewrote HTTPS stream url={}", redact_url(url));
     Some(proxied)
 }
@@ -964,7 +1010,7 @@ pub(crate) fn create_loopback_http_media_url(url: &str) -> Option<String> {
     if !is_http_url(url) {
         return None;
     }
-    let proxied = proxy_url_for(url)?;
+    let proxied = create_loopback_media_url_for_http(url)?;
     info!("media gateway: rewrote HTTP stream url={}", redact_url(url));
     Some(proxied)
 }
@@ -977,7 +1023,7 @@ pub(crate) fn create_loopback_smb_media_url(url: &str) -> Option<String> {
         return None;
     }
     // Reuse an existing backend for the same origin URL if available
-    if let Some(proxied) = proxy_url_for_existing_origin(url) {
+    if let Some(proxied) = loopback_media_url_for_existing_origin(url) {
         info!("media gateway: reused SMB backend url={}", redact_url(url));
         return Some(proxied);
     }
@@ -991,7 +1037,7 @@ pub(crate) fn create_loopback_smb_media_url(url: &str) -> Option<String> {
             .ok()
         })
         .unwrap_or_else(|| url.to_string());
-    let proxied = proxy_url_for_backend(Arc::new(SmbStreamBackend::new(
+    let proxied = create_loopback_media_url_for_source(Arc::new(SmbMediaSourceBackend::new(
         url.to_string(),
         open_url,
     )))?;
@@ -1015,7 +1061,7 @@ pub(crate) fn create_cast_http_media_url(
         app_handle,
         session_id,
         receiver_ip,
-        Arc::new(HttpStreamBackend::new(source_url.to_string())),
+        |endpoint| Arc::new(HttpMediaSourceBackend::for_cast(source_url.to_string(), endpoint)),
     )
 }
 
@@ -1029,7 +1075,7 @@ pub(crate) fn create_cast_local_file_media_url(
     file_path: &Path,
 ) -> Result<String, String> {
     let backend = LocalFileMediaSourceBackend::new(file_path)?;
-    create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, Arc::new(backend))
+    create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |_| Arc::new(backend))
 }
 
 #[allow(dead_code)]
@@ -1056,37 +1102,36 @@ pub(crate) fn create_cast_smb_media_url(
         app_handle,
         session_id,
         receiver_ip,
-        Arc::new(SmbStreamBackend::new(source_url.to_string(), open_url)),
+        move |_| Arc::new(SmbMediaSourceBackend::new(source_url.to_string(), open_url)),
     )
 }
 
-fn create_cast_media_url_for_backend(
+fn create_cast_media_url_for_backend<F>(
     app_handle: AppHandle,
     session_id: &str,
     receiver_ip: Ipv4Addr,
-    backend: Arc<dyn StreamBackend>,
-) -> Result<String, String> {
-    let source_id = register_media_source(backend)
-        .ok_or_else(|| "failed to register cast media source".to_string())?;
+    create_backend: F,
+) -> Result<String, String>
+where
+    F: FnOnce(CastMediaEndpoint) -> Arc<dyn MediaSourceBackend>,
+{
+    cleanup_expired_cast_media_leases();
     let port = match start_lan_listener(app_handle) {
         Ok(port) => port,
-        Err(error) => {
-            if let Ok(mut backends) = stream_backends().lock() {
-                backends.remove(&source_id);
-            }
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     let local_ip = match crate::network::local_address::local_ipv4_for_target(receiver_ip) {
         Ok(ip) => ip,
-        Err(error) => {
-            if let Ok(mut backends) = stream_backends().lock() {
-                backends.remove(&source_id);
-            }
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
-    let lease = CastMediaLease::new(
+    let endpoint = CastMediaEndpoint {
+        public_base_url: format!("http://{local_ip}:{port}"),
+        lease_token: uuid::Uuid::new_v4().to_string(),
+    };
+    let source_id = register_media_source(create_backend(endpoint.clone()))
+        .ok_or_else(|| "failed to register cast media source".to_string())?;
+    let lease = CastMediaLease::new_with_token(
+        endpoint.lease_token,
         session_id.to_string(),
         source_id.clone(),
         IpAddr::V4(receiver_ip),
@@ -1098,12 +1143,10 @@ fn create_cast_media_url_for_backend(
         .map_err(|error| error.to_string())?
         .insert(lease)
     {
-        if let Ok(mut backends) = stream_backends().lock() {
-            backends.remove(&source_id);
-        }
+        remove_media_sources(vec![source_id]);
         return Err(error);
     }
-    Ok(format!("http://{local_ip}:{port}{media_path}"))
+    Ok(format!("{}{media_path}", endpoint.public_base_url))
 }
 
 /// Revokes every LAN URL and source backend belonging to a cast session.
@@ -1113,11 +1156,7 @@ pub(crate) fn revoke_cast_media_session(session_id: &str) {
         .lock()
         .map(|mut leases| leases.revoke_session(session_id))
         .unwrap_or_default();
-    if let Ok(mut backends) = stream_backends().lock() {
-        for lease in revoked {
-            backends.remove(&lease.source_id);
-        }
-    }
+    release_cast_media_leases(revoked);
 }
 
 fn is_http_url(raw: &str) -> bool {
@@ -1141,8 +1180,60 @@ fn is_smb_url(raw: &str) -> bool {
     url.scheme().eq_ignore_ascii_case("smb")
 }
 
-fn stream_backends() -> &'static Mutex<StreamBackendRegistry> {
-    STREAM_PROXY_BACKENDS.get_or_init(|| Mutex::new(StreamBackendRegistry::new()))
+fn media_source_registry() -> &'static Mutex<MediaSourceRegistry> {
+    MEDIA_SOURCE_REGISTRY.get_or_init(|| Mutex::new(MediaSourceRegistry::new()))
+}
+
+fn remove_media_sources(source_ids: impl IntoIterator<Item = String>) {
+    let removed_origins = {
+        let Ok(mut sources) = media_source_registry().lock() else {
+            return;
+        };
+        let removed_origins = source_ids
+            .into_iter()
+            .filter_map(|source_id| sources.remove(&source_id))
+            .map(|source| source.origin().to_string())
+            .collect::<Vec<_>>();
+        removed_origins
+            .into_iter()
+            .filter(|origin| !sources.has_origin(origin))
+            .collect::<Vec<_>>()
+    };
+    if removed_origins.is_empty() {
+        return;
+    }
+    if let Ok(mut auth) = MEDIA_SOURCE_BASIC_AUTH
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        for origin in &removed_origins {
+            auth.remove(origin);
+        }
+    }
+    if let Ok(mut headers) = MEDIA_SOURCE_HEADERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        for origin in &removed_origins {
+            headers.remove(origin);
+        }
+    }
+}
+
+fn release_cast_media_leases(leases: impl IntoIterator<Item = CastMediaLease>) {
+    let source_ids = leases
+        .into_iter()
+        .flat_map(|lease| lease.source_ids().to_vec())
+        .collect::<Vec<_>>();
+    remove_media_sources(source_ids);
+}
+
+fn cleanup_expired_cast_media_leases() {
+    let expired = cast_media_leases()
+        .lock()
+        .map(|mut leases| leases.purge_expired(Instant::now()))
+        .unwrap_or_default();
+    release_cast_media_leases(expired);
 }
 
 #[allow(dead_code)]
@@ -1151,7 +1242,7 @@ fn cast_media_leases() -> &'static Mutex<CastMediaLeaseRegistry> {
 }
 
 pub(crate) fn download_speed_bps() -> f64 {
-    ACTIVE_STREAM_PROXY_BACKENDS
+    ACTIVE_MEDIA_SOURCES
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
@@ -1172,7 +1263,7 @@ pub(crate) fn download_speed_bps() -> f64 {
 }
 
 pub(crate) fn begin_download_speed_activation(url: &str) -> DownloadSpeedActivation {
-    let backends = proxy_stream_backends_for_url(url);
+    let backends = media_sources_for_playback_url(url);
     let previous_meters = backends
         .iter()
         .filter_map(|backend| {
@@ -1185,7 +1276,7 @@ pub(crate) fn begin_download_speed_activation(url: &str) -> DownloadSpeedActivat
             previous_meter.map(|previous_meter| (meter, previous_meter))
         })
         .collect();
-    let previous_backends = ACTIVE_STREAM_PROXY_BACKENDS
+    let previous_backends = ACTIVE_MEDIA_SOURCES
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
@@ -1200,7 +1291,7 @@ pub(crate) fn begin_download_speed_activation(url: &str) -> DownloadSpeedActivat
 }
 
 pub(crate) fn begin_download_speed_generation() -> Option<DownloadSpeedGeneration> {
-    let backends = ACTIVE_STREAM_PROXY_BACKENDS
+    let backends = ACTIVE_MEDIA_SOURCES
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
@@ -1227,7 +1318,7 @@ pub(crate) fn begin_download_speed_generation() -> Option<DownloadSpeedGeneratio
 }
 
 pub(crate) fn is_loopback_media_url(url: &str) -> bool {
-    let Some(base_url) = STREAM_PROXY_BASE_URL.get() else {
+    let Some(base_url) = LOOPBACK_MEDIA_BASE_URL.get() else {
         return false;
     };
     let (Ok(base), Ok(candidate)) = (Url::parse(base_url), Url::parse(url)) else {
@@ -1239,36 +1330,36 @@ pub(crate) fn is_loopback_media_url(url: &str) -> bool {
         && candidate.path().starts_with("/stream/")
 }
 
-fn proxy_url_for(raw: &str) -> Option<String> {
-    proxy_url_for_backend(Arc::new(HttpStreamBackend::new(raw.to_string())))
+fn create_loopback_media_url_for_http(raw: &str) -> Option<String> {
+    create_loopback_media_url_for_source(Arc::new(HttpMediaSourceBackend::new(raw.to_string())))
 }
 
-fn proxy_url_for_backend(backend: Arc<dyn StreamBackend>) -> Option<String> {
-    let base = STREAM_PROXY_BASE_URL.get()?;
+fn create_loopback_media_url_for_source(backend: Arc<dyn MediaSourceBackend>) -> Option<String> {
+    let base = LOOPBACK_MEDIA_BASE_URL.get()?;
     let token = register_media_source(backend)?;
     Some(format!("{base}/stream/{token}"))
 }
 
-fn register_media_source(backend: Arc<dyn StreamBackend>) -> Option<String> {
+fn register_media_source(backend: Arc<dyn MediaSourceBackend>) -> Option<String> {
     let token = uuid::Uuid::now_v7().to_string();
-    stream_backends().lock().ok()?.insert(token.clone(), backend);
+    media_source_registry().lock().ok()?.insert(token.clone(), backend);
     Some(token)
 }
 
-fn proxy_url_for_existing_origin(origin: &str) -> Option<String> {
-    let base = STREAM_PROXY_BASE_URL.get()?;
-    let token = stream_backends().lock().ok()?.find_token_by_origin(origin)?;
+fn loopback_media_url_for_existing_origin(origin: &str) -> Option<String> {
+    let base = LOOPBACK_MEDIA_BASE_URL.get()?;
+    let token = media_source_registry().lock().ok()?.find_token_by_origin(origin)?;
     Some(format!("{base}/stream/{token}"))
 }
 
-fn proxy_stream_backends_for_url(url: &str) -> Vec<Arc<dyn StreamBackend>> {
+fn media_sources_for_playback_url(url: &str) -> Vec<Arc<dyn MediaSourceBackend>> {
     let urls = if url.starts_with("edl://") {
         edl_stream_urls(url)
     } else {
         vec![url]
     };
     urls.into_iter()
-        .filter_map(proxy_stream_backend_for_url)
+        .filter_map(media_source_for_loopback_url)
         .fold(Vec::new(), |mut backends, backend| {
             if !backends.iter().any(|existing| Arc::ptr_eq(existing, &backend)) {
                 backends.push(backend);
@@ -1277,10 +1368,10 @@ fn proxy_stream_backends_for_url(url: &str) -> Vec<Arc<dyn StreamBackend>> {
         })
 }
 
-fn proxy_stream_backend_for_url(url: &str) -> Option<Arc<dyn StreamBackend>> {
+fn media_source_for_loopback_url(url: &str) -> Option<Arc<dyn MediaSourceBackend>> {
     let target = Url::parse(url).ok()?.path().to_string();
     let token = target.strip_prefix("/stream/")?.trim();
-    (!token.is_empty()).then(|| stream_backends().lock().ok()?.get(token))?
+    (!token.is_empty()).then(|| media_source_registry().lock().ok()?.get(token))?
 }
 
 fn edl_stream_urls(value: &str) -> Vec<&str> {
@@ -1305,16 +1396,16 @@ fn edl_stream_urls(value: &str) -> Vec<&str> {
     urls
 }
 
-fn lookup_stream_backend(target: &str) -> Option<Arc<dyn StreamBackend>> {
+fn lookup_media_source(target: &str) -> Option<Arc<dyn MediaSourceBackend>> {
     if let Some(remote_url) = parse_remote_url(target) {
-        return Some(Arc::new(HttpStreamBackend::new(remote_url)));
+        return Some(Arc::new(HttpMediaSourceBackend::new(remote_url)));
     }
     let path = target.split_once('?').map(|(path, _)| path).unwrap_or(target);
     let token = path.strip_prefix("/stream/")?.trim();
     if token.is_empty() {
         return None;
     }
-    stream_backends().lock().ok()?.get(token)
+    media_source_registry().lock().ok()?.get(token)
 }
 
 fn redact_url(raw: &str) -> String {
@@ -1379,10 +1470,19 @@ async fn serve_lan(listener: TcpListener, app_handle: AppHandle) {
 
 #[allow(dead_code)]
 async fn handle_lan_connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     client_ip: IpAddr,
     app_handle: &AppHandle,
 ) -> Result<(), String> {
+    handle_lan_connection_with_context(stream, client_ip, Some(app_handle)).await
+}
+
+async fn handle_lan_connection_with_context(
+    mut stream: TcpStream,
+    client_ip: IpAddr,
+    app_handle: Option<&AppHandle>,
+) -> Result<(), String> {
+    cleanup_expired_cast_media_leases();
     let request_bytes = match read_request_header(&mut stream).await? {
         RequestHeaderRead::Empty => return Ok(()),
         RequestHeaderRead::Complete(bytes) => bytes,
@@ -1401,23 +1501,30 @@ async fn handle_lan_connection(
         write_status(&mut stream, 405, "Method Not Allowed", b"method not allowed").await?;
         return Ok(());
     }
-    let Some(token) = parse_cast_media_token(&target) else {
+    let Some(route) = parse_cast_media_route(&target) else {
         write_status(&mut stream, 404, "Not Found", b"cast media not found").await?;
         return Ok(());
     };
     let source_id = cast_media_leases()
         .lock()
         .ok()
-        .and_then(|mut leases| leases.authorize(token, client_ip).map(|lease| lease.source_id.clone()));
+        .and_then(|mut leases| {
+            let lease = leases.authorize(route.lease_token, client_ip)?;
+            match route.source_id {
+                Some(source_id) if lease.contains_source(source_id) => Some(source_id.to_string()),
+                Some(_) => None,
+                None => Some(lease.source_id.clone()),
+            }
+        });
     let Some(source_id) = source_id else {
         write_status(&mut stream, 404, "Not Found", b"cast media not found").await?;
         return Ok(());
     };
-    let Some(backend) = stream_backends().lock().ok().and_then(|mut backends| backends.get(&source_id)) else {
+    let Some(backend) = media_source_registry().lock().ok().and_then(|mut backends| backends.get(&source_id)) else {
         write_status(&mut stream, 410, "Gone", b"cast media unavailable").await?;
         return Ok(());
     };
-    let token_prefix = token.chars().take(8).collect::<String>();
+    let token_prefix = route.lease_token.chars().take(8).collect::<String>();
     debug!("media gateway: dispatch LAN backend={} token_prefix={token_prefix}", backend.label());
     backend
         .handle(app_handle, &mut stream, &method, range.as_deref())
@@ -1426,12 +1533,37 @@ async fn handle_lan_connection(
 
 #[allow(dead_code)]
 fn parse_cast_media_token(target: &str) -> Option<&str> {
+    match parse_cast_media_route(target)? {
+        CastMediaRoute {
+            lease_token,
+            source_id: None,
+        } => Some(lease_token),
+        CastMediaRoute { source_id: Some(_), .. } => None,
+    }
+}
+
+struct CastMediaRoute<'a> {
+    lease_token: &'a str,
+    source_id: Option<&'a str>,
+}
+
+fn parse_cast_media_route(target: &str) -> Option<CastMediaRoute<'_>> {
     if target.contains('?') {
         return None;
     }
     let value = target.strip_prefix("/cast/")?;
-    let token = value.strip_suffix("/media")?;
-    (!token.is_empty() && !token.contains('/')).then_some(token)
+    if let Some(token) = value.strip_suffix("/media") {
+        return (!token.is_empty() && !token.contains('/')).then_some(CastMediaRoute {
+            lease_token: token,
+            source_id: None,
+        });
+    }
+    let (token, source_id) = value.split_once("/resource/")?;
+    (!token.is_empty() && !source_id.is_empty() && !token.contains('/') && !source_id.contains('/'))
+        .then_some(CastMediaRoute {
+            lease_token: token,
+            source_id: Some(source_id),
+        })
 }
 
 async fn handle_connection(mut stream: TcpStream, app_handle: &AppHandle) -> Result<(), String> {
@@ -1461,7 +1593,7 @@ async fn handle_connection(mut stream: TcpStream, app_handle: &AppHandle) -> Res
         return Ok(());
     }
 
-    let Some(backend) = lookup_stream_backend(&target) else {
+    let Some(backend) = lookup_media_source(&target) else {
         write_status(&mut stream, 400, "Bad Request", b"missing stream source").await?;
         return Ok(());
     };
@@ -1472,7 +1604,7 @@ async fn handle_connection(mut stream: TcpStream, app_handle: &AppHandle) -> Res
         redact_url(backend.origin())
     );
     backend
-        .handle(app_handle, &mut stream, &method, range.as_deref())
+        .handle(Some(app_handle), &mut stream, &method, range.as_deref())
         .await
 }
 
@@ -1483,6 +1615,7 @@ async fn handle_http_stream_source(
     remote_url: &str,
     range: Option<&str>,
     download_speed_recorder: &DownloadSpeedRecorder,
+    cast_endpoint: Option<&CastMediaEndpoint>,
 ) -> Result<(), String> {
     debug!("media gateway: fetch {}", redact_url(remote_url));
 
@@ -1518,13 +1651,20 @@ async fn handle_http_stream_source(
         );
         let text = String::from_utf8_lossy(&bytes);
         let inherited_headers = lookup_headers(remote_url);
-        let body = rewrite_playlist(
+        let body = match rewrite_playlist_for_endpoint(
             remote_url,
             &text,
             inherited_headers.as_deref(),
             &download_speed_recorder.meter,
-        )
-        .into_bytes();
+            cast_endpoint,
+        ) {
+            Ok(body) => body.into_bytes(),
+            Err(error) => {
+                warn!("media gateway: failed to register HLS child resource: {error}");
+                write_status(stream, 502, "Bad Gateway", b"cast HLS resource unavailable").await?;
+                return Ok(());
+            }
+        };
         write_response(
             stream,
             status.as_u16(),
@@ -1557,7 +1697,7 @@ async fn handle_http_stream_source(
 }
 
 async fn handle_smb_stream_source(
-    backend: &SmbStreamBackend,
+    backend: &SmbMediaSourceBackend,
     stream: &mut TcpStream,
     method: &str,
     remote_url: &str,
@@ -1638,7 +1778,7 @@ async fn handle_smb_stream_source(
 
     let chunk_size = {
         backend.ensure_open().await?;
-        SmbStreamBackend::smb_chunk_size(&backend.file)
+        SmbMediaSourceBackend::smb_chunk_size(&backend.file)
     };
     let mut next = response_start;
     while next <= response_end {
@@ -1824,7 +1964,7 @@ async fn fetch_remote(
 
 fn build_client(app_handle: &AppHandle) -> Result<Client, String> {
     let proxy_key = crate::network::proxy::current_proxy_key(app_handle)?;
-    let client_cache = STREAM_PROXY_CLIENT.get_or_init(|| Mutex::new(None));
+    let client_cache = MEDIA_GATEWAY_CLIENT.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = client_cache.lock() {
         if let Some(cached) = guard.as_ref() {
             if cached.proxy_key == proxy_key {
@@ -1872,7 +2012,7 @@ fn apply_basic_auth(request: RequestBuilder, remote_url: &str) -> RequestBuilder
 }
 
 fn lookup_basic_auth(url: &str) -> Option<BasicAuth> {
-    STREAM_PROXY_BASIC_AUTH
+    MEDIA_SOURCE_BASIC_AUTH
         .get()
         .and_then(|auth_map| auth_map.lock().ok())
         .and_then(|auth_map| auth_map.get(url).cloned())
@@ -1932,7 +2072,7 @@ fn apply_headers(mut request: RequestBuilder, remote_url: &str) -> RequestBuilde
 }
 
 fn lookup_headers(url: &str) -> Option<ProxyHeaders> {
-    STREAM_PROXY_HEADERS
+    MEDIA_SOURCE_HEADERS
         .get()
         .and_then(|headers_map| headers_map.lock().ok())
         .and_then(|headers_map| headers_map.get(url).cloned())
@@ -1952,12 +2092,23 @@ fn content_type(response: &Response) -> String {
         .to_string()
 }
 
+#[cfg(test)]
 fn rewrite_playlist(
     base_url: &str,
     text: &str,
     inherited_headers: Option<&[(String, String)]>,
     download_speed_meter: &DownloadSpeedMeterHandle,
-) -> String {
+) -> Result<String, String> {
+    rewrite_playlist_for_endpoint(base_url, text, inherited_headers, download_speed_meter, None)
+}
+
+fn rewrite_playlist_for_endpoint(
+    base_url: &str,
+    text: &str,
+    inherited_headers: Option<&[(String, String)]>,
+    download_speed_meter: &DownloadSpeedMeterHandle,
+    cast_endpoint: Option<&CastMediaEndpoint>,
+) -> Result<String, String> {
     let base = Url::parse(base_url).ok();
     text.lines()
         .map(|line| {
@@ -1966,10 +2117,11 @@ fn rewrite_playlist(
                 line,
                 inherited_headers,
                 download_speed_meter,
+                cast_endpoint,
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Result<Vec<_>, _>>()
+        .map(|lines| lines.join("\n"))
 }
 
 fn rewrite_playlist_line(
@@ -1977,15 +2129,16 @@ fn rewrite_playlist_line(
     line: &str,
     inherited_headers: Option<&[(String, String)]>,
     download_speed_meter: &DownloadSpeedMeterHandle,
-) -> String {
+    cast_endpoint: Option<&CastMediaEndpoint>,
+) -> Result<String, String> {
     if line.trim().is_empty() {
-        return line.to_string();
+        return Ok(line.to_string());
     }
     if line.starts_with('#') {
-        return rewrite_uri_attributes(base, line, inherited_headers, download_speed_meter);
+        return rewrite_uri_attributes(base, line, inherited_headers, download_speed_meter, cast_endpoint);
     }
-    rewrite_playlist_url(base, line, inherited_headers, download_speed_meter)
-        .unwrap_or_else(|| line.to_string())
+    Ok(rewrite_playlist_url(base, line, inherited_headers, download_speed_meter, cast_endpoint)?
+        .unwrap_or_else(|| line.to_string()))
 }
 
 fn rewrite_uri_attributes(
@@ -1993,7 +2146,8 @@ fn rewrite_uri_attributes(
     line: &str,
     inherited_headers: Option<&[(String, String)]>,
     download_speed_meter: &DownloadSpeedMeterHandle,
-) -> String {
+    cast_endpoint: Option<&CastMediaEndpoint>,
+) -> Result<String, String> {
     let mut rewritten = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(index) = rest.find("URI=\"") {
@@ -2003,17 +2157,17 @@ fn rewrite_uri_attributes(
         let uri_start = &after_prefix[5..];
         let Some(end) = uri_start.find('"') else {
             rewritten.push_str(uri_start);
-            return rewritten;
+            return Ok(rewritten);
         };
         let uri = &uri_start[..end];
         rewritten.push_str(
-            &rewrite_playlist_url(base, uri, inherited_headers, download_speed_meter)
+            &rewrite_playlist_url(base, uri, inherited_headers, download_speed_meter, cast_endpoint)?
                 .unwrap_or_else(|| uri.to_string()),
         );
         rest = &uri_start[end..];
     }
     rewritten.push_str(rest);
-    rewritten
+    Ok(rewritten)
 }
 
 fn rewrite_playlist_url(
@@ -2021,20 +2175,78 @@ fn rewrite_playlist_url(
     value: &str,
     inherited_headers: Option<&[(String, String)]>,
     download_speed_meter: &DownloadSpeedMeterHandle,
-) -> Option<String> {
-    let resolved = resolve_playlist_url(base, value)?;
+    cast_endpoint: Option<&CastMediaEndpoint>,
+) -> Result<Option<String>, String> {
+    let Some(resolved) = resolve_playlist_url(base, value) else {
+        return Ok(None);
+    };
     if let Some(headers) = inherited_headers {
         register_headers(resolved.as_str(), headers);
     }
-    match resolved.scheme() {
-        "http" | "https" => proxy_url_for_backend(Arc::new(
-            HttpStreamBackend::with_download_speed_meter(
+    if !matches!(resolved.scheme(), "http" | "https") {
+        return Ok(None);
+    }
+    if let Some(cast_endpoint) = cast_endpoint {
+        if let Some((username, password)) = lookup_basic_auth(base.map(Url::as_str).unwrap_or_default()) {
+            register_basic_auth(resolved.as_str(), &username, &password);
+        }
+        let origin = resolved.to_string();
+        if let Some(source_id) = cast_media_leases()
+            .lock()
+            .ok()
+            .and_then(|leases| leases.resource_source(&cast_endpoint.lease_token, &origin))
+        {
+            return Ok(Some(format!(
+                "{}/cast/{}/resource/{source_id}",
+                cast_endpoint.public_base_url, cast_endpoint.lease_token,
+            )));
+        }
+        let source_id = register_media_source(Arc::new(
+            HttpMediaSourceBackend::for_cast_with_download_speed_meter(
                 resolved.to_string(),
+                cast_endpoint.clone(),
                 download_speed_meter.clone(),
             ),
-        )),
-        _ => None,
+        ))
+        .ok_or_else(|| "failed to register cast HLS resource".to_string())?;
+        let registration = cast_media_leases()
+            .lock()
+            .ok()
+            .map(|mut leases| leases.register_resource(
+                &cast_endpoint.lease_token,
+                origin,
+                source_id.clone(),
+            ))
+            .unwrap_or(ResourceRegistration::LeaseUnavailable);
+        match registration {
+            ResourceRegistration::Registered => {}
+            ResourceRegistration::Existing(existing_source_id) => {
+                remove_media_sources(vec![source_id]);
+                return Ok(Some(format!(
+                    "{}/cast/{}/resource/{existing_source_id}",
+                    cast_endpoint.public_base_url, cast_endpoint.lease_token,
+                )));
+            }
+            ResourceRegistration::LeaseUnavailable => {
+                remove_media_sources(vec![source_id]);
+                return Err("cast media lease is no longer available".to_string());
+            }
+            ResourceRegistration::AtCapacity => {
+                remove_media_sources(vec![source_id]);
+                return Err("cast HLS resource limit reached".to_string());
+            }
+        }
+        return Ok(Some(format!(
+            "{}/cast/{}/resource/{source_id}",
+            cast_endpoint.public_base_url, cast_endpoint.lease_token,
+        )));
     }
+    Ok(create_loopback_media_url_for_source(Arc::new(
+        HttpMediaSourceBackend::with_download_speed_meter(
+            resolved.to_string(),
+            download_speed_meter.clone(),
+        ),
+    )))
 }
 
 fn resolve_playlist_url(base: Option<&Url>, value: &str) -> Option<Url> {
@@ -2469,17 +2681,24 @@ async fn write_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        edl_stream_urls, lookup_stream_backend, parse_content_range, parse_request,
-        infer_media_mime, parse_cast_media_token, parse_single_byte_range, rewrite_playlist,
-        DownloadSpeedMeter, DownloadSpeedMeterHandle, LocalFileMediaSourceBackend, StreamBackend,
-        StreamBackendRegistry,
-        STREAM_BACKEND_IDLE_TIMEOUT, STREAM_PROXY_BASE_URL,
+        cast_media_leases, cleanup_expired_cast_media_leases, edl_stream_urls,
+        handle_lan_connection_with_context,
+        lookup_media_source, media_source_registry, parse_content_range, parse_request,
+        infer_media_mime, parse_cast_media_token, parse_cast_media_route, parse_single_byte_range,
+        rewrite_playlist, rewrite_playlist_for_endpoint, revoke_cast_media_session,
+        CastMediaEndpoint, ResourceRegistration,
+        DownloadSpeedMeter, DownloadSpeedMeterHandle, LocalFileMediaSourceBackend,
+        MediaSourceBackend, MediaSourceRegistry, MEDIA_SOURCE_IDLE_TIMEOUT,
+        LOOPBACK_MEDIA_BASE_URL,
     };
+    use super::lease::CastMediaLease;
     use futures_util::future::BoxFuture;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tauri::AppHandle;
-    use tokio::net::TcpStream;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     struct TestBackend {
         origin: String,
@@ -2495,7 +2714,7 @@ mod tests {
         }
     }
 
-    impl StreamBackend for TestBackend {
+    impl MediaSourceBackend for TestBackend {
         fn label(&self) -> &'static str { "test" }
 
         fn origin(&self) -> &str { &self.origin }
@@ -2504,13 +2723,30 @@ mod tests {
 
         fn handle<'a>(
             &'a self,
-            _app_handle: &'a AppHandle,
+            _app_handle: Option<&'a AppHandle>,
             _stream: &'a mut TcpStream,
             _method: &'a str,
             _range: Option<&'a str>,
         ) -> BoxFuture<'a, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    async fn send_lan_media_request(client_ip: IpAddr, request: &str) -> String {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let server = tokio::spawn(async move {
+            handle_lan_connection_with_context(server_stream, client_ip, None).await
+        });
+
+        client.write_all(request.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap().unwrap();
+        String::from_utf8(response).unwrap()
     }
 
     #[test]
@@ -2657,6 +2893,10 @@ mod tests {
         assert_eq!(parse_cast_media_token("/cast/token/media?url=https://example.test"), None);
         assert_eq!(parse_cast_media_token("/cast/token/other"), None);
         assert_eq!(parse_cast_media_token("/cast/token/nested/media"), None);
+        let resource = parse_cast_media_route("/cast/lease-token/resource/source-token").unwrap();
+        assert_eq!(resource.lease_token, "lease-token");
+        assert_eq!(resource.source_id, Some("source-token"));
+        assert!(parse_cast_media_route("/cast/lease-token/resource/source-token/extra").is_none());
     }
 
     #[test]
@@ -2675,9 +2915,67 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[tokio::test]
+    async fn lan_local_file_endpoint_enforces_lease_and_range_contract() {
+        let media_path = std::env::temp_dir().join(format!("soia-cast-{}.mp4", uuid::Uuid::new_v4()));
+        std::fs::write(&media_path, b"0123456789abcdef").unwrap();
+        let source_id = uuid::Uuid::new_v4().to_string();
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        let receiver_ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+        media_source_registry()
+            .lock()
+            .unwrap()
+            .insert(source_id.clone(), Arc::new(LocalFileMediaSourceBackend::new(&media_path).unwrap()));
+        let lease = CastMediaLease::new(
+            session_id.clone(),
+            source_id.clone(),
+            receiver_ip,
+            Duration::from_secs(60),
+        );
+        let media_path_url = lease.media_path();
+        cast_media_leases().lock().unwrap().insert(lease).unwrap();
+
+        let head = send_lan_media_request(
+            receiver_ip,
+            &format!("HEAD {media_path_url} HTTP/1.1\r\nHost: receiver\r\n\r\n"),
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(head.contains("Content-Length: 16\r\n"));
+        assert!(head.ends_with("\r\n\r\n"));
+
+        let range = send_lan_media_request(
+            receiver_ip,
+            &format!("GET {media_path_url} HTTP/1.1\r\nHost: receiver\r\nRange: bytes=4-7\r\n\r\n"),
+        )
+        .await;
+        assert!(range.starts_with("HTTP/1.1 206 Partial Content\r\n"));
+        assert!(range.contains("Content-Range: bytes 4-7/16\r\n"));
+        assert!(range.ends_with("\r\n\r\n4567"));
+
+        let unsatisfiable = send_lan_media_request(
+            receiver_ip,
+            &format!("GET {media_path_url} HTTP/1.1\r\nHost: receiver\r\nRange: bytes=16-\r\n\r\n"),
+        )
+        .await;
+        assert!(unsatisfiable.starts_with("HTTP/1.1 416 Range Not Satisfiable\r\n"));
+        assert!(unsatisfiable.contains("Content-Range: bytes */16\r\n"));
+
+        let rejected = send_lan_media_request(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)),
+            &format!("GET {media_path_url} HTTP/1.1\r\nHost: receiver\r\n\r\n"),
+        )
+        .await;
+        assert!(rejected.starts_with("HTTP/1.1 404 Not Found\r\n"));
+
+        cast_media_leases().lock().unwrap().revoke_session(&session_id);
+        media_source_registry().lock().unwrap().remove(&source_id);
+        std::fs::remove_file(media_path).unwrap();
+    }
+
     #[test]
     fn hls_rewrite_keeps_relative_segments_and_key_uris_behind_tokens() {
-        STREAM_PROXY_BASE_URL
+        LOOPBACK_MEDIA_BASE_URL
             .get_or_init(|| "http://127.0.0.1:39001".to_string());
         let meter = Arc::new(Mutex::new(DownloadSpeedMeter::default()));
         let playlist = rewrite_playlist(
@@ -2686,6 +2984,7 @@ mod tests {
             Some(&[("Referer".to_string(), "https://app.example.test/".to_string())]),
             &meter,
         );
+        let playlist = playlist.unwrap();
         let rewritten = playlist.lines().collect::<Vec<_>>();
         let key_url = rewritten[1]
             .split("URI=\"")
@@ -2699,18 +2998,144 @@ mod tests {
         let key_target = url::Url::parse(key_url).unwrap().path().to_string();
         let segment_target = url::Url::parse(segment_url).unwrap().path().to_string();
         assert_eq!(
-            lookup_stream_backend(&key_target).unwrap().origin(),
+            lookup_media_source(&key_target).unwrap().origin(),
             "https://media.example.test/live/keys/session.key"
         );
         assert_eq!(
-            lookup_stream_backend(&segment_target).unwrap().origin(),
+            lookup_media_source(&segment_target).unwrap().origin(),
             "https://media.example.test/live/segments/0001.ts"
         );
     }
 
     #[test]
+    fn cast_hls_rewrite_keeps_child_resources_inside_the_same_lease() {
+        let lease_token = uuid::Uuid::new_v4().to_string();
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        let source_id = uuid::Uuid::new_v4().to_string();
+        let receiver_ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+        cast_media_leases()
+            .lock()
+            .unwrap()
+            .insert(CastMediaLease::new_with_token(
+                lease_token.clone(),
+                session_id.clone(),
+                source_id,
+                receiver_ip,
+                Duration::from_secs(60),
+            ))
+            .unwrap();
+        let endpoint = CastMediaEndpoint {
+            public_base_url: "http://192.0.2.10:39002".to_string(),
+            lease_token: lease_token.clone(),
+        };
+        let meter = Arc::new(Mutex::new(DownloadSpeedMeter::default()));
+        let playlist = rewrite_playlist_for_endpoint(
+            "https://media.example.test/live/master.m3u8",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"keys/session.key\"\nsegments/0001.ts",
+            Some(&[("Referer".to_string(), "https://app.example.test/".to_string())]),
+            &meter,
+            Some(&endpoint),
+        )
+        .unwrap();
+        let repeated = rewrite_playlist_for_endpoint(
+            "https://media.example.test/live/master.m3u8",
+            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"keys/session.key\"\nsegments/0001.ts",
+            Some(&[("Referer".to_string(), "https://app.example.test/".to_string())]),
+            &meter,
+            Some(&endpoint),
+        )
+        .unwrap();
+        assert_eq!(playlist, repeated);
+        let rewritten = playlist.lines().collect::<Vec<_>>();
+        let key_url = rewritten[1]
+            .split("URI=\"")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches('"');
+        let segment_url = rewritten[2];
+        for url in [key_url, segment_url] {
+            let parsed = url::Url::parse(url).unwrap();
+            assert_eq!(parsed.scheme(), "http");
+            assert_eq!(parsed.host_str(), Some("192.0.2.10"));
+            let route = parse_cast_media_route(parsed.path()).unwrap();
+            assert_eq!(route.lease_token, lease_token);
+            let child_source_id = route.source_id.unwrap();
+            assert!(cast_media_leases()
+                .lock()
+                .unwrap()
+                .authorize(&lease_token, receiver_ip)
+                .unwrap()
+                .contains_source(child_source_id));
+            media_source_registry().lock().unwrap().remove(child_source_id);
+        }
+        cast_media_leases().lock().unwrap().revoke_session(&session_id);
+    }
+
+    #[test]
+    fn cast_session_revocation_releases_primary_and_child_media_sources() {
+        let primary_source = uuid::Uuid::new_v4().to_string();
+        let child_source = uuid::Uuid::new_v4().to_string();
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        let receiver_ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+        {
+            let mut sources = media_source_registry().lock().unwrap();
+            sources.insert(primary_source.clone(), Arc::new(TestBackend::new("https://example.test/master.m3u8")));
+            sources.insert(child_source.clone(), Arc::new(TestBackend::new("https://example.test/segment.ts")));
+        }
+        let lease = CastMediaLease::new(
+            session_id.clone(),
+            primary_source.clone(),
+            receiver_ip,
+            Duration::from_secs(60),
+        );
+        let lease_token = lease.token.clone();
+        cast_media_leases().lock().unwrap().insert(lease).unwrap();
+        assert!(matches!(cast_media_leases()
+            .lock()
+            .unwrap()
+            .register_resource(
+                &lease_token,
+                "https://example.test/segment.ts".to_string(),
+                child_source.clone(),
+            ),
+            ResourceRegistration::Registered,
+        ));
+
+        revoke_cast_media_session(&session_id);
+
+        let mut sources = media_source_registry().lock().unwrap();
+        assert!(sources.get(&primary_source).is_none());
+        assert!(sources.get(&child_source).is_none());
+    }
+
+    #[test]
+    fn expired_cast_lease_releases_its_media_source() {
+        let source_id = uuid::Uuid::new_v4().to_string();
+        let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        let receiver_ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+        media_source_registry()
+            .lock()
+            .unwrap()
+            .insert(source_id.clone(), Arc::new(TestBackend::new("https://example.test/expired.mp4")));
+        cast_media_leases()
+            .lock()
+            .unwrap()
+            .insert(CastMediaLease::new(
+                session_id,
+                source_id.clone(),
+                receiver_ip,
+                Duration::ZERO,
+            ))
+            .unwrap();
+
+        cleanup_expired_cast_media_leases();
+
+        assert!(media_source_registry().lock().unwrap().get(&source_id).is_none());
+    }
+
+    #[test]
     fn backend_registry_reuses_origin_and_removes_idle_entries() {
-        let mut registry = StreamBackendRegistry::new();
+        let mut registry = MediaSourceRegistry::new();
         registry.insert("token-a".to_string(), Arc::new(TestBackend::new("https://example.test/a.mp4")));
 
         assert_eq!(
@@ -2722,7 +3147,7 @@ mod tests {
         assert_eq!(registry.get("token-a").unwrap().label(), "test");
 
         let now = Instant::now();
-        registry.entries.get_mut("token-a").unwrap().last_access = now - STREAM_BACKEND_IDLE_TIMEOUT - Duration::from_secs(1);
+        registry.entries.get_mut("token-a").unwrap().last_access = now - MEDIA_SOURCE_IDLE_TIMEOUT - Duration::from_secs(1);
         registry.cleanup_idle(now);
         assert!(registry.get("token-a").is_none());
     }

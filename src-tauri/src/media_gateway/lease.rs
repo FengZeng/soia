@@ -5,6 +5,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 const CAST_LEASE_CAPACITY: usize = 128;
+const CAST_LEASE_RESOURCE_CAPACITY: usize = 512;
 
 /// A session-scoped LAN authorization. The token is opaque and never contains a path, URL, or
 /// credentials. The media gateway will resolve `source_id` only after the client IP is accepted.
@@ -13,6 +14,8 @@ pub(crate) struct CastMediaLease {
     pub(crate) token: String,
     pub(crate) session_id: String,
     pub(crate) source_id: String,
+    source_ids: Vec<String>,
+    resource_sources: HashMap<String, String>,
     receiver_ip: IpAddr,
     expires_at: Instant,
     last_access_at: Instant,
@@ -34,7 +37,7 @@ impl CastMediaLease {
         )
     }
 
-    fn new_with_token(
+    pub(crate) fn new_with_token(
         token: String,
         session_id: String,
         source_id: String,
@@ -45,6 +48,8 @@ impl CastMediaLease {
         Self {
             token,
             session_id,
+            source_ids: vec![source_id.clone()],
+            resource_sources: HashMap::new(),
             source_id,
             receiver_ip,
             expires_at: now + lifetime,
@@ -54,6 +59,40 @@ impl CastMediaLease {
 
     pub(crate) fn media_path(&self) -> String {
         format!("/cast/{}/media", self.token)
+    }
+
+    pub(crate) fn resource_path(&self, source_id: &str) -> String {
+        format!("/cast/{}/resource/{source_id}", self.token)
+    }
+
+    pub(crate) fn contains_source(&self, source_id: &str) -> bool {
+        self.source_ids.iter().any(|id| id == source_id)
+    }
+
+    pub(crate) fn source_ids(&self) -> &[String] {
+        &self.source_ids
+    }
+
+    fn add_source(&mut self, source_id: String) {
+        if !self.contains_source(&source_id) {
+            self.source_ids.push(source_id);
+        }
+    }
+
+    fn resource_source(&self, origin: &str) -> Option<&str> {
+        self.resource_sources.get(origin).map(String::as_str)
+    }
+
+    fn register_resource(&mut self, origin: String, source_id: String) -> ResourceRegistration {
+        if let Some(existing) = self.resource_source(&origin) {
+            return ResourceRegistration::Existing(existing.to_string());
+        }
+        if self.resource_sources.len() >= CAST_LEASE_RESOURCE_CAPACITY {
+            return ResourceRegistration::AtCapacity;
+        }
+        self.add_source(source_id.clone());
+        self.resource_sources.insert(origin, source_id);
+        ResourceRegistration::Registered
     }
 
     fn is_authorized(&mut self, client_ip: IpAddr, now: Instant) -> bool {
@@ -75,6 +114,13 @@ pub(crate) struct CastMediaLeaseRegistry {
     leases: HashMap<String, CastMediaLease>,
 }
 
+pub(crate) enum ResourceRegistration {
+    Registered,
+    Existing(String),
+    LeaseUnavailable,
+    AtCapacity,
+}
+
 impl CastMediaLeaseRegistry {
     pub(crate) fn new() -> Self {
         Self {
@@ -83,7 +129,6 @@ impl CastMediaLeaseRegistry {
     }
 
     pub(crate) fn insert(&mut self, lease: CastMediaLease) -> Result<(), String> {
-        self.purge_expired(Instant::now());
         if self.leases.len() >= CAST_LEASE_CAPACITY {
             return Err("too many active cast media leases".to_string());
         }
@@ -124,14 +169,47 @@ impl CastMediaLeaseRegistry {
             .collect()
     }
 
-    pub(crate) fn purge_expired(&mut self, now: Instant) {
-        self.leases.retain(|_, lease| !lease.is_expired(now));
+    pub(crate) fn resource_source(&self, token: &str, origin: &str) -> Option<String> {
+        self.leases
+            .get(token)
+            .filter(|lease| !lease.is_expired(Instant::now()))
+            .and_then(|lease| lease.resource_source(origin))
+            .map(str::to_string)
+    }
+
+    pub(crate) fn register_resource(
+        &mut self,
+        token: &str,
+        origin: String,
+        source_id: String,
+    ) -> ResourceRegistration {
+        let now = Instant::now();
+        let Some(lease) = self.leases.get_mut(token) else {
+            return ResourceRegistration::LeaseUnavailable;
+        };
+        if lease.is_expired(now) {
+            return ResourceRegistration::LeaseUnavailable;
+        }
+        lease.register_resource(origin, source_id)
+    }
+
+    pub(crate) fn purge_expired(&mut self, now: Instant) -> Vec<CastMediaLease> {
+        let expired_tokens = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.is_expired(now))
+            .map(|(token, _)| token.clone())
+            .collect::<Vec<_>>();
+        expired_tokens
+            .into_iter()
+            .filter_map(|token| self.leases.remove(&token))
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CastMediaLease, CastMediaLeaseRegistry};
+    use super::{CastMediaLease, CastMediaLeaseRegistry, ResourceRegistration, CAST_LEASE_RESOURCE_CAPACITY};
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
 
@@ -182,5 +260,53 @@ mod tests {
 
         assert!(leases.authorize("token-a", receiver_ip()).is_none());
         assert!(leases.authorize("token-b", receiver_ip()).is_none());
+    }
+
+    #[test]
+    fn lease_reuses_hls_resources_and_bounds_their_count() {
+        let mut leases = CastMediaLeaseRegistry::new();
+        leases
+            .insert(CastMediaLease::new_with_token(
+                "lease-token".to_string(),
+                "cast-session-1".to_string(),
+                "primary-source".to_string(),
+                receiver_ip(),
+                Duration::from_secs(60),
+            ))
+            .unwrap();
+        assert!(matches!(
+            leases.register_resource(
+                "lease-token",
+                "https://example.test/segment-0.ts".to_string(),
+                "source-0".to_string(),
+            ),
+            ResourceRegistration::Registered,
+        ));
+        assert!(matches!(
+            leases.register_resource(
+                "lease-token",
+                "https://example.test/segment-0.ts".to_string(),
+                "duplicate-source".to_string(),
+            ),
+            ResourceRegistration::Existing(ref source) if source == "source-0",
+        ));
+        for index in 1..CAST_LEASE_RESOURCE_CAPACITY {
+            assert!(matches!(
+                leases.register_resource(
+                    "lease-token",
+                    format!("https://example.test/segment-{index}.ts"),
+                    format!("source-{index}"),
+                ),
+                ResourceRegistration::Registered,
+            ));
+        }
+        assert!(matches!(
+            leases.register_resource(
+                "lease-token",
+                "https://example.test/segment-overflow.ts".to_string(),
+                "source-overflow".to_string(),
+            ),
+            ResourceRegistration::AtCapacity,
+        ));
     }
 }
