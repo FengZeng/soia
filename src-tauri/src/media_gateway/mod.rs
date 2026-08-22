@@ -12,7 +12,10 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::net::{IpAddr, Ipv4Addr, TcpListener as StdTcpListener};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -38,6 +41,7 @@ const STREAM_BACKEND_TARGET_ENTRIES: usize = 3072;
 const DOWNLOAD_SPEED_WINDOW: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_STALE_AFTER: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_MIN_SAMPLE_DURATION: Duration = Duration::from_millis(250);
+const LOCAL_FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
 #[allow(dead_code)]
 const CAST_MEDIA_LEASE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 
@@ -469,6 +473,159 @@ impl StreamBackend for HttpStreamBackend {
     }
 }
 
+/// Read-only backend for one already-resolved local file. It never accepts a path from an HTTP
+/// request and opens a separate file handle per request, so concurrent Range reads do not share a
+/// seek cursor.
+struct LocalFileMediaSourceBackend {
+    path: PathBuf,
+    origin_label: String,
+    file_size: u64,
+    download_speed_meter: DownloadSpeedMeterHandle,
+}
+
+impl LocalFileMediaSourceBackend {
+    fn new(path: &Path) -> Result<Self, String> {
+        let path = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+        let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("cast local media source is not a regular file".to_string());
+        }
+        let origin_label = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("file:{name}"))
+            .unwrap_or_else(|| "file:<unnamed>".to_string());
+        Ok(Self {
+            path,
+            origin_label,
+            file_size: metadata.len(),
+            download_speed_meter: Arc::new(Mutex::new(DownloadSpeedMeter::default())),
+        })
+    }
+
+    fn validate_file_state(&self) -> Result<(), String> {
+        let metadata = std::fs::metadata(&self.path)
+            .map_err(|_| "cast local media file is no longer available".to_string())?;
+        if !metadata.is_file() || metadata.len() != self.file_size {
+            return Err("cast local media file changed during the cast session".to_string());
+        }
+        Ok(())
+    }
+
+    async fn handle_local_file(
+        &self,
+        stream: &mut TcpStream,
+        method: &str,
+        range: Option<&str>,
+    ) -> Result<(), String> {
+        self.validate_file_state()?;
+        let (status, reason, start, content_length, content_range) = match range {
+            None => (200, "OK", 0, self.file_size, None),
+            Some(range) => match parse_single_byte_range(range, self.file_size) {
+                Some((start, end)) => (
+                    206,
+                    "Partial Content",
+                    start,
+                    end.saturating_sub(start).saturating_add(1),
+                    Some(format!("bytes {start}-{end}/{}", self.file_size)),
+                ),
+                None => {
+                    write_response(
+                        stream,
+                        416,
+                        "Range Not Satisfiable",
+                        infer_media_mime(&self.path),
+                        Some(0),
+                        Some(&format!("bytes */{}", self.file_size)),
+                        Some("bytes"),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            },
+        };
+        write_response(
+            stream,
+            status,
+            reason,
+            infer_media_mime(&self.path),
+            Some(content_length),
+            content_range.as_deref(),
+            Some("bytes"),
+        )
+        .await?;
+        if method == "HEAD" || content_length == 0 {
+            return Ok(());
+        }
+
+        let path = self.path.clone();
+        let mut file = tauri::async_runtime::spawn_blocking(move || -> Result<File, String> {
+            let mut file = File::open(path).map_err(|error| error.to_string())?;
+            file.seek(SeekFrom::Start(start)).map_err(|error| error.to_string())?;
+            Ok(file)
+        })
+        .await
+        .map_err(|error| format!("local file open task failed: {error}"))??;
+        let mut remaining = content_length;
+        let recorder = DownloadSpeedRecorder::new(self.download_speed_meter.clone());
+        while remaining > 0 {
+            let read_len = remaining.min(LOCAL_FILE_READ_CHUNK_BYTES as u64) as usize;
+            let read_started_at = Instant::now();
+            let (next_file, bytes) = tauri::async_runtime::spawn_blocking(move || -> Result<(File, Vec<u8>), String> {
+                let mut bytes = vec![0; read_len];
+                let read = file.read(&mut bytes).map_err(|error| error.to_string())?;
+                bytes.truncate(read);
+                Ok((file, bytes))
+            })
+            .await
+            .map_err(|error| format!("local file read task failed: {error}"))??;
+            file = next_file;
+            if bytes.is_empty() {
+                return Err("cast local media file was truncated during streaming".to_string());
+            }
+            recorder.record_transfer(bytes.len(), read_started_at, Instant::now());
+            stream.write_all(&bytes).await.map_err(|error| error.to_string())?;
+            remaining = remaining.saturating_sub(bytes.len() as u64);
+        }
+        Ok(())
+    }
+}
+
+impl StreamBackend for LocalFileMediaSourceBackend {
+    fn label(&self) -> &'static str { "local-file" }
+
+    fn origin(&self) -> &str { &self.origin_label }
+
+    fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle { &self.download_speed_meter }
+
+    fn handle<'a>(
+        &'a self,
+        _app_handle: &'a AppHandle,
+        stream: &'a mut TcpStream,
+        method: &'a str,
+        range: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.handle_local_file(stream, method, range).await })
+    }
+}
+
+fn infer_media_mime(path: &Path) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+        "mp4" | "m4v" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "ts" => "video/mp2t",
+        "m3u8" => "application/vnd.apple.mpegurl",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        _ => "application/octet-stream",
+    }
+}
+
 struct SmbStreamBackend {
     url: String,
     open_url: String,
@@ -854,7 +1011,34 @@ pub(crate) fn create_cast_http_media_url(
     if !is_http_url(source_url) {
         return Err("cast media gateway only accepts HTTP(S) media sources".to_string());
     }
-    let source_id = register_media_source(Arc::new(HttpStreamBackend::new(source_url.to_string())))
+    create_cast_media_url_for_backend(
+        app_handle,
+        session_id,
+        receiver_ip,
+        Arc::new(HttpStreamBackend::new(source_url.to_string())),
+    )
+}
+
+/// Creates a LAN URL for one pre-validated local video file. The request path can never select a
+/// different file; the only file path remains encapsulated by the backend instance.
+#[allow(dead_code)]
+pub(crate) fn create_cast_local_file_media_url(
+    app_handle: AppHandle,
+    session_id: &str,
+    receiver_ip: Ipv4Addr,
+    file_path: &Path,
+) -> Result<String, String> {
+    let backend = LocalFileMediaSourceBackend::new(file_path)?;
+    create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, Arc::new(backend))
+}
+
+fn create_cast_media_url_for_backend(
+    app_handle: AppHandle,
+    session_id: &str,
+    receiver_ip: Ipv4Addr,
+    backend: Arc<dyn StreamBackend>,
+) -> Result<String, String> {
+    let source_id = register_media_source(backend)
         .ok_or_else(|| "failed to register cast media source".to_string())?;
     let port = match start_lan_listener(app_handle) {
         Ok(port) => port,
@@ -2258,8 +2442,9 @@ async fn write_response(
 mod tests {
     use super::{
         edl_stream_urls, lookup_stream_backend, parse_content_range, parse_request,
-        parse_cast_media_token, parse_single_byte_range, rewrite_playlist, DownloadSpeedMeter,
-        DownloadSpeedMeterHandle, StreamBackend, StreamBackendRegistry,
+        infer_media_mime, parse_cast_media_token, parse_single_byte_range, rewrite_playlist,
+        DownloadSpeedMeter, DownloadSpeedMeterHandle, LocalFileMediaSourceBackend, StreamBackend,
+        StreamBackendRegistry,
         STREAM_BACKEND_IDLE_TIMEOUT, STREAM_PROXY_BASE_URL,
     };
     use futures_util::future::BoxFuture;
@@ -2444,6 +2629,22 @@ mod tests {
         assert_eq!(parse_cast_media_token("/cast/token/media?url=https://example.test"), None);
         assert_eq!(parse_cast_media_token("/cast/token/other"), None);
         assert_eq!(parse_cast_media_token("/cast/token/nested/media"), None);
+    }
+
+    #[test]
+    fn local_file_backend_binds_one_file_and_detects_size_changes() {
+        let path = std::env::temp_dir().join(format!("soia-cast-{}.mkv", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"initial-media-bytes").unwrap();
+        let backend = LocalFileMediaSourceBackend::new(&path).unwrap();
+
+        assert_eq!(backend.label(), "local-file");
+        assert_eq!(infer_media_mime(&path), "video/x-matroska");
+        assert!(!backend.origin().contains(path.to_string_lossy().as_ref()));
+        assert!(backend.validate_file_state().is_ok());
+
+        std::fs::write(&path, b"replacement-media-with-a-different-size").unwrap();
+        assert!(backend.validate_file_state().is_err());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
