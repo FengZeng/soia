@@ -1,5 +1,7 @@
 mod lease;
 
+use lease::{CastMediaLease, CastMediaLeaseRegistry};
+
 use log::{debug, info, warn};
 use percent_encoding::percent_decode_str;
 use reqwest::header::{
@@ -10,7 +12,7 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use std::collections::{HashMap, VecDeque};
-use std::net::TcpListener as StdTcpListener;
+use std::net::{IpAddr, Ipv4Addr, TcpListener as StdTcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -36,6 +38,8 @@ const STREAM_BACKEND_TARGET_ENTRIES: usize = 3072;
 const DOWNLOAD_SPEED_WINDOW: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_STALE_AFTER: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_MIN_SAMPLE_DURATION: Duration = Duration::from_millis(250);
+#[allow(dead_code)]
+const CAST_MEDIA_LEASE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 
 type BasicAuth = (String, String);
 pub(crate) type ProxyHeaders = Vec<(String, String)>;
@@ -49,6 +53,10 @@ static STREAM_PROXY_BACKENDS: OnceLock<Mutex<StreamBackendRegistry>> =
     OnceLock::new();
 static ACTIVE_STREAM_PROXY_BACKENDS: OnceLock<Mutex<Option<Vec<Arc<dyn StreamBackend>>>>> =
     OnceLock::new();
+#[allow(dead_code)]
+static CAST_MEDIA_LEASES: OnceLock<Mutex<CastMediaLeaseRegistry>> = OnceLock::new();
+#[allow(dead_code)]
+static LAN_MEDIA_PORT: OnceLock<u16> = OnceLock::new();
 
 struct CachedClient {
     proxy_key: Option<String>,
@@ -328,6 +336,11 @@ impl StreamBackendRegistry {
         let entry = self.entries.get_mut(token)?;
         entry.last_access = now;
         Some(entry.backend.clone())
+    }
+
+    #[allow(dead_code)] // Used by cast-session revocation once CastingService is registered.
+    fn remove(&mut self, token: &str) {
+        self.entries.remove(token);
     }
 
     fn find_token_by_origin(&mut self, origin: &str) -> Option<String> {
@@ -729,7 +742,7 @@ pub(crate) fn start_loopback_listener(app_handle: AppHandle) -> Result<(), Strin
             };
             runtime.block_on(async move {
                 match TcpListener::from_std(listener) {
-                    Ok(listener) => serve(listener, app_handle).await,
+                    Ok(listener) => serve_loopback(listener, app_handle).await,
                     Err(error) => warn!("media gateway: failed to adopt listener: {error}"),
                 }
             });
@@ -738,6 +751,47 @@ pub(crate) fn start_loopback_listener(app_handle: AppHandle) -> Result<(), Strin
 
     info!("media gateway: loopback listener on http://{addr}");
     Ok(())
+}
+
+#[allow(dead_code)]
+fn start_lan_listener(app_handle: AppHandle) -> Result<u16, String> {
+    if let Some(port) = LAN_MEDIA_PORT.get() {
+        return Ok(*port);
+    }
+
+    let listener = StdTcpListener::bind(("0.0.0.0", 0)).map_err(|error| error.to_string())?;
+    let addr = listener.local_addr().map_err(|error| error.to_string())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let port = addr.port();
+    std::thread::Builder::new()
+        .name("soia-cast-media-gateway".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_io()
+                .enable_time()
+                .thread_name("soia-cast-media-gateway-worker")
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    warn!("media gateway: failed to create LAN runtime: {error}");
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                match TcpListener::from_std(listener) {
+                    Ok(listener) => serve_lan(listener, app_handle).await,
+                    Err(error) => warn!("media gateway: failed to adopt LAN listener: {error}"),
+                }
+            });
+        })
+        .map_err(|error| error.to_string())?;
+    let _ = LAN_MEDIA_PORT.set(port);
+    info!("media gateway: LAN listener bound on port {port}");
+    Ok(port)
 }
 
 pub(crate) fn create_loopback_https_media_url(url: &str) -> Option<String> {
@@ -788,6 +842,72 @@ pub(crate) fn create_loopback_smb_media_url(url: &str) -> Option<String> {
     Some(proxied)
 }
 
+/// Registers an HTTP(S) source for one receiver and returns an opaque LAN URL. This endpoint is
+/// intentionally not a general-purpose URL proxy: the source is fixed before the lease exists.
+#[allow(dead_code)]
+pub(crate) fn create_cast_http_media_url(
+    app_handle: AppHandle,
+    session_id: &str,
+    receiver_ip: Ipv4Addr,
+    source_url: &str,
+) -> Result<String, String> {
+    if !is_http_url(source_url) {
+        return Err("cast media gateway only accepts HTTP(S) media sources".to_string());
+    }
+    let source_id = register_media_source(Arc::new(HttpStreamBackend::new(source_url.to_string())))
+        .ok_or_else(|| "failed to register cast media source".to_string())?;
+    let port = match start_lan_listener(app_handle) {
+        Ok(port) => port,
+        Err(error) => {
+            if let Ok(mut backends) = stream_backends().lock() {
+                backends.remove(&source_id);
+            }
+            return Err(error);
+        }
+    };
+    let local_ip = match crate::network::local_address::local_ipv4_for_target(receiver_ip) {
+        Ok(ip) => ip,
+        Err(error) => {
+            if let Ok(mut backends) = stream_backends().lock() {
+                backends.remove(&source_id);
+            }
+            return Err(error);
+        }
+    };
+    let lease = CastMediaLease::new(
+        session_id.to_string(),
+        source_id.clone(),
+        IpAddr::V4(receiver_ip),
+        CAST_MEDIA_LEASE_TTL,
+    );
+    let media_path = lease.media_path();
+    if let Err(error) = cast_media_leases()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(lease)
+    {
+        if let Ok(mut backends) = stream_backends().lock() {
+            backends.remove(&source_id);
+        }
+        return Err(error);
+    }
+    Ok(format!("http://{local_ip}:{port}{media_path}"))
+}
+
+/// Revokes every LAN URL and source backend belonging to a cast session.
+#[allow(dead_code)]
+pub(crate) fn revoke_cast_media_session(session_id: &str) {
+    let revoked = cast_media_leases()
+        .lock()
+        .map(|mut leases| leases.revoke_session(session_id))
+        .unwrap_or_default();
+    if let Ok(mut backends) = stream_backends().lock() {
+        for lease in revoked {
+            backends.remove(&lease.source_id);
+        }
+    }
+}
+
 fn is_http_url(raw: &str) -> bool {
     let Ok(url) = Url::parse(raw) else {
         return false;
@@ -811,6 +931,11 @@ fn is_smb_url(raw: &str) -> bool {
 
 fn stream_backends() -> &'static Mutex<StreamBackendRegistry> {
     STREAM_PROXY_BACKENDS.get_or_init(|| Mutex::new(StreamBackendRegistry::new()))
+}
+
+#[allow(dead_code)]
+fn cast_media_leases() -> &'static Mutex<CastMediaLeaseRegistry> {
+    CAST_MEDIA_LEASES.get_or_init(|| Mutex::new(CastMediaLeaseRegistry::new()))
 }
 
 pub(crate) fn download_speed_bps() -> f64 {
@@ -908,9 +1033,14 @@ fn proxy_url_for(raw: &str) -> Option<String> {
 
 fn proxy_url_for_backend(backend: Arc<dyn StreamBackend>) -> Option<String> {
     let base = STREAM_PROXY_BASE_URL.get()?;
+    let token = register_media_source(backend)?;
+    Some(format!("{base}/stream/{token}"))
+}
+
+fn register_media_source(backend: Arc<dyn StreamBackend>) -> Option<String> {
     let token = uuid::Uuid::now_v7().to_string();
     stream_backends().lock().ok()?.insert(token.clone(), backend);
-    Some(format!("{base}/stream/{token}"))
+    Some(token)
 }
 
 fn proxy_url_for_existing_origin(origin: &str) -> Option<String> {
@@ -994,7 +1124,7 @@ fn is_client_disconnect_error(error: &str) -> bool {
         || error.contains("connection reset by peer")
 }
 
-async fn serve(listener: TcpListener, app_handle: AppHandle) {
+async fn serve_loopback(listener: TcpListener, app_handle: AppHandle) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
@@ -1012,6 +1142,84 @@ async fn serve(listener: TcpListener, app_handle: AppHandle) {
             Err(error) => warn!("media gateway: accept failed: {error}"),
         }
     }
+}
+
+#[allow(dead_code)]
+async fn serve_lan(listener: TcpListener, app_handle: AppHandle) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer_addr)) => {
+                let app_handle = app_handle.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handle_lan_connection(stream, peer_addr.ip(), &app_handle).await {
+                        if is_client_disconnect_error(&error) {
+                            debug!("media gateway: LAN client disconnected: {error}");
+                        } else {
+                            warn!("media gateway: LAN request failed: {error}");
+                        }
+                    }
+                });
+            }
+            Err(error) => warn!("media gateway: LAN accept failed: {error}"),
+        }
+    }
+}
+
+#[allow(dead_code)]
+async fn handle_lan_connection(
+    mut stream: TcpStream,
+    client_ip: IpAddr,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    let request_bytes = match read_request_header(&mut stream).await? {
+        RequestHeaderRead::Empty => return Ok(()),
+        RequestHeaderRead::Complete(bytes) => bytes,
+        RequestHeaderRead::TooLarge => {
+            write_status(&mut stream, 431, "Request Header Fields Too Large", b"request header too large").await?;
+            return Ok(());
+        }
+        RequestHeaderRead::Incomplete => {
+            write_status(&mut stream, 400, "Bad Request", b"incomplete request header").await?;
+            return Ok(());
+        }
+    };
+    let request = String::from_utf8_lossy(&request_bytes);
+    let (method, target, range) = parse_request(&request)?;
+    if method != "GET" && method != "HEAD" {
+        write_status(&mut stream, 405, "Method Not Allowed", b"method not allowed").await?;
+        return Ok(());
+    }
+    let Some(token) = parse_cast_media_token(&target) else {
+        write_status(&mut stream, 404, "Not Found", b"cast media not found").await?;
+        return Ok(());
+    };
+    let source_id = cast_media_leases()
+        .lock()
+        .ok()
+        .and_then(|mut leases| leases.authorize(token, client_ip).map(|lease| lease.source_id.clone()));
+    let Some(source_id) = source_id else {
+        write_status(&mut stream, 404, "Not Found", b"cast media not found").await?;
+        return Ok(());
+    };
+    let Some(backend) = stream_backends().lock().ok().and_then(|mut backends| backends.get(&source_id)) else {
+        write_status(&mut stream, 410, "Gone", b"cast media unavailable").await?;
+        return Ok(());
+    };
+    let token_prefix = token.chars().take(8).collect::<String>();
+    debug!("media gateway: dispatch LAN backend={} token_prefix={token_prefix}", backend.label());
+    backend
+        .handle(app_handle, &mut stream, &method, range.as_deref())
+        .await
+}
+
+#[allow(dead_code)]
+fn parse_cast_media_token(target: &str) -> Option<&str> {
+    if target.contains('?') {
+        return None;
+    }
+    let value = target.strip_prefix("/cast/")?;
+    let token = value.strip_suffix("/media")?;
+    (!token.is_empty() && !token.contains('/')).then_some(token)
 }
 
 async fn handle_connection(mut stream: TcpStream, app_handle: &AppHandle) -> Result<(), String> {
@@ -2050,8 +2258,9 @@ async fn write_response(
 mod tests {
     use super::{
         edl_stream_urls, lookup_stream_backend, parse_content_range, parse_request,
-        parse_single_byte_range, rewrite_playlist, DownloadSpeedMeter, DownloadSpeedMeterHandle,
-        StreamBackend, StreamBackendRegistry, STREAM_BACKEND_IDLE_TIMEOUT, STREAM_PROXY_BASE_URL,
+        parse_cast_media_token, parse_single_byte_range, rewrite_playlist, DownloadSpeedMeter,
+        DownloadSpeedMeterHandle, StreamBackend, StreamBackendRegistry,
+        STREAM_BACKEND_IDLE_TIMEOUT, STREAM_PROXY_BASE_URL,
     };
     use futures_util::future::BoxFuture;
     use std::sync::{Arc, Mutex};
@@ -2223,6 +2432,18 @@ mod tests {
             ("HEAD".to_string(), "/stream/token".to_string(), Some("bytes=10-".to_string()))
         );
         assert_eq!(parse_content_range("bytes 10-99/100"), Some((10, 99, 100)));
+    }
+
+    #[test]
+    fn cast_route_accepts_only_an_exact_opaque_media_path() {
+        assert_eq!(
+            parse_cast_media_token("/cast/01234567-89ab-cdef-0123-456789abcdef/media"),
+            Some("01234567-89ab-cdef-0123-456789abcdef")
+        );
+        assert_eq!(parse_cast_media_token("/stream/source-token"), None);
+        assert_eq!(parse_cast_media_token("/cast/token/media?url=https://example.test"), None);
+        assert_eq!(parse_cast_media_token("/cast/token/other"), None);
+        assert_eq!(parse_cast_media_token("/cast/token/nested/media"), None);
     }
 
     #[test]

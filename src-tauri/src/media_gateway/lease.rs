@@ -111,8 +111,17 @@ impl CastMediaLeaseRegistry {
         self.leases.get(token)
     }
 
-    pub(crate) fn revoke_session(&mut self, session_id: &str) {
-        self.leases.retain(|_, lease| lease.session_id != session_id);
+    pub(crate) fn revoke_session(&mut self, session_id: &str) -> Vec<CastMediaLease> {
+        let revoked_tokens = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.session_id == session_id)
+            .map(|(token, _)| token.clone())
+            .collect::<Vec<_>>();
+        revoked_tokens
+            .into_iter()
+            .filter_map(|token| self.leases.remove(&token))
+            .collect()
     }
 
     pub(crate) fn purge_expired(&mut self, now: Instant) {
