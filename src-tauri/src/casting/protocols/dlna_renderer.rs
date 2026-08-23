@@ -17,6 +17,7 @@ use url::Url;
 const DLNA_RENDERER_TARGET: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 const DESCRIPTION_TIMEOUT: Duration = Duration::from_secs(2);
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct DlnaRendererAdapter {
     descriptions: Mutex<HashMap<String, RendererDescription>>,
@@ -106,6 +107,31 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
                     Some(&device.id),
                 ));
             }
+            if let Some(connection_manager) = description.services.connection_manager {
+                match control_client() {
+                    Ok(client) => match get_protocol_info(&client, &connection_manager).await {
+                        Ok(sink_protocols) => {
+                            self.cache_sink_protocols(&device.id, sink_protocols);
+                        }
+                        Err(error) => {
+                            log::debug!(
+                                "DLNA MediaRenderer GetProtocolInfo unavailable for {}: {}",
+                                device.id,
+                                error
+                            );
+                            self.cache_sink_protocols(&device.id, None);
+                        }
+                    },
+                    Err(error) => {
+                        log::debug!(
+                            "DLNA MediaRenderer control client unavailable for {}: {}",
+                            device.id,
+                            error
+                        );
+                        self.cache_sink_protocols(&device.id, None);
+                    }
+                }
+            }
             Err(device_error(
                 CastErrorCodeDto::ConnectionFailed,
                 "DLNA playback control is not available yet",
@@ -117,14 +143,51 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
     fn load<'a>(
         &'a self,
         session: &'a CastAdapterSession,
-        _media: &'a CastMediaDescriptor,
+        media: &'a CastMediaDescriptor,
     ) -> BoxFuture<'a, Result<CastReceiverStatus, CastErrorDto>> {
         Box::pin(async move {
-            Err(device_error(
-                CastErrorCodeDto::LoadFailed,
-                "DLNA playback control is not available yet",
-                Some(&session.device_id),
-            ))
+            let description = self.description_for(&session.device_id)?;
+            let av_transport = description.services.av_transport.ok_or_else(|| {
+                device_error(
+                    CastErrorCodeDto::LoadFailed,
+                    "DLNA device does not advertise AVTransport",
+                    Some(&session.device_id),
+                )
+            })?;
+            if let (Some(sink_protocols), Some(mime_type)) =
+                (description.sink_protocols.as_ref(), media.mime_type.as_deref())
+            {
+                if !sink_protocols.supports_mime_type(mime_type) {
+                    return Err(device_error(
+                        CastErrorCodeDto::MediaUnavailable,
+                        "DLNA device does not advertise support for this media format",
+                        Some(&session.device_id),
+                    ));
+                }
+            }
+            let client = control_client().map_err(|error| {
+                device_error(
+                    CastErrorCodeDto::LoadFailed,
+                    &error,
+                    Some(&session.device_id),
+                )
+            })?;
+            set_av_transport_uri(&client, &av_transport, media)
+                .await
+                .map_err(|error| {
+                    device_error(CastErrorCodeDto::LoadFailed, &error, Some(&session.device_id))
+                })?;
+            play(&client, &av_transport).await.map_err(|error| {
+                device_error(CastErrorCodeDto::LoadFailed, &error, Some(&session.device_id))
+            })?;
+            Ok(CastReceiverStatus {
+                phase: soia_protocol::CastPhaseDto::Playing,
+                position: 0.0,
+                duration: media.duration,
+                volume: None,
+                muted: None,
+                seekable: false,
+            })
         })
     }
 
@@ -160,6 +223,32 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
         _session: &'a CastAdapterSession,
     ) -> BoxFuture<'a, Result<(), CastErrorDto>> {
         Box::pin(async { Ok(()) })
+    }
+}
+
+impl DlnaRendererAdapter {
+    fn cache_sink_protocols(&self, device_id: &str, sink_protocols: Option<SinkProtocolInfo>) {
+        let Ok(mut descriptions) = self.descriptions.lock() else {
+            return;
+        };
+        if let Some(description) = descriptions.get_mut(device_id) {
+            description.sink_protocols = sink_protocols;
+        }
+    }
+
+    fn description_for(&self, device_id: &str) -> Result<RendererDescription, CastErrorDto> {
+        self.descriptions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| {
+                device_error(
+                    CastErrorCodeDto::LoadFailed,
+                    "DLNA device description is no longer available; scan again",
+                    Some(device_id),
+                )
+            })
     }
 }
 
@@ -217,6 +306,7 @@ struct RendererDescription {
     name: Option<String>,
     model_name: Option<String>,
     services: RendererServices,
+    sink_protocols: Option<SinkProtocolInfo>,
 }
 
 #[derive(Clone, Default)]
@@ -230,6 +320,205 @@ struct RendererServices {
 struct DlnaService {
     service_type: String,
     control_url: Url,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SinkProtocolInfo {
+    entries: Vec<DlnaProtocolInfo>,
+}
+
+impl SinkProtocolInfo {
+    fn supports_mime_type(&self, mime_type: &str) -> bool {
+        let mime_type = mime_type.trim();
+        !mime_type.is_empty()
+            && self.entries.iter().any(|entry| {
+                entry.transport.eq_ignore_ascii_case("http-get")
+                    && (entry.content_format == "*"
+                    || entry.content_format.eq_ignore_ascii_case(mime_type)
+                    )
+            })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DlnaProtocolInfo {
+    transport: String,
+    network: String,
+    content_format: String,
+    additional_info: String,
+}
+
+async fn get_protocol_info(
+    client: &reqwest::Client,
+    service: &DlnaService,
+) -> Result<Option<SinkProtocolInfo>, String> {
+    let body = post_soap(
+        client,
+        service,
+        "GetProtocolInfo",
+        build_get_protocol_info_envelope(&service.service_type),
+    )
+    .await?;
+    parse_get_protocol_info_response(&body)
+}
+
+async fn set_av_transport_uri(
+    client: &reqwest::Client,
+    service: &DlnaService,
+    media: &CastMediaDescriptor,
+) -> Result<(), String> {
+    post_soap(
+        client,
+        service,
+        "SetAVTransportURI",
+        build_set_av_transport_uri_envelope(&service.service_type, media),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn play(client: &reqwest::Client, service: &DlnaService) -> Result<(), String> {
+    post_soap(
+        client,
+        service,
+        "Play",
+        build_play_envelope(&service.service_type),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn post_soap(
+    client: &reqwest::Client,
+    service: &DlnaService,
+    action: &str,
+    envelope: String,
+) -> Result<String, String> {
+    let response = client
+        .post(service.control_url.clone())
+        .header("Content-Type", "text/xml; charset=\"utf-8\"")
+        .header("SOAPAction", format!("\"{}#{action}\"", service.service_type))
+        .body(envelope)
+        .send()
+        .await
+        .map_err(|_| format!("{action} request failed"))?
+        .error_for_status()
+        .map_err(|_| format!("{action} was rejected"))?;
+    response
+        .text()
+        .await
+        .map_err(|_| format!("{action} response could not be read"))
+}
+
+fn control_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(CONTROL_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "DLNA control client could not be created".to_string())
+}
+
+fn build_get_protocol_info_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetProtocolInfo xmlns:u="{service_type}" />
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_set_av_transport_uri_envelope(
+    service_type: &str,
+    media: &CastMediaDescriptor,
+) -> String {
+    let mime_type = media.mime_type.as_deref().unwrap_or("application/octet-stream");
+    let didl = build_didl_lite(media, mime_type);
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:SetAVTransportURI xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+      <CurrentURI>{}</CurrentURI>
+      <CurrentURIMetaData>{}</CurrentURIMetaData>
+    </u:SetAVTransportURI>
+  </s:Body>
+</s:Envelope>"#,
+        xml_escape(&media.url),
+        xml_escape(&didl),
+    )
+}
+
+fn build_play_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Play xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+      <Speed>1</Speed>
+    </u:Play>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_didl_lite(media: &CastMediaDescriptor, mime_type: &str) -> String {
+    let title = media.title.as_deref().unwrap_or("Soia media");
+    format!(
+        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="0" parentID="0" restricted="1"><dc:title>{}</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:{}:*">{}</res></item></DIDL-Lite>"#,
+        xml_escape(title),
+        xml_escape(mime_type),
+        xml_escape(&media.url),
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn parse_get_protocol_info_response(xml: &str) -> Result<Option<SinkProtocolInfo>, String> {
+    let document = Document::parse(xml).map_err(|_| "invalid GetProtocolInfo response XML".to_string())?;
+    let sink = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("Sink"))
+        .and_then(|node| node.text())
+        .unwrap_or_default();
+    let entries = parse_protocol_info_list(sink);
+    if entries.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(SinkProtocolInfo { entries }))
+    }
+}
+
+fn parse_protocol_info_list(value: &str) -> Vec<DlnaProtocolInfo> {
+    value
+        .split(',')
+        .filter_map(|entry| {
+            let mut fields = entry.trim().splitn(4, ':');
+            let transport = fields.next()?.trim();
+            let network = fields.next()?.trim();
+            let content_format = fields.next()?.trim();
+            let additional_info = fields.next()?.trim();
+            if transport.is_empty() || content_format.is_empty() {
+                return None;
+            }
+            Some(DlnaProtocolInfo {
+                transport: transport.to_string(),
+                network: network.to_string(),
+                content_format: content_format.to_string(),
+                additional_info: additional_info.to_string(),
+            })
+        })
+        .collect()
 }
 
 fn parse_renderer_description(
@@ -251,6 +540,7 @@ fn parse_renderer_description(
         name: child_text(device, "friendlyName"),
         model_name: child_text(device, "modelName"),
         services: parse_renderer_services(device, description_url)?,
+        sink_protocols: None,
     })
 }
 
@@ -314,6 +604,9 @@ fn resolve_control_url(description_url: &Url, value: &str) -> Result<Url, String
         || control_url.password().is_some()
     {
         return Err("service control URL must be an unauthenticated HTTP URL".to_string());
+    }
+    if control_url.host_str() != description_url.host_str() {
+        return Err("service control URL host does not match the renderer".to_string());
     }
     Ok(control_url)
 }
@@ -381,9 +674,11 @@ fn device_error(code: CastErrorCodeDto, message: &str, device_id: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use super::{
-        conservative_capabilities, location_ipv4_for_response, parse_renderer_description,
-        udn_from_usn,
+        build_get_protocol_info_envelope, build_play_envelope, build_set_av_transport_uri_envelope,
+        conservative_capabilities, location_ipv4_for_response, parse_get_protocol_info_response,
+        parse_renderer_description, udn_from_usn,
     };
+    use crate::casting::CastMediaDescriptor;
     use std::net::{IpAddr, Ipv4Addr};
     use url::Url;
 
@@ -474,6 +769,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_control_url_for_a_different_host() {
+        let description_url = Url::parse("http://192.0.2.20:25826/description.xml").unwrap();
+        let xml = r#"
+            <root><device>
+              <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+              <serviceList><service>
+                <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
+                <controlURL>http://192.0.2.21:1400/control</controlURL>
+              </service></serviceList>
+            </device></root>
+        "#;
+
+        assert!(parse_renderer_description(&description_url, xml).is_err());
+    }
+
+    #[test]
     fn requires_an_ipv4_location_from_the_ssdp_responder() {
         let location = Url::parse("http://192.0.2.20:25826/description.xml").unwrap();
         assert_eq!(
@@ -501,5 +812,111 @@ mod tests {
         assert!(!capabilities.seek);
         assert!(!capabilities.stop);
         assert!(!capabilities.volume);
+    }
+
+    #[test]
+    fn parses_sink_protocol_info_and_matches_declared_mime_types() {
+        let sink_protocols = parse_get_protocol_info_response(include_str!(
+            "../fixtures/dlna_renderer/get-protocol-info.xml"
+        ))
+        .unwrap()
+        .expect("fixture declares Sink protocolInfo");
+
+        assert_eq!(sink_protocols.entries.len(), 4);
+        assert!(sink_protocols.supports_mime_type("video/mp4"));
+        assert!(sink_protocols.supports_mime_type("video/x-matroska"));
+        assert!(!sink_protocols.supports_mime_type("video/webm"));
+    }
+
+    #[test]
+    fn treats_missing_or_empty_sink_protocol_info_as_unknown() {
+        let missing_sink = r#"
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+                <Source>http-get:*:video/mp4:*</Source>
+              </u:GetProtocolInfoResponse></s:Body>
+            </s:Envelope>
+        "#;
+        let empty_sink = r#"
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+                <Sink>   </Sink>
+              </u:GetProtocolInfoResponse></s:Body>
+            </s:Envelope>
+        "#;
+
+        assert_eq!(parse_get_protocol_info_response(missing_sink).unwrap(), None);
+        assert_eq!(parse_get_protocol_info_response(empty_sink).unwrap(), None);
+    }
+
+    #[test]
+    fn only_http_get_sink_entries_authorize_http_media_delivery() {
+        let response = r#"
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+                <Sink>rtsp-rtp-udp:*:video/mp4:*</Sink>
+              </u:GetProtocolInfoResponse></s:Body>
+            </s:Envelope>
+        "#;
+        let sink_protocols = parse_get_protocol_info_response(response)
+            .unwrap()
+            .expect("response declares a Sink protocolInfo");
+
+        assert!(!sink_protocols.supports_mime_type("video/mp4"));
+    }
+
+    #[test]
+    fn builds_a_get_protocol_info_soap_envelope() {
+        let service_type = "urn:schemas-upnp-org:service:ConnectionManager:1";
+        let envelope = build_get_protocol_info_envelope(service_type);
+
+        assert!(envelope.contains("<u:GetProtocolInfo"));
+        assert!(envelope.contains(service_type));
+    }
+
+    #[test]
+    fn builds_escaped_didl_lite_for_set_av_transport_uri() {
+        let media = CastMediaDescriptor {
+            url: "http://192.0.2.1/cast/lease/media?part=one&token=two".to_string(),
+            title: Some("A <B> & C".to_string()),
+            mime_type: Some("video/mp4".to_string()),
+            duration: Some(42.0),
+            position: 0.0,
+        };
+        let envelope = build_set_av_transport_uri_envelope(
+            "urn:schemas-upnp-org:service:AVTransport:1",
+            &media,
+        );
+        let soap = roxmltree::Document::parse(&envelope).unwrap();
+        let metadata = soap
+            .descendants()
+            .find(|node| node.tag_name().name() == "CurrentURIMetaData")
+            .and_then(|node| node.text())
+            .unwrap();
+        let didl = roxmltree::Document::parse(metadata).unwrap();
+
+        assert_eq!(
+            didl.descendants()
+                .find(|node| node.tag_name().name() == "title")
+                .and_then(|node| node.text()),
+            Some("A <B> & C"),
+        );
+        assert_eq!(
+            didl.descendants()
+                .find(|node| node.tag_name().name() == "res")
+                .and_then(|node| node.text()),
+            Some("http://192.0.2.1/cast/lease/media?part=one&token=two"),
+        );
+        assert!(envelope.contains("SetAVTransportURI"));
+        assert!(envelope.contains("http-get:*:video/mp4:*"));
+    }
+
+    #[test]
+    fn builds_a_play_soap_envelope() {
+        let envelope = build_play_envelope("urn:schemas-upnp-org:service:AVTransport:1");
+
+        assert!(envelope.contains("<u:Play"));
+        assert!(envelope.contains("<InstanceID>0</InstanceID>"));
+        assert!(envelope.contains("<Speed>1</Speed>"));
     }
 }
