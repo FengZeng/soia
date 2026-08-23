@@ -240,10 +240,17 @@ fn emit_progress(
 fn update_snapshot(
     app_handle: &AppHandle,
     update: impl FnOnce(&mut crate::core::state::PlaybackSnapshot),
-) {
+) -> bool {
     let state: tauri::State<'_, AppState> = app_handle.state();
+    if matches!(
+        crate::core::playback_service::PlaybackService::current_output_target(&state),
+        crate::core::playback_service::PlaybackOutputTarget::Cast { .. }
+    ) {
+        return false;
+    }
     let snapshot = state.playback_state.update(update);
     emit_event(app_handle, "playback-snapshot", snapshot);
+    true
 }
 
 fn publish_playback_snapshot(
@@ -256,7 +263,7 @@ fn publish_playback_snapshot(
     include_download_speed: bool,
     title: Option<Option<String>>,
 ) {
-    update_snapshot(app_handle, |snapshot| {
+    if !update_snapshot(app_handle, |snapshot| {
         snapshot.position = sanitize_non_negative_f64(position);
         snapshot.duration = sanitize_non_negative_f64(duration);
         snapshot.buffered_position = sanitize_non_negative_f64(buffered_position);
@@ -270,7 +277,9 @@ fn publish_playback_snapshot(
         if let Some(title) = title {
             snapshot.title = title;
         }
-    });
+    }) {
+        return;
+    }
     let state: tauri::State<'_, AppState> = app_handle.state();
     if let Ok(mut now_playing) = state.now_playing.lock() {
         now_playing.position = sanitize_non_negative_f64(position);

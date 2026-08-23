@@ -24,10 +24,19 @@ fn with_mpv_state<R>(
 
 #[tauri::command]
 pub(crate) async fn execute_playback_command(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     envelope: crate::protocol::CommandEnvelopeDto,
 ) -> Result<crate::protocol::CommandResultDto, crate::protocol::CoreErrorDto> {
-    state.playback_service.execute(&state, envelope).await
+    let result = state.playback_service.execute(&state, envelope).await;
+    if result.is_ok() {
+        emit_playback_snapshot(&app, &state.playback_state.current());
+        crate::commands::casting::emit_cast_snapshot(
+            &app,
+            &state.casting_service.current_snapshot(),
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -35,6 +44,15 @@ pub(crate) fn get_playback_snapshot(
     state: tauri::State<'_, AppState>,
 ) -> crate::protocol::PlaybackSnapshotDto {
     state.playback_state.current()
+}
+
+pub(crate) fn emit_playback_snapshot(
+    app: &tauri::AppHandle,
+    snapshot: &crate::protocol::PlaybackSnapshotDto,
+) {
+    if let Err(error) = app.emit("playback-snapshot", snapshot) {
+        log::warn!("failed to emit playback snapshot: {error}");
+    }
 }
 
 #[tauri::command]

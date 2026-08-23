@@ -2,10 +2,12 @@ use crate::casting::{CastMediaSource, CastProtocolCommand};
 use crate::protocol::{CastDeviceDto, CastErrorCodeDto, CastErrorDto, CastPhaseDto, CastSnapshotDto};
 use crate::AppState;
 use std::net::Ipv4Addr;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+use tokio::time::{sleep, Duration};
 
 const CAST_SNAPSHOT_EVENT: &str = "cast-snapshot";
 const CAST_DEVICES_EVENT: &str = "cast-devices";
+const CAST_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
 #[tauri::command]
 pub(crate) fn get_cast_snapshot(state: tauri::State<'_, AppState>) -> CastSnapshotDto {
@@ -24,7 +26,7 @@ pub(crate) async fn discover_cast_devices(
 ) -> Result<Vec<CastDeviceDto>, CastErrorDto> {
     let result = state.casting_service.discover().await;
     let snapshot = state.casting_service.current_snapshot();
-    emit_snapshot(&app, &snapshot);
+    emit_cast_snapshot(&app, &snapshot);
     if let Ok(devices) = &result {
         emit_devices(&app, devices);
     }
@@ -86,7 +88,17 @@ pub(crate) async fn connect_cast_device(
         },
         Err(error) => Err(error),
     };
-    emit_snapshot(&app, &state.casting_service.current_snapshot());
+    emit_cast_snapshot(&app, &state.casting_service.current_snapshot());
+    if result.is_ok() {
+        if let Some(snapshot) = state.playback_service.activate_cast_output(&state) {
+            crate::commands::playback::emit_playback_snapshot(&app, &snapshot);
+        }
+    }
+    if let Ok(snapshot) = &result {
+        if let Some(session_id) = snapshot.session_id.as_deref() {
+            start_cast_status_poll(app.clone(), session_id.to_string());
+        }
+    }
     result
 }
 
@@ -162,18 +174,24 @@ pub(crate) async fn disconnect_casting(
     }
     let result = state.casting_service.disconnect().await;
     let result = match result {
-        Ok(snapshot) if should_restore_local => state
+        Ok(snapshot) if should_restore_local => match state
             .playback_service
             .restore_local_after_cast(last_position)
-            .map(|()| snapshot)
-            .map_err(|error| CastErrorDto {
+        {
+            Ok(()) => {
+                let playback_snapshot = state.playback_service.finish_cast_output(&state, last_position);
+                crate::commands::playback::emit_playback_snapshot(&app, &playback_snapshot);
+                Ok(snapshot)
+            }
+            Err(error) => Err(CastErrorDto {
                 code: CastErrorCodeDto::CommandFailed,
                 message: format!("could not restore local playback after casting: {error:?}"),
                 device_id: snapshot_before_stop.device.map(|device| device.id),
             }),
+        },
         other => other,
     };
-    emit_snapshot(&app, &state.casting_service.current_snapshot());
+    emit_cast_snapshot(&app, &state.casting_service.current_snapshot());
     result
 }
 
@@ -183,7 +201,12 @@ async fn execute_command(
     command: CastProtocolCommand,
 ) -> Result<CastSnapshotDto, CastErrorDto> {
     let result = state.casting_service.command(command).await;
-    emit_snapshot(app, &state.casting_service.current_snapshot());
+    emit_cast_snapshot(app, &state.casting_service.current_snapshot());
+    if result.is_ok() {
+        if let Some(snapshot) = state.playback_service.sync_cast_output(state) {
+            crate::commands::playback::emit_playback_snapshot(app, &snapshot);
+        }
+    }
     result
 }
 
@@ -209,7 +232,7 @@ fn media_error(message: &str) -> CastErrorDto {
     }
 }
 
-fn emit_snapshot(app: &tauri::AppHandle, snapshot: &CastSnapshotDto) {
+pub(crate) fn emit_cast_snapshot(app: &tauri::AppHandle, snapshot: &CastSnapshotDto) {
     if let Err(error) = app.emit(CAST_SNAPSHOT_EVENT, snapshot) {
         log::warn!("failed to emit cast snapshot: {error}");
     }
@@ -219,4 +242,69 @@ fn emit_devices(app: &tauri::AppHandle, devices: &[CastDeviceDto]) {
     if let Err(error) = app.emit(CAST_DEVICES_EVENT, devices) {
         log::warn!("failed to emit cast devices: {error}");
     }
+}
+
+fn start_cast_status_poll(app: tauri::AppHandle, session_id: String) {
+    tauri::async_runtime::spawn(async move {
+        let mut has_been_active = false;
+        loop {
+            sleep(CAST_STATUS_POLL_INTERVAL).await;
+            let state: tauri::State<'_, AppState> = app.state();
+            let snapshot = state.casting_service.current_snapshot();
+            if snapshot.session_id.as_deref() != Some(session_id.as_str())
+                || !matches!(
+                    snapshot.phase,
+                    CastPhaseDto::Playing
+                        | CastPhaseDto::Paused
+                        | CastPhaseDto::Buffering
+                        | CastPhaseDto::Stopped
+                )
+            {
+                break;
+            }
+            let _ = state.casting_service.refresh_status().await;
+            let snapshot = state.casting_service.current_snapshot();
+            emit_cast_snapshot(&app, &snapshot);
+            if let Some(playback_snapshot) = state.playback_service.sync_cast_output(&state) {
+                crate::commands::playback::emit_playback_snapshot(&app, &playback_snapshot);
+            }
+            if !has_been_active
+                && matches!(
+                    snapshot.phase,
+                    CastPhaseDto::Playing | CastPhaseDto::Buffering | CastPhaseDto::Paused
+                )
+            {
+                has_been_active = true;
+            }
+            if snapshot.session_id.as_deref() != Some(session_id.as_str())
+                || matches!(snapshot.phase, CastPhaseDto::Error | CastPhaseDto::Disconnected)
+            {
+                break;
+            }
+            // Receiver transitioning to Stopped after real playback means EOF or an out-of-band
+            // stop; per plan §6.4 release the remote session and pin local mpv to the last
+            // confirmed position. Explicit user stop paths already run this flow themselves;
+            // running it again here is idempotent.
+            if has_been_active && matches!(snapshot.phase, CastPhaseDto::Stopped) {
+                let position = snapshot.position.max(0.0);
+                if let Err(error) = state.casting_service.disconnect().await {
+                    log::debug!(
+                        "casting: teardown after receiver stopped failed: {}",
+                        error.message
+                    );
+                }
+                if let Err(error) = state.playback_service.restore_local_after_cast(position) {
+                    log::warn!(
+                        "casting: could not restore local playback after receiver stopped: {:?}",
+                        error
+                    );
+                }
+                let playback_snapshot =
+                    state.playback_service.finish_cast_output(&state, position);
+                crate::commands::playback::emit_playback_snapshot(&app, &playback_snapshot);
+                emit_cast_snapshot(&app, &state.casting_service.current_snapshot());
+                break;
+            }
+        }
+    });
 }

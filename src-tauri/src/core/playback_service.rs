@@ -41,6 +41,7 @@ impl PlaybackOutputTarget {
 pub(crate) struct PlaybackService {
     sender: mpsc::Sender<QueuedCommand>,
     recent_results: Mutex<VecDeque<CachedCommandResult>>,
+    local_presentation_before_cast: Mutex<Option<LocalPlaybackPresentation>>,
 }
 
 struct QueuedCommand {
@@ -52,6 +53,12 @@ struct CachedCommandResult {
     client_id: String,
     command_id: String,
     result: Result<CommandResultDto, CoreErrorDto>,
+}
+
+#[derive(Clone, Copy)]
+struct LocalPlaybackPresentation {
+    volume: f64,
+    muted: bool,
 }
 
 impl PlaybackService {
@@ -72,6 +79,7 @@ impl PlaybackService {
         Self {
             sender,
             recent_results: Mutex::new(VecDeque::with_capacity(COMMAND_RESULT_CACHE_CAPACITY)),
+            local_presentation_before_cast: Mutex::new(None),
         }
     }
 
@@ -103,6 +111,75 @@ impl PlaybackService {
     pub(crate) fn restore_local_after_cast(&self, position: f64) -> Result<(), CoreErrorDto> {
         self.execute_local_queued(PlaybackCommandDto::SeekAbsolute { position })?;
         self.execute_local_queued(PlaybackCommandDto::SetPaused { paused: true })
+    }
+
+    /// Replaces the presentation portion of the shared playback snapshot while a receiver owns
+    /// output. The loaded source and local mpv settings remain available for restoration.
+    pub(crate) fn activate_cast_output(
+        &self,
+        state: &AppState,
+    ) -> Option<crate::protocol::PlaybackSnapshotDto> {
+        let local_snapshot = state.playback_state.current();
+        if let Ok(mut presentation) = self.local_presentation_before_cast.lock() {
+            // Overwrite unconditionally: a previous cast that ended via error or failed disconnect
+            // may have left a stale entry, and this activation's local values are the fresh truth.
+            *presentation = Some(LocalPlaybackPresentation {
+                volume: local_snapshot.volume,
+                muted: local_snapshot.muted,
+            });
+        }
+        self.sync_cast_output(state)
+    }
+
+    pub(crate) fn sync_cast_output(
+        &self,
+        state: &AppState,
+    ) -> Option<crate::protocol::PlaybackSnapshotDto> {
+        let cast = state.casting_service.current_snapshot();
+        if !matches!(PlaybackOutputTarget::from_cast_snapshot(&cast), PlaybackOutputTarget::Cast { .. }) {
+            return None;
+        }
+        Some(state.playback_state.update(|snapshot| {
+            snapshot.is_playing = matches!(cast.phase, CastPhaseDto::Playing);
+            snapshot.is_buffering = matches!(cast.phase, CastPhaseDto::Buffering);
+            snapshot.download_speed_bps = 0.0;
+            // The cast snapshot carries `duration` as an f64 already unwrapped from `Option<f64>`
+            // by the service layer, so `0.0` means "receiver has not reported yet". Keep the
+            // previously known duration and position in that window to avoid collapsing the UI
+            // seek bar on the first frame after connect.
+            if cast.duration > 0.0 {
+                snapshot.duration = cast.duration;
+                snapshot.position = cast.position.max(0.0);
+                snapshot.buffered_position = snapshot.position;
+            }
+            if cast.volume.is_finite() {
+                snapshot.volume = cast.volume.clamp(0.0, 100.0);
+            }
+            snapshot.muted = cast.muted;
+        }))
+    }
+
+    pub(crate) fn finish_cast_output(
+        &self,
+        state: &AppState,
+        position: f64,
+    ) -> crate::protocol::PlaybackSnapshotDto {
+        let local_presentation = self
+            .local_presentation_before_cast
+            .lock()
+            .ok()
+            .and_then(|mut presentation| presentation.take());
+        state.playback_state.update(|snapshot| {
+            snapshot.position = position.max(0.0);
+            snapshot.buffered_position = snapshot.position;
+            snapshot.is_playing = false;
+            snapshot.is_buffering = false;
+            snapshot.download_speed_bps = 0.0;
+            if let Some(local_presentation) = local_presentation {
+                snapshot.volume = local_presentation.volume;
+                snapshot.muted = local_presentation.muted;
+            }
+        })
     }
 
     fn execute_local_queued(&self, command: PlaybackCommandDto) -> Result<(), CoreErrorDto> {
@@ -138,9 +215,17 @@ impl PlaybackService {
 
         let output_target = Self::current_output_target(state);
         if matches!(output_target, PlaybackOutputTarget::Cast { .. }) {
-            let result = Err(CoreErrorDto::InvalidCommand {
-                message: "playback commands for an active cast output are not available until a receiver adapter is installed".into(),
-            });
+            validate_playback_session(
+                &envelope.command,
+                envelope.playback_session_id.as_deref(),
+                state
+                    .playback_state
+                    .current()
+                    .playback_session_id
+                    .as_deref(),
+            )?;
+            let result = self.execute_cast_command(state, &envelope);
+            let result = result.await;
             self.cache_result(&envelope.client_id, &envelope.command_id, result.clone());
             return result;
         }
@@ -187,6 +272,102 @@ impl PlaybackService {
         result
     }
 
+    async fn execute_cast_command(
+        &self,
+        state: &AppState,
+        envelope: &CommandEnvelopeDto,
+    ) -> Result<CommandResultDto, CoreErrorDto> {
+        use crate::casting::CastProtocolCommand;
+
+        if matches!(&envelope.command, PlaybackCommandDto::Stop) {
+            return self.stop_cast_output(state, &envelope.command_id).await;
+        }
+        let command = match &envelope.command {
+            PlaybackCommandDto::SetPaused { paused } => {
+                if *paused {
+                    CastProtocolCommand::Pause
+                } else {
+                    CastProtocolCommand::Play
+                }
+            }
+            PlaybackCommandDto::SeekAbsolute { position } => {
+                if !position.is_finite() || *position < 0.0 {
+                    return Err(CoreErrorDto::InvalidCommand {
+                        message: "seek position must be a non-negative finite number".into(),
+                    });
+                }
+                CastProtocolCommand::SeekAbsolute { position: *position }
+            }
+            PlaybackCommandDto::SeekRelative { seconds } => {
+                if !seconds.is_finite() || !(-600.0..=600.0).contains(seconds) {
+                    return Err(CoreErrorDto::InvalidCommand {
+                        message: "relative seek must be finite and within 600 seconds".into(),
+                    });
+                }
+                CastProtocolCommand::SeekRelative { seconds: *seconds }
+            }
+            PlaybackCommandDto::SetVolume { volume } => {
+                if !volume.is_finite() {
+                    return Err(CoreErrorDto::InvalidCommand {
+                        message: "volume must be finite".into(),
+                    });
+                }
+                CastProtocolCommand::SetVolume { volume: *volume }
+            }
+            PlaybackCommandDto::SetMuted { .. }
+            | PlaybackCommandDto::SetSpeed { .. }
+            | PlaybackCommandDto::SelectAudioTrack { .. }
+            | PlaybackCommandDto::SelectSubtitleTrack { .. }
+            | PlaybackCommandDto::DisableSubtitles => {
+                return Err(CoreErrorDto::InvalidCommand {
+                    message: "this control is not supported by the active cast output".into(),
+                });
+            }
+            PlaybackCommandDto::Stop
+            | PlaybackCommandDto::Previous
+            | PlaybackCommandDto::Next
+            | PlaybackCommandDto::PlaySource { .. } => unreachable!(),
+        };
+        state
+            .casting_service
+            .command(command)
+            .await
+            .map_err(casting_error)?;
+        let snapshot = self.sync_cast_output(state).ok_or_else(|| CoreErrorDto::ExecutionFailed {
+            message: "cast output ended before the command completed".to_string(),
+        })?;
+        Ok(CommandResultDto {
+            command_id: envelope.command_id.clone(),
+            applied_snapshot_revision: snapshot.revision,
+        })
+    }
+
+    async fn stop_cast_output(
+        &self,
+        state: &AppState,
+        command_id: &str,
+    ) -> Result<CommandResultDto, CoreErrorDto> {
+        use crate::casting::CastProtocolCommand;
+
+        let snapshot_before_stop = state.casting_service.current_snapshot();
+        let position = state
+            .casting_service
+            .refresh_status()
+            .await
+            .map(|snapshot| snapshot.position)
+            .unwrap_or(snapshot_before_stop.position);
+        if let Err(error) = state.casting_service.command(CastProtocolCommand::Stop).await {
+            log::debug!("casting: remote stop from playback command failed: {}", error.message);
+        }
+        state.casting_service.disconnect().await.map_err(casting_error)?;
+        self.restore_local_after_cast(position)?;
+        let snapshot = self.finish_cast_output(state, position);
+        Ok(CommandResultDto {
+            command_id: command_id.to_string(),
+            applied_snapshot_revision: snapshot.revision,
+        })
+    }
+
     fn cached_result(&self, client_id: &str, command_id: &str) -> Option<Result<CommandResultDto, CoreErrorDto>> {
         self.recent_results
             .lock()
@@ -225,6 +406,12 @@ fn command_requires_playback_session(command: &PlaybackCommandDto) -> bool {
             | PlaybackCommandDto::SelectSubtitleTrack { .. }
             | PlaybackCommandDto::DisableSubtitles
     )
+}
+
+fn casting_error(error: crate::protocol::CastErrorDto) -> CoreErrorDto {
+    CoreErrorDto::ExecutionFailed {
+        message: error.message,
+    }
 }
 
 fn validate_track_selection(

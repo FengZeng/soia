@@ -212,6 +212,7 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
     ) -> BoxFuture<'a, Result<CastReceiverStatus, CastErrorDto>> {
         Box::pin(async move {
             let description = self.description_for(&session.device_id)?;
+            let rendering_control = description.services.rendering_control.clone();
             let av_transport = description.services.av_transport.ok_or_else(|| {
                 device_error(
                     CastErrorCodeDto::CommandFailed,
@@ -226,26 +227,58 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
                     Some(&session.device_id),
                 )
             })?;
-            let phase = match command {
+            match command {
                 CastProtocolCommand::Play => {
                     play(&client, &av_transport).await
-                        .map(|_| soia_protocol::CastPhaseDto::Playing)
                 }
                 CastProtocolCommand::Pause => {
                     pause(&client, &av_transport).await
-                        .map(|_| soia_protocol::CastPhaseDto::Paused)
                 }
                 CastProtocolCommand::Stop => {
                     stop(&client, &av_transport).await
-                        .map(|_| soia_protocol::CastPhaseDto::Stopped)
                 }
                 CastProtocolCommand::SeekAbsolute { position } => {
                     seek_absolute(&client, &av_transport, position).await
-                        .map(|_| soia_protocol::CastPhaseDto::Playing)
                 }
-                CastProtocolCommand::SeekRelative { .. }
-                | CastProtocolCommand::SetVolume { .. }
-                | CastProtocolCommand::SetMuted { .. } => {
+                CastProtocolCommand::SeekRelative { seconds } => {
+                    if !seconds.is_finite() || !(-600.0..=600.0).contains(&seconds) {
+                        return Err(device_error(
+                            CastErrorCodeDto::CommandFailed,
+                            "DLNA relative seek must be finite and within 600 seconds",
+                            Some(&session.device_id),
+                        ));
+                    }
+                    let position = get_position_info(&client, &av_transport)
+                        .await
+                        .map_err(|error| {
+                            device_error(
+                                CastErrorCodeDto::CommandFailed,
+                                &error,
+                                Some(&session.device_id),
+                            )
+                        })?
+                        .0
+                        .ok_or_else(|| {
+                            device_error(
+                                CastErrorCodeDto::CommandFailed,
+                                "DLNA device did not report a seek position",
+                                Some(&session.device_id),
+                            )
+                        })?;
+                    seek_absolute(&client, &av_transport, (position + seconds).max(0.0))
+                        .await
+                }
+                CastProtocolCommand::SetVolume { volume } => {
+                    let rendering_control = rendering_control.as_ref().ok_or_else(|| {
+                        device_error(
+                            CastErrorCodeDto::CommandFailed,
+                            "DLNA device does not advertise RenderingControl",
+                            Some(&session.device_id),
+                        )
+                    })?;
+                    set_volume(&client, rendering_control, volume).await.map(|_| ())
+                }
+                CastProtocolCommand::SetMuted { .. } => {
                     return Err(device_error(
                         CastErrorCodeDto::CommandFailed,
                         "this DLNA playback command is not available yet",
@@ -256,14 +289,11 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
             .map_err(|error| {
                 device_error(CastErrorCodeDto::CommandFailed, &error, Some(&session.device_id))
             })?;
-            Ok(CastReceiverStatus {
-                phase,
-                position: 0.0,
-                duration: None,
-                volume: None,
-                muted: None,
-                seekable: false,
-            })
+            read_receiver_status(&client, &av_transport, rendering_control.as_ref())
+                .await
+                .map_err(|error| {
+                    device_error(CastErrorCodeDto::CommandFailed, &error, Some(&session.device_id))
+                })
         })
     }
 
@@ -604,6 +634,25 @@ async fn get_volume(client: &reqwest::Client, service: &DlnaService) -> Result<O
     parse_get_volume_response(&body)
 }
 
+async fn set_volume(
+    client: &reqwest::Client,
+    service: &DlnaService,
+    volume: f64,
+) -> Result<f64, String> {
+    if !volume.is_finite() {
+        return Err("DLNA volume must be finite".to_string());
+    }
+    let volume = volume.clamp(0.0, 100.0).round();
+    post_soap(
+        client,
+        service,
+        "SetVolume",
+        build_set_volume_envelope(&service.service_type, volume as u8),
+    )
+    .await
+    .map(|_| volume)
+}
+
 async fn post_soap(
     client: &reqwest::Client,
     service: &DlnaService,
@@ -680,6 +729,21 @@ fn build_get_volume_envelope(service_type: &str) -> String {
       <InstanceID>0</InstanceID>
       <Channel>Master</Channel>
     </u:GetVolume>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_set_volume_envelope(service_type: &str, volume: u8) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:SetVolume xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+      <Channel>Master</Channel>
+      <DesiredVolume>{volume}</DesiredVolume>
+    </u:SetVolume>
   </s:Body>
 </s:Envelope>"#,
     )
@@ -1053,7 +1117,7 @@ mod tests {
         build_get_position_info_envelope, build_get_protocol_info_envelope,
         build_get_transport_info_envelope, build_get_volume_envelope, build_pause_envelope,
         build_play_envelope, build_seek_envelope, build_set_av_transport_uri_envelope,
-        build_stop_envelope, conservative_capabilities, format_dlna_rel_time,
+        build_set_volume_envelope, build_stop_envelope, conservative_capabilities, format_dlna_rel_time,
         location_ipv4_for_response, parse_get_position_info_response,
         parse_get_protocol_info_response, parse_get_transport_info_response,
         parse_get_volume_response, parse_renderer_description, udn_from_usn,
@@ -1348,5 +1412,8 @@ mod tests {
         let volume = build_get_volume_envelope(rendering_control);
         assert!(volume.contains("GetVolume"));
         assert!(volume.contains("<Channel>Master</Channel>"));
+        let set_volume = build_set_volume_envelope(rendering_control, 37);
+        assert!(set_volume.contains("SetVolume"));
+        assert!(set_volume.contains("<DesiredVolume>37</DesiredVolume>"));
     }
 }
