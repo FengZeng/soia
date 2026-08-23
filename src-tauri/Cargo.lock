@@ -5128,6 +5128,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "slab",
  "socket2",
  "tokio-macros",

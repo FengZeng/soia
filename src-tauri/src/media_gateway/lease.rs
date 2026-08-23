@@ -5,7 +5,9 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 const CAST_LEASE_CAPACITY: usize = 128;
-const CAST_LEASE_RESOURCE_CAPACITY: usize = 512;
+// CMAF uses one protected resource per init/segment file. At two-second segments this keeps
+// roughly two hours of a long VOD available for HLS seeking without exhausting the registry.
+const CAST_LEASE_RESOURCE_CAPACITY: usize = 4096;
 
 /// A session-scoped LAN authorization. The token is opaque and never contains a path, URL, or
 /// credentials. The media gateway will resolve `source_id` only after the client IP is accepted.

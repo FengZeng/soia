@@ -315,6 +315,209 @@ pub(crate) async fn resolve(app: &AppHandle, raw_url: &str) -> Result<Option<Res
     }))
 }
 
+/// Streams selected for a cast session. Receivers cannot mux DASH video and audio themselves, so
+/// separate streams are reported as such and remuxed by the media gateway before they leave the app.
+pub(crate) enum ResolvedCastStreams {
+    Single {
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+    VideoAudio {
+        video_url: String,
+        audio_url: String,
+        video_headers: Vec<(String, String)>,
+        audio_headers: Vec<(String, String)>,
+    },
+}
+
+pub(crate) async fn resolve_for_cast(
+    app: &AppHandle,
+    raw_url: &str,
+) -> Result<Option<ResolvedCastStreams>, String> {
+    if !is_http_url(raw_url) {
+        return Ok(None);
+    }
+    if is_likely_direct_stream_url(raw_url) {
+        return Ok(None);
+    }
+
+    let settings = super::ytdlp_settings::resolve(app);
+    let Some(ytdl_path) = settings.binary.path else {
+        return Err("yt-dlp is not configured for webpage casting".to_string());
+    };
+
+    let proxy_url = crate::network::proxy::current_proxy_key(app)?;
+    let cookies_from_browser = settings.cookies.browser;
+    let format_selector = settings.format.selector();
+    let raw_url = raw_url.to_string();
+    let cookies_clone = cookies_from_browser.clone();
+    let proxy_clone = proxy_url.clone();
+    let format_clone = format_selector.clone();
+    let url_clone = raw_url.clone();
+    let ytdl_clone = ytdl_path.clone();
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        run_ytdlp_command(
+            &ytdl_path,
+            proxy_url.as_deref(),
+            cookies_from_browser.as_deref(),
+            &format_selector,
+            &raw_url,
+        )
+    })
+    .await
+    .map_err(|error| format!("yt-dlp worker failed: {error}"))??;
+    let output = if !output.status.success()
+        && cookies_clone.is_some()
+        && is_cookie_permission_error(&output.stderr)
+    {
+        warn!(
+            "yt-dlp: cookies-from-browser failed due to permission error, retrying without cookies"
+        );
+        tauri::async_runtime::spawn_blocking(move || {
+            run_ytdlp_command(
+                &ytdl_clone,
+                proxy_clone.as_deref(),
+                None,
+                &format_clone,
+                &url_clone,
+            )
+        })
+        .await
+        .map_err(|error| format!("yt-dlp worker failed: {error}"))??
+    } else {
+        output
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "yt-dlp exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("yt-dlp returned invalid JSON: {error}"))?;
+    let Some(streams) = select_cast_streams(&value) else {
+        return Err("yt-dlp did not return a castable URL".to_string());
+    };
+    match &streams {
+        ResolvedCastStreams::Single { .. } => {
+            info!("yt-dlp: cast selected a single muxed stream");
+        }
+        ResolvedCastStreams::VideoAudio { .. } => {
+            info!("yt-dlp: cast selected separate video and audio streams for remuxing");
+        }
+    }
+    Ok(Some(streams))
+}
+
+fn select_cast_streams(value: &Value) -> Option<ResolvedCastStreams> {
+    let top_headers = parse_headers(value.get("http_headers"));
+
+    let requested: Vec<&Value> = value
+        .get("requested_formats")
+        .and_then(Value::as_array)
+        .map(|formats| formats.iter().collect())
+        .unwrap_or_default();
+
+    let video_only = requested
+        .iter()
+        .copied()
+        .find(|format| format_has_video(format) && !format_has_audio(format));
+    let audio_only = requested
+        .iter()
+        .copied()
+        .find(|format| format_has_audio(format) && !format_has_video(format));
+    if let (Some(video), Some(audio)) = (video_only, audio_only) {
+        let video_url = video.get("url").and_then(Value::as_str).filter(|url| is_http_url(url));
+        let audio_url = audio.get("url").and_then(Value::as_str).filter(|url| is_http_url(url));
+        if let (Some(video_url), Some(audio_url)) = (video_url, audio_url) {
+            log_selected_format("cast video stream", video);
+            log_selected_format("cast audio stream", audio);
+            return Some(ResolvedCastStreams::VideoAudio {
+                video_url: video_url.to_string(),
+                audio_url: audio_url.to_string(),
+                video_headers: merge_headers(
+                    &top_headers,
+                    &parse_headers(video.get("http_headers")),
+                ),
+                audio_headers: merge_headers(
+                    &top_headers,
+                    &parse_headers(audio.get("http_headers")),
+                ),
+            });
+        }
+    }
+
+    if let [format] = requested.as_slice() {
+        if let Some(url) = format.get("url").and_then(Value::as_str).filter(|url| is_http_url(url)) {
+            log_selected_format("cast muxed stream", format);
+            return Some(ResolvedCastStreams::Single {
+                url: url.to_string(),
+                headers: merge_headers(&top_headers, &parse_headers(format.get("http_headers"))),
+            });
+        }
+    }
+
+    if let Some(url) = value
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| is_http_url(url))
+    {
+        log_selected_format("cast muxed stream", value);
+        return Some(ResolvedCastStreams::Single {
+            url: url.to_string(),
+            headers: top_headers,
+        });
+    }
+
+    let candidate = select_best_combined_candidate(value, &top_headers)?;
+    log_selected_candidate("cast muxed stream", &candidate);
+    Some(ResolvedCastStreams::Single {
+        url: candidate.url,
+        headers: candidate.headers,
+    })
+}
+
+fn format_has_video(format: &Value) -> bool {
+    codec_name_is_present(
+        &format
+            .get("vcodec")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+    )
+}
+
+fn format_has_audio(format: &Value) -> bool {
+    codec_name_is_present(
+        &format
+            .get("acodec")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+    )
+}
+
+fn log_selected_format(label: &str, format: &Value) {
+    info!(
+        "yt-dlp: {label} format_id={} protocol={} resolution={}",
+        format
+            .get("format_id")
+            .and_then(Value::as_str)
+            .unwrap_or("<top-level>"),
+        format
+            .get("protocol")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>"),
+        format
+            .get("resolution")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>"),
+    );
+}
+
 pub(crate) async fn try_resolve(app: &AppHandle, raw_url: &str) -> Option<ResolvedMedia> {
     match resolve(app, raw_url).await {
         Ok(resolved) => resolved,

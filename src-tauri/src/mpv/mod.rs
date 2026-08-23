@@ -10,6 +10,8 @@ mod stream_https;
 pub(crate) use ffi::SoiaUtils;
 pub(crate) use handle::MpvHandle;
 pub(crate) use ytdlp_resolver::try_resolve as try_resolve_with_ytdlp;
+pub(crate) use ytdlp_resolver::resolve_for_cast as resolve_ytdlp_for_cast;
+pub(crate) use ytdlp_resolver::ResolvedCastStreams;
 pub(crate) use ytdlp_resolver::resolve_playlist as resolve_ytdlp_playlist;
 pub(crate) use ytdlp_settings::store_runtime_settings as store_runtime_ytdlp_settings;
 pub(crate) use ytdlp_settings::YtdlpFormatSettings;

@@ -8,6 +8,7 @@
 pub(crate) mod source;
 pub(crate) mod discovery;
 mod protocols;
+pub(crate) mod remux;
 mod service;
 #[cfg(test)]
 mod fixture;

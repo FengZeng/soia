@@ -1,3 +1,6 @@
+use log::info;
+
+use crate::mpv::ResolvedCastStreams;
 use crate::playback_source::resolve::ResolvedPlaybackSourceResult;
 use super::CastMediaDescriptor;
 use std::net::Ipv4Addr;
@@ -17,6 +20,20 @@ pub(crate) enum CastMediaSource {
     Smb {
         url: String,
         basic_auth: Option<(String, String)>,
+    },
+    /// The experimental HLS/CMAF transport, retained for receivers which explicitly support it.
+    HlsCmafStream {
+        video_url: String,
+        audio_url: String,
+        video_headers: Vec<(String, String)>,
+        audio_headers: Vec<(String, String)>,
+    },
+    /// The default compatibility transport for DASH video/audio streams.
+    MpegTsStream {
+        video_url: String,
+        audio_url: String,
+        video_headers: Vec<(String, String)>,
+        audio_headers: Vec<(String, String)>,
     },
 }
 
@@ -70,6 +87,43 @@ impl CastMediaSource {
                     None,
                 )
             }
+            Self::HlsCmafStream {
+                video_url,
+                audio_url,
+                video_headers,
+                audio_headers,
+            } => {
+                let url = crate::media_gateway::create_cast_hls_cmaf_media_url(
+                    app,
+                    cast_session_id,
+                    receiver_ip,
+                    &video_url,
+                    &audio_url,
+                    &video_headers,
+                    &audio_headers,
+                )?;
+                (url, Some("application/vnd.apple.mpegurl".to_string()))
+            }
+            Self::MpegTsStream {
+                video_url,
+                audio_url,
+                video_headers,
+                audio_headers,
+            } => {
+                let url = crate::media_gateway::create_cast_mpegts_media_url(
+                    app,
+                    cast_session_id,
+                    receiver_ip,
+                    &video_url,
+                    &audio_url,
+                    &video_headers,
+                    &audio_headers,
+                )?;
+                (
+                    url,
+                    Some(crate::casting::remux::MPEGTS_MIME_TYPE.to_string()),
+                )
+            }
         };
         Ok(CastMediaDescriptor {
             url,
@@ -86,7 +140,67 @@ pub(crate) async fn resolve(
     playback_key: &str,
 ) -> Result<CastMediaSource, String> {
     let source = crate::playback_source::resolve::resolve(app, playback_key).await?;
-    from_resolved(app, source)
+    let media_source = from_resolved(app, source)?;
+    let CastMediaSource::Http { url, basic_auth: None } = &media_source else {
+        return Ok(media_source);
+    };
+    if !needs_ytdlp_resolution(url) {
+        return Ok(media_source);
+    }
+    let streams = match crate::mpv::resolve_ytdlp_for_cast(app, url).await {
+        Ok(Some(streams)) => streams,
+        Ok(None) => return Err("yt-dlp did not return a castable stream".to_string()),
+        Err(error) => return Err(error),
+    };
+    // Past this point the original URL is a webpage, not media. Falling back to it would leave the
+    // receiver spinning on HTML, so a failure here is reported instead of swallowed.
+    Ok(cast_source_from_streams(streams))
+}
+
+fn needs_ytdlp_resolution(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let path = parsed.path().to_ascii_lowercase();
+    let direct_extensions = [
+        "m3u8", "mp4", "m4v", "mov", "mkv", "webm", "flv", "avi", "ts", "mp3", "m4a", "aac",
+        "flac", "wav", "ogg", "opus",
+    ];
+    !direct_extensions
+        .iter()
+        .any(|ext| path.ends_with(&format!(".{ext}")))
+}
+
+fn cast_source_from_streams(resolved: ResolvedCastStreams) -> CastMediaSource {
+    match resolved {
+        ResolvedCastStreams::Single { url, headers } => {
+            if !headers.is_empty() {
+                crate::media_gateway::register_headers(&url, &headers);
+            }
+            info!("casting: serving a single muxed yt-dlp stream");
+            CastMediaSource::Http {
+                url,
+                basic_auth: None,
+            }
+        }
+        ResolvedCastStreams::VideoAudio {
+            video_url,
+            audio_url,
+            video_headers,
+            audio_headers,
+        } => {
+            info!("casting: remuxing separate yt-dlp streams to progressive MPEG-TS");
+            CastMediaSource::MpegTsStream {
+                video_url,
+                audio_url,
+                video_headers,
+                audio_headers,
+            }
+        }
+    }
 }
 
 fn from_resolved(
@@ -155,7 +269,7 @@ fn classify_direct_source(value: &str) -> Result<CastMediaSource, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_direct_source, CastMediaSource};
+    use super::{classify_direct_source, needs_ytdlp_resolution, CastMediaSource};
 
     #[test]
     fn classifies_local_http_and_smb_sources_without_leaking_them_to_dtos() {
@@ -171,5 +285,14 @@ mod tests {
             classify_direct_source("smb://nas.example.test/media/video.mkv").unwrap(),
             CastMediaSource::Smb { basic_auth: None, .. }
         ));
+    }
+
+    #[test]
+    fn detects_urls_needing_ytdlp_resolution() {
+        assert!(needs_ytdlp_resolution("https://www.bilibili.com/video/BV1ks8n6rEWe"));
+        assert!(needs_ytdlp_resolution("https://www.youtube.com/watch?v=abc123"));
+        assert!(!needs_ytdlp_resolution("https://cdn.example.com/video.mp4"));
+        assert!(!needs_ytdlp_resolution("https://cdn.example.com/stream.m3u8"));
+        assert!(!needs_ytdlp_resolution("/local/path/video.mkv"));
     }
 }

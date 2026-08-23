@@ -36,8 +36,8 @@ const SMB_STREAM_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const SMB_PIPELINE_DEPTH: usize = 4;
 const MEDIA_SOURCE_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const MEDIA_SOURCE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-const MEDIA_SOURCE_MAX_ENTRIES: usize = 4096;
-const MEDIA_SOURCE_TARGET_ENTRIES: usize = 3072;
+const MEDIA_SOURCE_MAX_ENTRIES: usize = 8192;
+const MEDIA_SOURCE_TARGET_ENTRIES: usize = 6144;
 const DOWNLOAD_SPEED_WINDOW: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_STALE_AFTER: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_MIN_SAMPLE_DURATION: Duration = Duration::from_millis(250);
@@ -78,14 +78,18 @@ struct DownloadSpeedSample {
 }
 
 #[derive(Clone)]
-struct DownloadSpeedMeter {
+pub(crate) struct DownloadSpeedMeter {
     generation: u64,
     generation_started_at: Instant,
     last_download_at: Option<Instant>,
     samples: VecDeque<DownloadSpeedSample>,
 }
 
-type DownloadSpeedMeterHandle = Arc<Mutex<DownloadSpeedMeter>>;
+pub(crate) type DownloadSpeedMeterHandle = Arc<Mutex<DownloadSpeedMeter>>;
+
+pub(crate) fn new_download_speed_meter() -> DownloadSpeedMeterHandle {
+    Arc::new(Mutex::new(DownloadSpeedMeter::default()))
+}
 
 impl Default for DownloadSpeedMeter {
     fn default() -> Self {
@@ -410,12 +414,14 @@ impl MediaSourceRegistry {
     }
 }
 
-trait MediaSourceBackend: Send + Sync {
+pub(crate) trait MediaSourceBackend: Send + Sync {
     fn label(&self) -> &'static str;
 
     fn origin(&self) -> &str;
 
     fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle;
+
+    fn shutdown(&self) {}
 
     fn handle<'a>(
         &'a self,
@@ -508,6 +514,158 @@ impl MediaSourceBackend for HttpMediaSourceBackend {
             )
             .await
         })
+    }
+}
+
+/// Serves one locally generated CMAF playlist. Each completed init/segment file is registered as
+/// a separate lease-protected resource before it is mentioned to the receiver.
+struct HlsCmafMediaSourceBackend {
+    session: Arc<crate::casting::remux::HlsCmafSession>,
+    endpoint: CastMediaEndpoint,
+    origin_label: String,
+}
+
+impl HlsCmafMediaSourceBackend {
+    fn new(
+        session: Arc<crate::casting::remux::HlsCmafSession>,
+        endpoint: CastMediaEndpoint,
+    ) -> Self {
+        let origin_label = format!("cmaf:{}", session.origin());
+        Self {
+            session,
+            endpoint,
+            origin_label,
+        }
+    }
+
+    async fn handle_playlist(&self, stream: &mut TcpStream, method: &str) -> Result<(), String> {
+        self.session.wait_until_ready().await?;
+        let playlist = self.session.playlist()?;
+        let body = self.rewrite_playlist(&playlist)?.into_bytes();
+        write_response(
+            stream,
+            200,
+            "OK",
+            "application/vnd.apple.mpegurl",
+            Some(body.len() as u64),
+            None,
+            None,
+        )
+        .await?;
+        if method != "HEAD" {
+            stream.write_all(&body).await.map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn rewrite_playlist(&self, playlist: &str) -> Result<String, String> {
+        playlist
+            .lines()
+            .map(|line| self.rewrite_playlist_line(line))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|lines| lines.join("\n"))
+    }
+
+    fn rewrite_playlist_line(&self, line: &str) -> Result<String, String> {
+        if line.trim().is_empty() {
+            return Ok(line.to_string());
+        }
+        if !line.starts_with('#') {
+            return self.resource_url(line.trim());
+        }
+        let mut rewritten = String::with_capacity(line.len());
+        let mut rest = line;
+        while let Some(index) = rest.find("URI=\"") {
+            let (before, after_prefix) = rest.split_at(index);
+            rewritten.push_str(before);
+            rewritten.push_str("URI=\"");
+            let uri_start = &after_prefix[5..];
+            let Some(end) = uri_start.find('\"') else {
+                return Err("invalid CMAF playlist URI attribute".to_string());
+            };
+            rewritten.push_str(&self.resource_url(&uri_start[..end])?);
+            rest = &uri_start[end..];
+        }
+        rewritten.push_str(rest);
+        Ok(rewritten)
+    }
+
+    fn resource_url(&self, name: &str) -> Result<String, String> {
+        let path = self
+            .session
+            .resource_path(name)
+            .ok_or_else(|| format!("CMAF resource is not ready: {name}"))?;
+        let origin = format!("{}:{name}", self.origin_label);
+        if let Some(source_id) = cast_media_leases()
+            .lock()
+            .ok()
+            .and_then(|leases| leases.resource_source(&self.endpoint.lease_token, &origin))
+        {
+            return Ok(format!(
+                "{}/cast/{}/resource/{source_id}",
+                self.endpoint.public_base_url, self.endpoint.lease_token,
+            ));
+        }
+        let backend = Arc::new(LocalFileMediaSourceBackend::new(&path)?);
+        let source_id = register_media_source(backend)
+            .ok_or_else(|| "failed to register CMAF cast resource".to_string())?;
+        let registration = cast_media_leases()
+            .lock()
+            .ok()
+            .map(|mut leases| {
+                leases.register_resource(&self.endpoint.lease_token, origin, source_id.clone())
+            })
+            .unwrap_or(ResourceRegistration::LeaseUnavailable);
+        match registration {
+            ResourceRegistration::Registered => {}
+            ResourceRegistration::Existing(existing_source_id) => {
+                remove_media_sources(vec![source_id]);
+                return Ok(format!(
+                    "{}/cast/{}/resource/{existing_source_id}",
+                    self.endpoint.public_base_url, self.endpoint.lease_token,
+                ));
+            }
+            ResourceRegistration::LeaseUnavailable => {
+                remove_media_sources(vec![source_id]);
+                return Err("CMAF cast lease is no longer available".to_string());
+            }
+            ResourceRegistration::AtCapacity => {
+                remove_media_sources(vec![source_id]);
+                return Err("CMAF cast resource limit reached".to_string());
+            }
+        }
+        Ok(format!(
+            "{}/cast/{}/resource/{source_id}",
+            self.endpoint.public_base_url, self.endpoint.lease_token,
+        ))
+    }
+}
+
+impl MediaSourceBackend for HlsCmafMediaSourceBackend {
+    fn label(&self) -> &'static str {
+        "hls-cmaf"
+    }
+
+    fn origin(&self) -> &str {
+        &self.origin_label
+    }
+
+    fn download_speed_meter(&self) -> &DownloadSpeedMeterHandle {
+        self.session.download_speed_meter()
+    }
+
+    fn shutdown(&self) {
+        self.session.cancel();
+    }
+
+    fn handle<'a>(
+        &'a self,
+        _app_handle: Option<&'a AppHandle>,
+        stream: &'a mut TcpStream,
+        method: &'a str,
+        _range: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.handle_playlist(stream, method).await })
     }
 }
 
@@ -651,6 +809,7 @@ impl MediaSourceBackend for LocalFileMediaSourceBackend {
 pub(crate) fn infer_media_mime(path: &Path) -> &'static str {
     match path.extension().and_then(|extension| extension.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
         "mp4" | "m4v" => "video/mp4",
+        "m4s" => "video/iso.segment",
         "mkv" => "video/x-matroska",
         "webm" => "video/webm",
         "ts" => "video/mp2t",
@@ -1078,6 +1237,52 @@ pub(crate) fn create_cast_local_file_media_url(
     create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |_| Arc::new(backend))
 }
 
+pub(crate) fn create_cast_hls_cmaf_media_url(
+    app_handle: AppHandle,
+    session_id: &str,
+    receiver_ip: Ipv4Addr,
+    video_url: &str,
+    audio_url: &str,
+    video_headers: &[(String, String)],
+    audio_headers: &[(String, String)],
+) -> Result<String, String> {
+    if !is_http_url(video_url) || !is_http_url(audio_url) {
+        return Err("cast CMAF source URLs must be HTTP(S)".to_string());
+    }
+    let session = crate::casting::remux::HlsCmafSession::new(
+        video_url.to_string(),
+        audio_url.to_string(),
+        video_headers.to_vec(),
+        audio_headers.to_vec(),
+    )?;
+    create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |endpoint| {
+        Arc::new(HlsCmafMediaSourceBackend::new(session, endpoint))
+    })
+}
+
+pub(crate) fn create_cast_mpegts_media_url(
+    app_handle: AppHandle,
+    session_id: &str,
+    receiver_ip: Ipv4Addr,
+    video_url: &str,
+    audio_url: &str,
+    video_headers: &[(String, String)],
+    audio_headers: &[(String, String)],
+) -> Result<String, String> {
+    if !is_http_url(video_url) || !is_http_url(audio_url) {
+        return Err("cast MPEG-TS source URLs must be HTTP(S)".to_string());
+    }
+    let backend = crate::casting::remux::MpegTsRemuxBackend::new(
+        video_url.to_string(),
+        audio_url.to_string(),
+        video_headers.to_vec(),
+        audio_headers.to_vec(),
+    );
+    create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |_| {
+        Arc::new(backend)
+    })
+}
+
 #[allow(dead_code)]
 pub(crate) fn create_cast_smb_media_url(
     app_handle: AppHandle,
@@ -1185,20 +1390,25 @@ fn media_source_registry() -> &'static Mutex<MediaSourceRegistry> {
 }
 
 fn remove_media_sources(source_ids: impl IntoIterator<Item = String>) {
-    let removed_origins = {
+    let (removed_origins, removed_backends) = {
         let Ok(mut sources) = media_source_registry().lock() else {
             return;
         };
-        let removed_origins = source_ids
+        let removed_backends = source_ids
             .into_iter()
             .filter_map(|source_id| sources.remove(&source_id))
-            .map(|source| source.origin().to_string())
             .collect::<Vec<_>>();
-        removed_origins
+        let removed_origins = removed_backends
+            .iter()
+            .map(|backend| backend.origin().to_string())
             .into_iter()
             .filter(|origin| !sources.has_origin(origin))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (removed_origins, removed_backends)
     };
+    for backend in &removed_backends {
+        backend.shutdown();
+    }
     if removed_origins.is_empty() {
         return;
     }
@@ -2687,7 +2897,8 @@ mod tests {
         infer_media_mime, parse_cast_media_token, parse_cast_media_route, parse_single_byte_range,
         rewrite_playlist, rewrite_playlist_for_endpoint, revoke_cast_media_session,
         CastMediaEndpoint, ResourceRegistration,
-        DownloadSpeedMeter, DownloadSpeedMeterHandle, LocalFileMediaSourceBackend,
+        DownloadSpeedMeter, DownloadSpeedMeterHandle,
+        LocalFileMediaSourceBackend,
         MediaSourceBackend, MediaSourceRegistry, MEDIA_SOURCE_IDLE_TIMEOUT,
         LOOPBACK_MEDIA_BASE_URL,
     };

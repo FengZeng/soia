@@ -840,10 +840,20 @@ fn format_dlna_rel_time(position: f64) -> Result<String, String> {
 
 fn build_didl_lite(media: &CastMediaDescriptor, mime_type: &str) -> String {
     let title = media.title.as_deref().unwrap_or("Soia media");
+    // A progressive MPEG-TS response intentionally has no Content-Length. Put the known source
+    // duration in DIDL-Lite so renderers can show a timeline without inferring it from the HTTP
+    // entity body.
+    let duration_attribute = media
+        .duration
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .and_then(|duration| format_dlna_rel_time(duration).ok())
+        .map(|duration| format!(r#" duration="{duration}""#))
+        .unwrap_or_default();
     format!(
-        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="0" parentID="0" restricted="1"><dc:title>{}</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:{}:*">{}</res></item></DIDL-Lite>"#,
+        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="0" parentID="0" restricted="1"><dc:title>{}</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:{}:*"{}>{}</res></item></DIDL-Lite>"#,
         xml_escape(title),
         xml_escape(mime_type),
+        duration_attribute,
         xml_escape(&media.url),
     )
 }
@@ -1350,6 +1360,12 @@ mod tests {
                 .find(|node| node.tag_name().name() == "res")
                 .and_then(|node| node.text()),
             Some("http://192.0.2.1/cast/lease/media?part=one&token=two"),
+        );
+        assert_eq!(
+            didl.descendants()
+                .find(|node| node.tag_name().name() == "res")
+                .and_then(|node| node.attribute("duration")),
+            Some("00:00:42"),
         );
         assert!(envelope.contains("SetAVTransportURI"));
         assert!(envelope.contains("http-get:*:video/mp4:*"));
