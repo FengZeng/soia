@@ -16,19 +16,76 @@ const PLAYLIST_FILE_NAME: &str = "playlist.m3u8";
 const INIT_FILE_NAME: &str = "init.mp4";
 const SEGMENT_FILE_PREFIX: &str = "segment-";
 
+// `video/mp2t` is the registered MPEG transport-stream type, but the verified DLNA renderer
+// rejects it for this progressive remux path and accepts `video/mpeg`.
 pub(crate) const MPEGTS_MIME_TYPE: &str = "video/mpeg";
+pub(crate) const FMP4_MIME_TYPE: &str = "video/mp4";
 
-/// The compatibility-first cast transport. Unlike HLS, it needs no playlist support from the
-/// receiver and forwards muxed MPEG-TS immediately after ffmpeg starts.
-pub(crate) struct MpegTsRemuxBackend {
+/// Direct, single-URL remux formats for receivers that cannot consume separate DASH streams.
+/// CMAF/HLS remains a distinct experimental transport because it requires playlist support.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProgressiveRemuxFormat {
+    MpegTs,
+    FragmentedMp4,
+}
+
+impl ProgressiveRemuxFormat {
+    pub(crate) fn selected_for_cast() -> Self {
+        match std::env::var("SOIA_CAST_REMUX_FORMAT") {
+            Ok(value) => Self::from_setting(&value).unwrap_or_else(|| {
+                warn!(
+                    "casting: unknown SOIA_CAST_REMUX_FORMAT={value:?}; using MPEG-TS"
+                );
+                Self::MpegTs
+            }),
+            Err(_) => Self::MpegTs,
+        }
+        // Self::FragmentedMp4
+    }
+
+    fn from_setting(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "mpegts" | "mpeg-ts" | "ts" => Some(Self::MpegTs),
+            "fmp4" | "fragmented-mp4" | "fragmented_mp4" => Some(Self::FragmentedMp4),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn mime_type(self) -> &'static str {
+        match self {
+            Self::MpegTs => MPEGTS_MIME_TYPE,
+            Self::FragmentedMp4 => FMP4_MIME_TYPE,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::MpegTs => "MPEG-TS",
+            Self::FragmentedMp4 => "fragmented MP4",
+        }
+    }
+
+    fn backend_label(self) -> &'static str {
+        match self {
+            Self::MpegTs => "mpegts-remux",
+            Self::FragmentedMp4 => "fmp4-remux",
+        }
+    }
+}
+
+/// A compatibility-first cast transport. Unlike HLS, it needs no playlist support from the
+/// receiver and forwards a single progressive remux stream immediately after ffmpeg starts.
+pub(crate) struct ProgressiveRemuxBackend {
     input: CmafInput,
+    output_format: ProgressiveRemuxFormat,
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     download_speed_meter: crate::media_gateway::DownloadSpeedMeterHandle,
 }
 
-impl MpegTsRemuxBackend {
+impl ProgressiveRemuxBackend {
     pub(crate) fn new(
+        output_format: ProgressiveRemuxFormat,
         video_url: String,
         audio_url: String,
         video_headers: Vec<(String, String)>,
@@ -41,6 +98,7 @@ impl MpegTsRemuxBackend {
                 video_headers,
                 audio_headers,
             },
+            output_format,
             cancelled: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
             download_speed_meter: crate::media_gateway::new_download_speed_meter(),
@@ -53,10 +111,18 @@ impl MpegTsRemuxBackend {
     }
 
     async fn stream(&self, stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+        info!(
+            "casting: preparing {} remux, map=0:v:0+1:a:0 video_url={} audio_url={} video_headers={} audio_headers={}",
+            self.output_format.label(),
+            redact_stream_url(&self.input.video_url),
+            redact_stream_url(&self.input.audio_url),
+            header_names(&self.input.video_headers),
+            header_names(&self.input.audio_headers),
+        );
         let ffmpeg_path = resolve_ffmpeg_path()
-            .ok_or_else(|| "ffmpeg is not available for MPEG-TS cast remuxing".to_string())?;
+            .ok_or_else(|| format!("ffmpeg is not available for {} cast remuxing", self.output_format.label()))?;
         let mut child = tokio::process::Command::new(ffmpeg_path)
-            .args(build_mpegts_args(&self.input))
+            .args(build_progressive_remux_args(&self.input, self.output_format))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -72,8 +138,8 @@ impl MpegTsRemuxBackend {
             .take()
             .ok_or_else(|| "ffmpeg stderr pipe is unavailable".to_string())?;
         let diagnostics = tokio::spawn(collect_ffmpeg_diagnostics(stderr));
-        write_mpegts_headers(stream).await?;
-        info!("casting: ffmpeg MPEG-TS stream started");
+        write_progressive_remux_headers(stream, self.output_format).await?;
+        info!("casting: ffmpeg {} stream started", self.output_format.label());
         let mut buffer = vec![0_u8; 256 * 1024];
         let result = loop {
             if self.cancelled.load(Ordering::Acquire) {
@@ -111,14 +177,37 @@ impl MpegTsRemuxBackend {
             };
             return Err(format!("ffmpeg exited with status {status}: {detail}"));
         }
-        info!("casting: ffmpeg MPEG-TS stream finished");
+        info!("casting: ffmpeg {} stream finished", self.output_format.label());
         Ok(())
     }
 }
 
-impl crate::media_gateway::MediaSourceBackend for MpegTsRemuxBackend {
+fn header_names(headers: &[(String, String)]) -> String {
+    let mut names = headers
+        .iter()
+        .map(|(name, _)| name.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        "<none>".to_string()
+    } else {
+        names.join(",")
+    }
+}
+
+fn redact_stream_url(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return "<invalid-url>".to_string();
+    };
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
+impl crate::media_gateway::MediaSourceBackend for ProgressiveRemuxBackend {
     fn label(&self) -> &'static str {
-        "mpegts-remux"
+        self.output_format.backend_label()
     }
 
     fn origin(&self) -> &str {
@@ -142,7 +231,7 @@ impl crate::media_gateway::MediaSourceBackend for MpegTsRemuxBackend {
     ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             if method == "HEAD" {
-                write_mpegts_headers(stream).await
+                write_progressive_remux_headers(stream, self.output_format).await
             } else {
                 self.stream(stream).await
             }
@@ -463,6 +552,51 @@ fn build_mpegts_args(input: &CmafInput) -> Vec<String> {
     args
 }
 
+fn build_fmp4_args(input: &CmafInput) -> Vec<String> {
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-nostdin".to_string(),
+    ];
+    append_input_args(&mut args, &input.video_url, &input.video_headers);
+    append_input_args(&mut args, &input.audio_url, &input.audio_headers);
+    args.extend(
+        [
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-f",
+            "mp4",
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            "-frag_duration",
+            "2000000",
+            "-flush_packets",
+            "1",
+            "pipe:1",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    args
+}
+
+fn build_progressive_remux_args(
+    input: &CmafInput,
+    output_format: ProgressiveRemuxFormat,
+) -> Vec<String> {
+    match output_format {
+        ProgressiveRemuxFormat::MpegTs => build_mpegts_args(input),
+        ProgressiveRemuxFormat::FragmentedMp4 => build_fmp4_args(input),
+    }
+}
+
 fn append_input_args(args: &mut Vec<String>, url: &str, headers: &[(String, String)]) {
     args.push("-user_agent".to_string());
     args.push(user_agent(headers));
@@ -491,9 +625,13 @@ fn user_agent(headers: &[(String, String)]) -> String {
         .unwrap_or_else(|| "Lavf/61.7.100".to_string())
 }
 
-async fn write_mpegts_headers(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+async fn write_progressive_remux_headers(
+    stream: &mut tokio::net::TcpStream,
+    output_format: ProgressiveRemuxFormat,
+) -> Result<(), String> {
     let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {MPEGTS_MIME_TYPE}\r\nConnection: close\r\nAccept-Ranges: none\r\nCache-Control: no-cache\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nConnection: close\r\nAccept-Ranges: none\r\nCache-Control: no-cache\r\n\r\n",
+        output_format.mime_type(),
     );
     stream
         .write_all(headers.as_bytes())
@@ -567,7 +705,11 @@ fn resolve_ffmpeg_path() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_cmaf_args, build_mpegts_args, CmafInput, CMAF_SEGMENT_DURATION_SECONDS, MPEGTS_MIME_TYPE};
+    use super::{
+        build_cmaf_args, build_fmp4_args, build_mpegts_args, CmafInput,
+        ProgressiveRemuxFormat, CMAF_SEGMENT_DURATION_SECONDS, FMP4_MIME_TYPE,
+        MPEGTS_MIME_TYPE,
+    };
     use std::path::Path;
 
     #[test]
@@ -605,7 +747,37 @@ mod tests {
     }
 
     #[test]
+    fn builds_copy_only_fragmented_mp4_output() {
+        let args = build_fmp4_args(&CmafInput {
+            video_url: "https://cdn.example/video.m4s".to_string(),
+            audio_url: "https://cdn.example/audio.m4s".to_string(),
+            video_headers: Vec::new(),
+            audio_headers: Vec::new(),
+        });
+        assert!(args.windows(2).any(|pair| pair == ["-f", "mp4"]));
+        assert!(args.windows(2).any(|pair| {
+            pair == ["-movflags", "frag_keyframe+empty_moov+default_base_moof"]
+        }));
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "copy"]));
+        assert_eq!(ProgressiveRemuxFormat::FragmentedMp4.mime_type(), FMP4_MIME_TYPE);
+    }
+
+    #[test]
     fn uses_the_verified_renderer_compatible_mpegts_mime_type() {
         assert_eq!(MPEGTS_MIME_TYPE, "video/mpeg");
+    }
+
+    #[test]
+    fn parses_progressive_remux_format_settings() {
+        assert_eq!(
+            ProgressiveRemuxFormat::from_setting("mpegts"),
+            Some(ProgressiveRemuxFormat::MpegTs)
+        );
+        assert_eq!(
+            ProgressiveRemuxFormat::from_setting("fmp4"),
+            Some(ProgressiveRemuxFormat::FragmentedMp4)
+        );
+        assert_eq!(ProgressiveRemuxFormat::from_setting("hls"), None);
     }
 }

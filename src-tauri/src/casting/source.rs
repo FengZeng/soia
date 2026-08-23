@@ -1,5 +1,6 @@
 use log::info;
 
+use crate::casting::remux::ProgressiveRemuxFormat;
 use crate::mpv::ResolvedCastStreams;
 use crate::playback_source::resolve::ResolvedPlaybackSourceResult;
 use super::CastMediaDescriptor;
@@ -28,8 +29,9 @@ pub(crate) enum CastMediaSource {
         video_headers: Vec<(String, String)>,
         audio_headers: Vec<(String, String)>,
     },
-    /// The default compatibility transport for DASH video/audio streams.
-    MpegTsStream {
+    /// A direct, single-URL remux transport for DASH video/audio streams.
+    ProgressiveRemuxStream {
+        output_format: ProgressiveRemuxFormat,
         video_url: String,
         audio_url: String,
         video_headers: Vec<(String, String)>,
@@ -104,16 +106,18 @@ impl CastMediaSource {
                 )?;
                 (url, Some("application/vnd.apple.mpegurl".to_string()))
             }
-            Self::MpegTsStream {
+            Self::ProgressiveRemuxStream {
+                output_format,
                 video_url,
                 audio_url,
                 video_headers,
                 audio_headers,
             } => {
-                let url = crate::media_gateway::create_cast_mpegts_media_url(
+                let url = crate::media_gateway::create_cast_progressive_remux_media_url(
                     app,
                     cast_session_id,
                     receiver_ip,
+                    output_format,
                     &video_url,
                     &audio_url,
                     &video_headers,
@@ -121,7 +125,7 @@ impl CastMediaSource {
                 )?;
                 (
                     url,
-                    Some(crate::casting::remux::MPEGTS_MIME_TYPE.to_string()),
+                    Some(output_format.mime_type().to_string()),
                 )
             }
         };
@@ -192,8 +196,16 @@ fn cast_source_from_streams(resolved: ResolvedCastStreams) -> CastMediaSource {
             video_headers,
             audio_headers,
         } => {
-            info!("casting: remuxing separate yt-dlp streams to progressive MPEG-TS");
-            CastMediaSource::MpegTsStream {
+            let output_format = ProgressiveRemuxFormat::selected_for_cast();
+            info!(
+                "casting: remuxing separate yt-dlp streams to progressive {}",
+                match output_format {
+                    ProgressiveRemuxFormat::MpegTs => "MPEG-TS",
+                    ProgressiveRemuxFormat::FragmentedMp4 => "fragmented MP4",
+                }
+            );
+            CastMediaSource::ProgressiveRemuxStream {
+                output_format,
                 video_url,
                 audio_url,
                 video_headers,

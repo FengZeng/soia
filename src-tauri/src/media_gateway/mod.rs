@@ -1260,19 +1260,21 @@ pub(crate) fn create_cast_hls_cmaf_media_url(
     })
 }
 
-pub(crate) fn create_cast_mpegts_media_url(
+pub(crate) fn create_cast_progressive_remux_media_url(
     app_handle: AppHandle,
     session_id: &str,
     receiver_ip: Ipv4Addr,
+    output_format: crate::casting::remux::ProgressiveRemuxFormat,
     video_url: &str,
     audio_url: &str,
     video_headers: &[(String, String)],
     audio_headers: &[(String, String)],
 ) -> Result<String, String> {
     if !is_http_url(video_url) || !is_http_url(audio_url) {
-        return Err("cast MPEG-TS source URLs must be HTTP(S)".to_string());
+        return Err("cast progressive remux source URLs must be HTTP(S)".to_string());
     }
-    let backend = crate::casting::remux::MpegTsRemuxBackend::new(
+    let backend = crate::casting::remux::ProgressiveRemuxBackend::new(
+        output_format,
         video_url.to_string(),
         audio_url.to_string(),
         video_headers.to_vec(),

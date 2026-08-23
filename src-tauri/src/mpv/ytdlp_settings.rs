@@ -65,6 +65,34 @@ impl YtdlpFormatSettings {
              bv*+ba/b"
         )
     }
+
+    /// Cast receivers commonly accept AAC in MPEG-TS/fMP4 more reliably than WebM/Opus.
+    /// Keep the normal playback selector unchanged because mpv can play Opus directly.
+    pub(crate) fn cast_selector(&self) -> String {
+        let max_height = self.max_height;
+        format!(
+            "bv*[height<={max_height}][vcodec^=avc1]+ba[acodec^=mp4a]/\
+             bv*[height<={max_height}][vcodec^=avc1]+ba[ext=m4a]/\
+             bv*[height<={max_height}][vcodec^=avc1]+ba/\
+             bv*[height<={max_height}][vcodec^=h264]+ba[acodec^=mp4a]/\
+             bv*[height<={max_height}][vcodec^=h264]+ba[ext=m4a]/\
+             bv*[height<={max_height}][vcodec^=h264]+ba/\
+             bv*[height<={max_height}][vcodec^=vp9.2]+ba[acodec^=mp4a]/\
+             bv*[height<={max_height}][vcodec^=vp9.2]+ba[ext=m4a]/\
+             bv*[height<={max_height}][vcodec^=vp9.2]+ba/\
+             bv*[height<={max_height}][vcodec^=vp9]+ba[acodec^=mp4a]/\
+             bv*[height<={max_height}][vcodec^=vp9]+ba[ext=m4a]/\
+             bv*[height<={max_height}][vcodec^=vp9]+ba/\
+             bv*[height<={max_height}][vcodec^=av01]+ba[acodec^=mp4a]/\
+             bv*[height<={max_height}][vcodec^=av01]+ba[ext=m4a]/\
+             bv*[height<={max_height}][vcodec^=av01]+ba/\
+             b[height<={max_height}]/\
+             bv*[height<={max_height}]+ba[acodec^=mp4a]/\
+             bv*[height<={max_height}]+ba[ext=m4a]/\
+             bv*[height<={max_height}]+ba/bv*+ba[acodec^=mp4a]/\
+             bv*+ba[ext=m4a]/bv*+ba/b",
+        )
+    }
 }
 
 static RUNTIME_YTDLP_SETTINGS: OnceLock<Mutex<Option<YtdlpSettings>>> = OnceLock::new();
@@ -95,4 +123,18 @@ pub(crate) fn resolve(app: &AppHandle) -> YtdlpSettings {
             YtdlpFormatSettings { max_height },
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::YtdlpFormatSettings;
+
+    #[test]
+    fn cast_selector_prefers_aac_before_generic_audio() {
+        let selector = YtdlpFormatSettings { max_height: 1080 }.cast_selector();
+        assert!(selector.contains("ba[acodec^=mp4a]"));
+        assert!(selector.contains("ba[ext=m4a]"));
+        assert!(selector.contains("+ba/"));
+        assert!(selector.contains("height<=1080"));
+    }
 }
