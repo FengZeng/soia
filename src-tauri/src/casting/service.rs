@@ -162,18 +162,12 @@ impl CastingService {
     {
         let (device, adapter) = self.device_and_adapter(device_id)?;
         let session_id = uuid::Uuid::new_v4().to_string();
-        self.publish(|state| {
-            state.phase = CastPhaseDto::Connecting;
-            state.last_error = None;
-            state.active = Some(ActiveCastSession {
-                session_id: session_id.clone(),
-                device: device.clone(),
-                adapter: adapter.clone(),
-                adapter_session: None,
-                media_title: None,
-                status: empty_status(CastPhaseDto::Connecting),
-            });
-        });
+        let replaced_session = self.begin_session(session_id.clone(), device.clone(), adapter.clone());
+        if let Some(replaced_session) = replaced_session {
+            if let Err(error) = Self::release_active_session(replaced_session).await {
+                log::debug!("casting: replaced session cleanup failed: {}", error.message);
+            }
+        }
 
         let adapter_session = match adapter.connect(&device).await {
             Ok(session) => session,
@@ -219,7 +213,11 @@ impl CastingService {
         let (session_id, device_id, adapter, adapter_session) = self.active_adapter_session()?;
         let status = match adapter.command(&adapter_session, command).await {
             Ok(status) => status,
-            Err(error) => return Err(self.fail_session(&session_id, error)),
+            Err(error) => {
+                let failure = self.fail_session(&session_id, error);
+                let _ = adapter.disconnect(&adapter_session).await;
+                return Err(failure);
+            }
         };
         if !self.apply_status(&session_id, status) {
             return Err(stale_session_error(&device_id));
@@ -231,7 +229,11 @@ impl CastingService {
         let (session_id, device_id, adapter, adapter_session) = self.active_adapter_session()?;
         let status = match adapter.status(&adapter_session).await {
             Ok(status) => status,
-            Err(error) => return Err(self.fail_session(&session_id, error)),
+            Err(error) => {
+                let failure = self.fail_session(&session_id, error);
+                let _ = adapter.disconnect(&adapter_session).await;
+                return Err(failure);
+            }
         };
         if !self.apply_status(&session_id, status) {
             return Err(stale_session_error(&device_id));
@@ -254,10 +256,7 @@ impl CastingService {
         let Some(active) = active else {
             return Ok(self.current_snapshot());
         };
-        crate::media_gateway::revoke_cast_media_session(&active.session_id);
-        if let Some(adapter_session) = active.adapter_session {
-            active.adapter.disconnect(&adapter_session).await?;
-        }
+        Self::release_active_session(active).await?;
         Ok(self.current_snapshot())
     }
 
@@ -301,6 +300,36 @@ impl CastingService {
 
     fn install_adapter_session(&self, session_id: &str, adapter_session: CastAdapterSession) -> bool {
         self.publish_if_current(session_id, |_, active| active.adapter_session = Some(adapter_session))
+    }
+
+    fn begin_session(
+        &self,
+        session_id: String,
+        device: CastDeviceDto,
+        adapter: Arc<dyn CastProtocolAdapter>,
+    ) -> Option<ActiveCastSession> {
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let replaced_session = state.active.replace(ActiveCastSession {
+            session_id,
+            device,
+            adapter,
+            adapter_session: None,
+            media_title: None,
+            status: empty_status(CastPhaseDto::Connecting),
+        });
+        state.phase = CastPhaseDto::Connecting;
+        state.last_error = None;
+        state.revision = state.revision.saturating_add(1);
+        self.snapshot_sender.send_replace(state.snapshot());
+        replaced_session
+    }
+
+    async fn release_active_session(active: ActiveCastSession) -> Result<(), CastErrorDto> {
+        crate::media_gateway::revoke_cast_media_session(&active.session_id);
+        if let Some(adapter_session) = active.adapter_session {
+            active.adapter.disconnect(&adapter_session).await?;
+        }
+        Ok(())
     }
 
     fn apply_status(&self, session_id: &str, status: CastReceiverStatus) -> bool {
@@ -381,8 +410,13 @@ mod tests {
     use crate::casting::fixture;
     use futures_util::future::BoxFuture;
     use soia_protocol::{CastCapabilitiesDto, CastProtocolDto};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct FakeAdapter;
+    #[derive(Default)]
+    struct FakeAdapter {
+        disconnects: AtomicUsize,
+        fail_commands: bool,
+    }
 
     fn device(id: &str) -> CastDeviceDto {
         CastDeviceDto {
@@ -446,6 +480,13 @@ mod tests {
             command: CastProtocolCommand,
         ) -> BoxFuture<'a, Result<CastReceiverStatus, CastErrorDto>> {
             Box::pin(async move {
+                if self.fail_commands {
+                    return Err(error(
+                        CastErrorCodeDto::CommandFailed,
+                        "receiver command failed",
+                        None,
+                    ));
+                }
                 let phase = match command {
                     CastProtocolCommand::Pause => CastPhaseDto::Paused,
                     _ => CastPhaseDto::Playing,
@@ -465,7 +506,10 @@ mod tests {
             &'a self,
             _session: &'a CastAdapterSession,
         ) -> BoxFuture<'a, Result<(), CastErrorDto>> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async move {
+                self.disconnects.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
         }
     }
 
@@ -481,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn fake_adapter_drives_discovery_session_and_controls() {
-        let service = CastingService::new(vec![Arc::new(FakeAdapter)]);
+        let service = CastingService::new(vec![Arc::new(FakeAdapter::default())]);
         assert_eq!(service.discover().await.unwrap().len(), 2);
         let loaded = service.connect_and_load("device-a", media()).await.unwrap();
         assert_eq!(loaded.phase, CastPhaseDto::Playing);
@@ -498,7 +542,8 @@ mod tests {
 
     #[tokio::test]
     async fn previous_session_status_is_dropped_after_device_switch() {
-        let service = CastingService::new(vec![Arc::new(FakeAdapter)]);
+        let adapter = Arc::new(FakeAdapter::default());
+        let service = CastingService::new(vec![adapter.clone()]);
         service.discover().await.unwrap();
         let first = service.connect_and_load("device-a", media()).await.unwrap();
         let first_session_id = first.session_id.unwrap();
@@ -509,6 +554,22 @@ mod tests {
         assert_eq!(current.session_id, second.session_id);
         assert_eq!(current.device.unwrap().id, "device-b");
         assert_eq!(current.phase, CastPhaseDto::Playing);
+        assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn command_failure_disconnects_the_active_receiver_session() {
+        let adapter = Arc::new(FakeAdapter {
+            fail_commands: true,
+            ..Default::default()
+        });
+        let service = CastingService::new(vec![adapter.clone()]);
+        service.discover().await.unwrap();
+        service.connect_and_load("device-a", media()).await.unwrap();
+
+        assert!(service.command(CastProtocolCommand::Pause).await.is_err());
+        assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 1);
+        assert_eq!(service.current_snapshot().phase, CastPhaseDto::Error);
     }
 
     #[tokio::test]

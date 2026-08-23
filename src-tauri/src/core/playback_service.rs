@@ -91,6 +91,33 @@ impl PlaybackService {
         PlaybackOutputTarget::from_cast_snapshot(&state.casting_service.current_snapshot())
     }
 
+    /// The remote receiver is only made authoritative after it accepted the media. Keep this
+    /// synchronous with the existing mpv command queue so a successful handoff cannot leave
+    /// both outputs playing.
+    pub(crate) fn pause_local_for_cast_handoff(&self) -> Result<(), CoreErrorDto> {
+        self.execute_local_queued(PlaybackCommandDto::SetPaused { paused: true })
+    }
+
+    /// A finished cast leaves the original local source loaded but paused. Restore it to the
+    /// last receiver-confirmed position without routing the commands back to the cast session.
+    pub(crate) fn restore_local_after_cast(&self, position: f64) -> Result<(), CoreErrorDto> {
+        self.execute_local_queued(PlaybackCommandDto::SeekAbsolute { position })?;
+        self.execute_local_queued(PlaybackCommandDto::SetPaused { paused: true })
+    }
+
+    fn execute_local_queued(&self, command: PlaybackCommandDto) -> Result<(), CoreErrorDto> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(QueuedCommand {
+                command,
+                response: response_sender,
+            })
+            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?;
+        response_receiver
+            .recv()
+            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?
+    }
+
     pub(crate) async fn execute(
         &self,
         state: &AppState,

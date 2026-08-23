@@ -12,12 +12,15 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::{sleep, Instant};
 use url::Url;
 
 const DLNA_RENDERER_TARGET: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 const DESCRIPTION_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const LOAD_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+const LOAD_CONFIRM_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) struct DlnaRendererAdapter {
     descriptions: Mutex<HashMap<String, RendererDescription>>,
@@ -132,11 +135,10 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
                     }
                 }
             }
-            Err(device_error(
-                CastErrorCodeDto::ConnectionFailed,
-                "DLNA playback control is not available yet",
-                Some(&device.id),
-            ))
+            Ok(CastAdapterSession {
+                id: uuid::Uuid::new_v4().to_string(),
+                device_id: device.id.clone(),
+            })
         })
     }
 
@@ -180,9 +182,21 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
             play(&client, &av_transport).await.map_err(|error| {
                 device_error(CastErrorCodeDto::LoadFailed, &error, Some(&session.device_id))
             })?;
+            if media.position > 0.0 {
+                seek_absolute(&client, &av_transport, media.position)
+                    .await
+                    .map_err(|error| {
+                        device_error(CastErrorCodeDto::LoadFailed, &error, Some(&session.device_id))
+                    })?;
+            }
+            let phase = wait_for_load_confirmation(&client, &av_transport)
+                .await
+                .map_err(|error| {
+                    device_error(CastErrorCodeDto::LoadFailed, &error, Some(&session.device_id))
+                })?;
             Ok(CastReceiverStatus {
-                phase: soia_protocol::CastPhaseDto::Playing,
-                position: 0.0,
+                phase,
+                position: media.position,
                 duration: media.duration,
                 volume: None,
                 muted: None,
@@ -194,14 +208,62 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
     fn command<'a>(
         &'a self,
         session: &'a CastAdapterSession,
-        _command: CastProtocolCommand,
+        command: CastProtocolCommand,
     ) -> BoxFuture<'a, Result<CastReceiverStatus, CastErrorDto>> {
         Box::pin(async move {
-            Err(device_error(
-                CastErrorCodeDto::CommandFailed,
-                "DLNA playback control is not available yet",
-                Some(&session.device_id),
-            ))
+            let description = self.description_for(&session.device_id)?;
+            let av_transport = description.services.av_transport.ok_or_else(|| {
+                device_error(
+                    CastErrorCodeDto::CommandFailed,
+                    "DLNA device does not advertise AVTransport",
+                    Some(&session.device_id),
+                )
+            })?;
+            let client = control_client().map_err(|error| {
+                device_error(
+                    CastErrorCodeDto::CommandFailed,
+                    &error,
+                    Some(&session.device_id),
+                )
+            })?;
+            let phase = match command {
+                CastProtocolCommand::Play => {
+                    play(&client, &av_transport).await
+                        .map(|_| soia_protocol::CastPhaseDto::Playing)
+                }
+                CastProtocolCommand::Pause => {
+                    pause(&client, &av_transport).await
+                        .map(|_| soia_protocol::CastPhaseDto::Paused)
+                }
+                CastProtocolCommand::Stop => {
+                    stop(&client, &av_transport).await
+                        .map(|_| soia_protocol::CastPhaseDto::Stopped)
+                }
+                CastProtocolCommand::SeekAbsolute { position } => {
+                    seek_absolute(&client, &av_transport, position).await
+                        .map(|_| soia_protocol::CastPhaseDto::Playing)
+                }
+                CastProtocolCommand::SeekRelative { .. }
+                | CastProtocolCommand::SetVolume { .. }
+                | CastProtocolCommand::SetMuted { .. } => {
+                    return Err(device_error(
+                        CastErrorCodeDto::CommandFailed,
+                        "this DLNA playback command is not available yet",
+                        Some(&session.device_id),
+                    ));
+                }
+            }
+            .map_err(|error| {
+                device_error(CastErrorCodeDto::CommandFailed, &error, Some(&session.device_id))
+            })?;
+            Ok(CastReceiverStatus {
+                phase,
+                position: 0.0,
+                duration: None,
+                volume: None,
+                muted: None,
+                seekable: false,
+            })
         })
     }
 
@@ -210,19 +272,43 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
         session: &'a CastAdapterSession,
     ) -> BoxFuture<'a, Result<CastReceiverStatus, CastErrorDto>> {
         Box::pin(async move {
-            Err(device_error(
-                CastErrorCodeDto::CommandFailed,
-                "DLNA playback control is not available yet",
-                Some(&session.device_id),
-            ))
+            let description = self.description_for(&session.device_id)?;
+            let av_transport = description.services.av_transport.ok_or_else(|| {
+                device_error(
+                    CastErrorCodeDto::CommandFailed,
+                    "DLNA device does not advertise AVTransport",
+                    Some(&session.device_id),
+                )
+            })?;
+            let client = control_client().map_err(|error| {
+                device_error(
+                    CastErrorCodeDto::CommandFailed,
+                    &error,
+                    Some(&session.device_id),
+                )
+            })?;
+            read_receiver_status(&client, &av_transport, description.services.rendering_control.as_ref())
+                .await
+                .map_err(|error| {
+                    device_error(CastErrorCodeDto::CommandFailed, &error, Some(&session.device_id))
+                })
         })
     }
 
     fn disconnect<'a>(
         &'a self,
-        _session: &'a CastAdapterSession,
+        session: &'a CastAdapterSession,
     ) -> BoxFuture<'a, Result<(), CastErrorDto>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            if let Ok(description) = self.description_for(&session.device_id) {
+                if let Some(av_transport) = description.services.av_transport {
+                    if let Ok(client) = control_client() {
+                        let _ = stop(&client, &av_transport).await;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -388,6 +474,136 @@ async fn play(client: &reqwest::Client, service: &DlnaService) -> Result<(), Str
     .map(|_| ())
 }
 
+async fn pause(client: &reqwest::Client, service: &DlnaService) -> Result<(), String> {
+    post_soap(
+        client,
+        service,
+        "Pause",
+        build_pause_envelope(&service.service_type),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn stop(client: &reqwest::Client, service: &DlnaService) -> Result<(), String> {
+    post_soap(
+        client,
+        service,
+        "Stop",
+        build_stop_envelope(&service.service_type),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn seek_absolute(
+    client: &reqwest::Client,
+    service: &DlnaService,
+    position: f64,
+) -> Result<(), String> {
+    let target = format_dlna_rel_time(position)?;
+    post_soap(
+        client,
+        service,
+        "Seek",
+        build_seek_envelope(&service.service_type, &target),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn wait_for_load_confirmation(
+    client: &reqwest::Client,
+    av_transport: &DlnaService,
+) -> Result<soia_protocol::CastPhaseDto, String> {
+    let deadline = Instant::now() + LOAD_CONFIRM_TIMEOUT;
+    loop {
+        let last_error = match get_transport_phase(client, av_transport).await {
+            Ok(phase @ (soia_protocol::CastPhaseDto::Playing
+            | soia_protocol::CastPhaseDto::Buffering
+            | soia_protocol::CastPhaseDto::Paused)) => return Ok(phase),
+            Ok(phase) => format!("receiver reports {phase:?} after media load"),
+            Err(error) => error,
+        };
+        if Instant::now() >= deadline {
+            return Err(last_error);
+        }
+        sleep(LOAD_CONFIRM_INTERVAL).await;
+    }
+}
+
+async fn read_receiver_status(
+    client: &reqwest::Client,
+    av_transport: &DlnaService,
+    rendering_control: Option<&DlnaService>,
+) -> Result<CastReceiverStatus, String> {
+    let phase = get_transport_phase(client, av_transport).await?;
+    let (position, duration) = match get_position_info(client, av_transport).await {
+        Ok(status) => status,
+        Err(error) => {
+            log::debug!("DLNA GetPositionInfo unavailable: {error}");
+            (None, None)
+        }
+    };
+    let volume = match rendering_control {
+        Some(service) => match get_volume(client, service).await {
+            Ok(volume) => volume,
+            Err(error) => {
+                log::debug!("DLNA GetVolume unavailable: {error}");
+                None
+            }
+        },
+        None => None,
+    };
+    Ok(CastReceiverStatus {
+        phase,
+        position: position.unwrap_or_default(),
+        duration,
+        volume,
+        muted: None,
+        seekable: false,
+    })
+}
+
+async fn get_transport_phase(
+    client: &reqwest::Client,
+    service: &DlnaService,
+) -> Result<soia_protocol::CastPhaseDto, String> {
+    let body = post_soap(
+        client,
+        service,
+        "GetTransportInfo",
+        build_get_transport_info_envelope(&service.service_type),
+    )
+    .await?;
+    parse_get_transport_info_response(&body)
+}
+
+async fn get_position_info(
+    client: &reqwest::Client,
+    service: &DlnaService,
+) -> Result<(Option<f64>, Option<f64>), String> {
+    let body = post_soap(
+        client,
+        service,
+        "GetPositionInfo",
+        build_get_position_info_envelope(&service.service_type),
+    )
+    .await?;
+    parse_get_position_info_response(&body)
+}
+
+async fn get_volume(client: &reqwest::Client, service: &DlnaService) -> Result<Option<f64>, String> {
+    let body = post_soap(
+        client,
+        service,
+        "GetVolume",
+        build_get_volume_envelope(&service.service_type),
+    )
+    .await?;
+    parse_get_volume_response(&body)
+}
+
 async fn post_soap(
     client: &reqwest::Client,
     service: &DlnaService,
@@ -429,6 +645,46 @@ fn build_get_protocol_info_envelope(service_type: &str) -> String {
     )
 }
 
+fn build_get_transport_info_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetTransportInfo xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+    </u:GetTransportInfo>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_get_position_info_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetPositionInfo xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+    </u:GetPositionInfo>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_get_volume_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetVolume xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+      <Channel>Master</Channel>
+    </u:GetVolume>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
 fn build_set_av_transport_uri_envelope(
     service_type: &str,
     media: &CastMediaDescriptor,
@@ -465,6 +721,59 @@ fn build_play_envelope(service_type: &str) -> String {
     )
 }
 
+fn build_pause_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Pause xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+    </u:Pause>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_stop_envelope(service_type: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Stop xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+    </u:Stop>
+  </s:Body>
+</s:Envelope>"#,
+    )
+}
+
+fn build_seek_envelope(service_type: &str, target: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Seek xmlns:u="{service_type}">
+      <InstanceID>0</InstanceID>
+      <Unit>REL_TIME</Unit>
+      <Target>{}</Target>
+    </u:Seek>
+  </s:Body>
+</s:Envelope>"#,
+        xml_escape(target),
+    )
+}
+
+fn format_dlna_rel_time(position: f64) -> Result<String, String> {
+    if !position.is_finite() || position < 0.0 {
+        return Err("DLNA seek position must be a non-negative finite number".to_string());
+    }
+    let seconds = position.floor() as u64;
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    Ok(format!("{hours:02}:{minutes:02}:{seconds:02}"))
+}
+
 fn build_didl_lite(media: &CastMediaDescriptor, mime_type: &str) -> String {
     let title = media.title.as_deref().unwrap_or("Soia media");
     format!(
@@ -497,6 +806,73 @@ fn parse_get_protocol_info_response(xml: &str) -> Result<Option<SinkProtocolInfo
     } else {
         Ok(Some(SinkProtocolInfo { entries }))
     }
+}
+
+fn parse_get_transport_info_response(xml: &str) -> Result<soia_protocol::CastPhaseDto, String> {
+    let state = soap_response_text(xml, "CurrentTransportState")?;
+    if state.eq_ignore_ascii_case("PLAYING") {
+        return Ok(soia_protocol::CastPhaseDto::Playing);
+    }
+    if state.eq_ignore_ascii_case("PAUSED_PLAYBACK") || state.eq_ignore_ascii_case("PAUSED_RECORDING") {
+        return Ok(soia_protocol::CastPhaseDto::Paused);
+    }
+    if state.eq_ignore_ascii_case("TRANSITIONING") {
+        return Ok(soia_protocol::CastPhaseDto::Buffering);
+    }
+    if state.eq_ignore_ascii_case("STOPPED") || state.eq_ignore_ascii_case("NO_MEDIA_PRESENT") {
+        return Ok(soia_protocol::CastPhaseDto::Stopped);
+    }
+    Err(format!("unknown DLNA transport state: {state}"))
+}
+
+fn parse_get_position_info_response(xml: &str) -> Result<(Option<f64>, Option<f64>), String> {
+    Ok((
+        soap_response_text(xml, "RelTime")
+            .ok()
+            .and_then(|value| parse_dlna_rel_time(&value)),
+        soap_response_text(xml, "TrackDuration")
+            .ok()
+            .and_then(|value| parse_dlna_rel_time(&value)),
+    ))
+}
+
+fn parse_get_volume_response(xml: &str) -> Result<Option<f64>, String> {
+    let value = soap_response_text(xml, "CurrentVolume")?;
+    Ok(value
+        .parse::<f64>()
+        .ok()
+        .filter(|volume| volume.is_finite())
+        .map(|volume| volume.clamp(0.0, 100.0)))
+}
+
+fn soap_response_text(xml: &str, name: &str) -> Result<String, String> {
+    let document = Document::parse(xml).map_err(|_| "invalid DLNA SOAP response XML".to_string())?;
+    document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case(name))
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("DLNA SOAP response has no {name}"))
+}
+
+fn parse_dlna_rel_time(value: &str) -> Option<f64> {
+    let mut fields = value.trim().split(':');
+    let hours = fields.next()?.parse::<f64>().ok()?;
+    let minutes = fields.next()?.parse::<f64>().ok()?;
+    let seconds = fields.next()?.parse::<f64>().ok()?;
+    if fields.next().is_some()
+        || !hours.is_finite()
+        || !minutes.is_finite()
+        || !seconds.is_finite()
+        || hours < 0.0
+        || !(0.0..60.0).contains(&minutes)
+        || !(0.0..60.0).contains(&seconds)
+    {
+        return None;
+    }
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
 fn parse_protocol_info_list(value: &str) -> Vec<DlnaProtocolInfo> {
@@ -674,9 +1050,13 @@ fn device_error(code: CastErrorCodeDto, message: &str, device_id: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_get_protocol_info_envelope, build_play_envelope, build_set_av_transport_uri_envelope,
-        conservative_capabilities, location_ipv4_for_response, parse_get_protocol_info_response,
-        parse_renderer_description, udn_from_usn,
+        build_get_position_info_envelope, build_get_protocol_info_envelope,
+        build_get_transport_info_envelope, build_get_volume_envelope, build_pause_envelope,
+        build_play_envelope, build_seek_envelope, build_set_av_transport_uri_envelope,
+        build_stop_envelope, conservative_capabilities, format_dlna_rel_time,
+        location_ipv4_for_response, parse_get_position_info_response,
+        parse_get_protocol_info_response, parse_get_transport_info_response,
+        parse_get_volume_response, parse_renderer_description, udn_from_usn,
     };
     use crate::casting::CastMediaDescriptor;
     use std::net::{IpAddr, Ipv4Addr};
@@ -918,5 +1298,55 @@ mod tests {
         assert!(envelope.contains("<u:Play"));
         assert!(envelope.contains("<InstanceID>0</InstanceID>"));
         assert!(envelope.contains("<Speed>1</Speed>"));
+    }
+
+    #[test]
+    fn builds_pause_stop_and_relative_time_seek_envelopes() {
+        let service_type = "urn:schemas-upnp-org:service:AVTransport:1";
+
+        assert!(build_pause_envelope(service_type).contains("<u:Pause"));
+        assert!(build_stop_envelope(service_type).contains("<u:Stop"));
+        let target = format_dlna_rel_time(3723.9).unwrap();
+        assert_eq!(target, "01:02:03");
+        let seek = build_seek_envelope(service_type, &target);
+        assert!(seek.contains("<Unit>REL_TIME</Unit>"));
+        assert!(seek.contains("<Target>01:02:03</Target>"));
+        assert!(format_dlna_rel_time(-1.0).is_err());
+        assert!(format_dlna_rel_time(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn parses_renderer_transport_position_and_volume_status() {
+        assert_eq!(
+            parse_get_transport_info_response(include_str!(
+                "../fixtures/dlna_renderer/get-transport-info.xml"
+            ))
+            .unwrap(),
+            soia_protocol::CastPhaseDto::Stopped,
+        );
+        assert_eq!(
+            parse_get_position_info_response(include_str!(
+                "../fixtures/dlna_renderer/get-position-info.xml"
+            ))
+            .unwrap(),
+            (Some(0.0), Some(0.0)),
+        );
+        assert_eq!(
+            parse_get_volume_response(include_str!("../fixtures/dlna_renderer/get-volume.xml"))
+                .unwrap(),
+            Some(0.0),
+        );
+    }
+
+    #[test]
+    fn builds_renderer_status_soap_envelopes() {
+        let av_transport = "urn:schemas-upnp-org:service:AVTransport:1";
+        let rendering_control = "urn:schemas-upnp-org:service:RenderingControl:1";
+
+        assert!(build_get_transport_info_envelope(av_transport).contains("GetTransportInfo"));
+        assert!(build_get_position_info_envelope(av_transport).contains("GetPositionInfo"));
+        let volume = build_get_volume_envelope(rendering_control);
+        assert!(volume.contains("GetVolume"));
+        assert!(volume.contains("<Channel>Master</Channel>"));
     }
 }
