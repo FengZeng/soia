@@ -2,20 +2,13 @@ mod event_loop;
 mod ffi;
 mod handle;
 mod series_match;
-mod ytdlp_resolver;
-mod ytdlp_settings;
 mod stream_https;
+mod ytdlp;
 
 #[cfg(target_os = "macos")]
 pub(crate) use ffi::SoiaUtils;
 pub(crate) use handle::MpvHandle;
-pub(crate) use ytdlp_resolver::try_resolve as try_resolve_with_ytdlp;
-pub(crate) use ytdlp_resolver::resolve_for_cast as resolve_ytdlp_for_cast;
-pub(crate) use ytdlp_resolver::ResolvedCastStreams;
-pub(crate) use ytdlp_resolver::resolve_playlist as resolve_ytdlp_playlist;
-pub(crate) use ytdlp_settings::store_runtime_settings as store_runtime_ytdlp_settings;
-pub(crate) use ytdlp_settings::YtdlpFormatSettings;
-pub(crate) use ytdlp_settings::YtdlpSettings;
+pub(crate) use ytdlp::try_resolve as try_resolve_with_ytdlp;
 
 pub(crate) const USE_SMB_STREAM_PROXY: bool = true;
 pub(crate) const USE_WEBDAV_STREAM_PROXY: bool = true;

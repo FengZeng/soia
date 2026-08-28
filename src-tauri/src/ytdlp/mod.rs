@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use url::Url;
 
+mod settings;
+
+pub(crate) use settings::{store_runtime_settings, YtdlpFormatSettings, YtdlpSettings};
+
 const YTDLP_TIMEOUT: Duration = Duration::from_secs(60);
 const YTDLP_RESOLUTION_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 #[cfg(target_os = "windows")]
@@ -28,8 +32,14 @@ struct Candidate {
     score: i64,
 }
 
-pub(crate) struct ResolvedMedia {
+pub(crate) struct ResolvedStream {
     pub(crate) url: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) available_at: Option<i64>,
+}
+
+pub(crate) struct ResolvedMedia {
+    pub(crate) streams: Vec<ResolvedStream>,
     pub(crate) title: Option<String>,
     pub(crate) is_live_playback: bool,
 }
@@ -48,7 +58,7 @@ pub(crate) async fn resolve_playlist(
     app: &AppHandle,
     raw_url: &str,
 ) -> Result<ResolvedPlaylist, String> {
-    let settings = super::ytdlp_settings::resolve(app);
+    let settings = settings::resolve(app);
     let Some(ytdl_path) = settings.binary.path else {
         return Err("yt-dlp is not configured".to_string());
     };
@@ -246,7 +256,7 @@ pub(crate) async fn resolve(app: &AppHandle, raw_url: &str) -> Result<Option<Res
         return Ok(None);
     }
 
-    let settings = super::ytdlp_settings::resolve(app);
+    let settings = settings::resolve(app);
     let Some(ytdl_path) = settings.binary.path else {
         return Ok(None);
     };
@@ -310,17 +320,26 @@ pub(crate) async fn resolve(app: &AppHandle, raw_url: &str) -> Result<Option<Res
     } else {
         log::debug!("yt-dlp: no cast descriptor was produced during playback resolution");
     }
-    let Some(candidate) = select_candidate(&value) else {
+    let candidates = select_candidates(&value);
+    if candidates.is_empty() {
         return Err("yt-dlp did not return a playable URL".to_string());
-    };
-    log_selected_candidate("selected", &candidate);
-    let is_live_playback = is_likely_live_candidate(&candidate);
-    let playback_url = proxied_candidate_url(&candidate);
+    }
+    for candidate in &candidates {
+        log_selected_candidate("selected", candidate);
+    }
+    let is_live_playback = candidates.iter().any(is_likely_live_candidate);
     let title = extract_media_title(&value);
 
-    info!("yt-dlp: resolved url through media gateway");
+    info!("yt-dlp: resolved {} playable stream(s)", candidates.len());
     Ok(Some(ResolvedMedia {
-        url: playback_url,
+        streams: candidates
+            .into_iter()
+            .map(|candidate| ResolvedStream {
+                url: candidate.url,
+                headers: candidate.headers,
+                available_at: candidate.available_at,
+            })
+            .collect(),
         title,
         is_live_playback,
     }))
@@ -371,7 +390,7 @@ pub(crate) async fn resolve_for_cast(
     }
 
     let streams = {
-        let settings = super::ytdlp_settings::resolve(app);
+        let settings = settings::resolve(app);
         let Some(ytdl_path) = settings.binary.path else {
             return Err("yt-dlp is not configured for webpage casting".to_string());
         };
@@ -798,11 +817,12 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn select_candidate(value: &Value) -> Option<Candidate> {
+fn select_candidates(value: &Value) -> Vec<Candidate> {
     let top_headers = parse_headers(value.get("http_headers"));
 
-    if let Some(candidate) = select_requested_formats(value, &top_headers) {
-        return Some(candidate);
+    let requested_formats = select_requested_formats(value, &top_headers);
+    if !requested_formats.is_empty() {
+        return requested_formats;
     }
 
     if let Some(url) = value
@@ -810,7 +830,7 @@ fn select_candidate(value: &Value) -> Option<Candidate> {
         .and_then(Value::as_str)
         .filter(|url| is_http_url(url))
     {
-        return Some(Candidate {
+        return vec![Candidate {
             url: url.to_string(),
             headers: top_headers,
             available_at: value.get("available_at").and_then(Value::as_i64),
@@ -824,49 +844,23 @@ fn select_candidate(value: &Value) -> Option<Candidate> {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             score: i64::MAX,
-        });
+        }];
     }
 
     select_best_video_candidate(value, &top_headers)
         .or_else(|| select_best_combined_candidate(value, &top_headers))
+        .into_iter()
+        .collect()
 }
 
-fn select_requested_formats(value: &Value, top_headers: &[(String, String)]) -> Option<Candidate> {
-    let requested_formats: Vec<Candidate> = value
+fn select_requested_formats(value: &Value, top_headers: &[(String, String)]) -> Vec<Candidate> {
+    value
         .get("requested_formats")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|format| format_candidate(format, top_headers))
-        .collect();
-
-    match requested_formats.as_slice() {
-        [] => None,
-        [candidate] => Some(candidate.clone()),
-        candidates => {
-            for candidate in candidates {
-                log_selected_candidate("requested stream", candidate);
-            }
-            Some(Candidate {
-                url: build_edl_url(candidates),
-                headers: Vec::new(),
-                available_at: None,
-                format_id: value
-                    .get("format_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                protocol: value
-                    .get("protocol")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                resolution: value
-                    .get("resolution")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                score: i64::MAX - 1,
-            })
-        }
-    }
+        .collect()
 }
 
 fn select_best_video_candidate(value: &Value, top_headers: &[(String, String)]) -> Option<Candidate> {
@@ -889,28 +883,6 @@ fn select_best_combined_candidate(value: &Value, top_headers: &[(String, String)
         .filter_map(|format| format_candidate(format, &top_headers))
         .filter(|candidate| candidate.score >= 3_000_000 && candidate.score < 10_000_000)
         .max_by_key(|candidate| candidate.score)
-}
-
-fn proxied_candidate_url(candidate: &Candidate) -> String {
-    crate::media_gateway::create_loopback_media_url_with_headers(
-        &candidate.url,
-        &candidate.headers,
-        candidate.available_at,
-    )
-        .unwrap_or_else(|| candidate.url.clone())
-}
-
-fn build_edl_url(candidates: &[Candidate]) -> String {
-    let mut edl = String::from("edl://");
-    for candidate in candidates {
-        let url = proxied_candidate_url(candidate);
-        edl.push_str(&format!(
-            "!new_stream;!no_clip;!no_chapters;%{}%{};",
-            url.len(),
-            url
-        ));
-    }
-    edl.trim_end_matches(';').to_string()
 }
 
 fn log_selected_candidate(label: &str, candidate: &Candidate) {
@@ -1164,8 +1136,8 @@ fn redact_url(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_cast_resolution, cached_cast_resolution, format_candidate, select_cast_streams,
-        ResolvedCastStreams,
+        cache_cast_resolution, cached_cast_resolution, format_candidate, select_candidates,
+        select_cast_streams, ResolvedCastStreams,
     };
     use serde_json::json;
 
@@ -1276,5 +1248,20 @@ mod tests {
         });
         let candidate = format_candidate(&format, &[]).expect("playable candidate");
         assert_eq!(candidate.available_at, Some(1_789_000_005));
+    }
+
+    #[test]
+    fn requested_formats_remain_separate_resolved_streams() {
+        let value = json!({
+            "requested_formats": [
+                { "format_id": "137", "url": "https://example.com/video", "protocol": "https", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080 },
+                { "format_id": "251", "url": "https://example.com/audio", "protocol": "https", "ext": "webm", "vcodec": "none", "acodec": "opus" }
+            ]
+        });
+
+        let streams = select_candidates(&value);
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0].url, "https://example.com/video");
+        assert_eq!(streams[1].url, "https://example.com/audio");
     }
 }

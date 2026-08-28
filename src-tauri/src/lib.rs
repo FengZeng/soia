@@ -22,6 +22,7 @@ mod playback_source;
 mod remote_control;
 mod shader_pipeline;
 mod subtitles;
+mod ytdlp;
 use mpv::MpvHandle;
 use tauri::{Emitter, Listener, Manager};
 mod store;

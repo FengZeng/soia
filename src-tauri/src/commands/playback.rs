@@ -437,7 +437,7 @@ async fn prepare_playlist_source_operation_data(
 
     let source = &sources[0];
     if is_youtube_playlist_source(source) {
-        let resolved = match crate::mpv::resolve_ytdlp_playlist(app, source).await {
+        let resolved = match crate::ytdlp::resolve_playlist(app, source).await {
             Ok(resolved) => resolved,
             Err(error) => {
                 log::warn!("YouTube playlist preparation fell back to original source: {error}");
@@ -1026,7 +1026,7 @@ pub(crate) async fn resolve_youtube_playlist(
     app: tauri::AppHandle,
     payload: ResolveYoutubePlaylistPayload,
 ) -> Result<ResolvedYoutubePlaylist, String> {
-    let resolved = crate::mpv::resolve_ytdlp_playlist(&app, &payload.url).await?;
+    let resolved = crate::ytdlp::resolve_playlist(&app, &payload.url).await?;
     Ok(ResolvedYoutubePlaylist {
         playlist_title: resolved.title,
         entries: resolved

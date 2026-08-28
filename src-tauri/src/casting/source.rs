@@ -1,7 +1,7 @@
 use log::info;
 
 use crate::casting::remux::ProgressiveRemuxFormat;
-use crate::mpv::ResolvedCastStreams;
+use crate::ytdlp::ResolvedCastStreams;
 use crate::playback_source::resolve::ResolvedPlaybackSourceResult;
 use super::CastMediaDescriptor;
 use std::net::Ipv4Addr;
@@ -167,7 +167,7 @@ pub(crate) async fn resolve(
     if !needs_ytdlp_resolution(url) {
         return Ok(media_source);
     }
-    let streams = match crate::mpv::resolve_ytdlp_for_cast(app, url).await {
+    let streams = match crate::ytdlp::resolve_for_cast(app, url).await {
         Ok(Some(streams)) => streams,
         Ok(None) => return Err("yt-dlp did not return a castable stream".to_string()),
         Err(error) => return Err(error),

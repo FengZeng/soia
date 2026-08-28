@@ -212,14 +212,14 @@ fn resolve_current_ytdlp_settings(
     configured_path: Option<String>,
     configured_cookies_from_browser: Option<String>,
     configured_max_height: Option<u32>,
-) -> crate::mpv::YtdlpSettings {
+) -> crate::ytdlp::YtdlpSettings {
     let max_height = configured_max_height.unwrap_or_else(|| {
         crate::store::ui_state_store::load_ytdl_max_height(app)
     });
-    crate::mpv::YtdlpSettings::new(
+    crate::ytdlp::YtdlpSettings::new(
         resolve_current_ytdl_path(app, configured_path),
         resolve_current_ytdl_cookies_from_browser(app, configured_cookies_from_browser),
-        crate::mpv::YtdlpFormatSettings { max_height },
+        crate::ytdlp::YtdlpFormatSettings { max_height },
     )
 }
 
@@ -583,7 +583,7 @@ pub(crate) fn apply_ytdl_settings(
 ) -> Result<YtdlSettingsState, String> {
     let settings = resolve_current_ytdlp_settings(&app, ytdl_path, ytdl_cookies_from_browser, ytdl_max_height);
 
-    crate::mpv::store_runtime_ytdlp_settings(settings.clone());
+    crate::ytdlp::store_runtime_settings(settings.clone());
 
     Ok(YtdlSettingsState {
         ytdl_path: settings.binary.path,
