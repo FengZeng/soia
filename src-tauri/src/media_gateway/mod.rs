@@ -3,7 +3,7 @@ mod lease;
 use lease::{CastMediaLease, CastMediaLeaseRegistry, ResourceRegistration};
 
 use log::{debug, info, warn};
-use percent_encoding::percent_decode_str;
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::header::{
     HeaderName, HeaderValue, ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE,
     CONTENT_TYPE, RANGE, USER_AGENT,
@@ -1049,6 +1049,28 @@ pub(crate) fn create_loopback_media_url_with_headers(
     Some(proxied)
 }
 
+/// Gives an in-process FFmpeg client an HTTP-only view of an HTTP(S) source. The original URL,
+/// TLS handshake, proxy configuration, retries, and registered request headers remain inside the
+/// media gateway's reqwest path; FFmpeg only connects to the loopback HTTP listener.
+pub(crate) fn create_loopback_http_proxy_url(
+    app_handle: AppHandle,
+    source_url: &str,
+    headers: &[(String, String)],
+) -> Result<String, String> {
+    if !is_http_url(source_url) {
+        return Err("FFmpeg media proxy only accepts HTTP(S) sources".to_string());
+    }
+    start_loopback_listener(app_handle)?;
+    register_headers(source_url, headers);
+    let base = LOOPBACK_MEDIA_BASE_URL
+        .get()
+        .ok_or_else(|| "media gateway loopback listener is unavailable".to_string())?;
+    Ok(format!(
+        "{base}/?url={}",
+        utf8_percent_encode(source_url, NON_ALPHANUMERIC)
+    ))
+}
+
 pub(crate) fn register_headers(playback_url: &str, headers: &[(String, String)]) {
     let normalized = normalize_headers(headers);
     if normalized.is_empty() {
@@ -1249,11 +1271,14 @@ pub(crate) fn create_cast_hls_cmaf_media_url(
     if !is_http_url(video_url) || !is_http_url(audio_url) {
         return Err("cast CMAF source URLs must be HTTP(S)".to_string());
     }
+    let video_proxy_url =
+        create_loopback_http_proxy_url(app_handle.clone(), video_url, video_headers)?;
+    let audio_proxy_url =
+        create_loopback_http_proxy_url(app_handle.clone(), audio_url, audio_headers)?;
     let session = crate::casting::remux::HlsCmafSession::new(
         video_url.to_string(),
-        audio_url.to_string(),
-        video_headers.to_vec(),
-        audio_headers.to_vec(),
+        video_proxy_url,
+        audio_proxy_url,
     )?;
     create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |endpoint| {
         Arc::new(HlsCmafMediaSourceBackend::new(session, endpoint))
@@ -1273,12 +1298,15 @@ pub(crate) fn create_cast_progressive_remux_media_url(
     if !is_http_url(video_url) || !is_http_url(audio_url) {
         return Err("cast progressive remux source URLs must be HTTP(S)".to_string());
     }
+    let video_proxy_url =
+        create_loopback_http_proxy_url(app_handle.clone(), video_url, video_headers)?;
+    let audio_proxy_url =
+        create_loopback_http_proxy_url(app_handle.clone(), audio_url, audio_headers)?;
     let backend = crate::casting::remux::ProgressiveRemuxBackend::new(
         output_format,
         video_url.to_string(),
-        audio_url.to_string(),
-        video_headers.to_vec(),
-        audio_headers.to_vec(),
+        video_proxy_url,
+        audio_proxy_url,
     );
     create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |_| {
         Arc::new(backend)

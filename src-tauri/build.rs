@@ -180,6 +180,24 @@ fn main() {
         println!("cargo:rustc-link-lib=mpv");
     }
 
+    // The casting pipeline calls libavformat/libavcodec directly. Keep these links next to
+    // libmpv so both APIs always use the exact FFmpeg runtime shipped with the application.
+    // macOS bundles versioned dylibs, while the other targets expose the usual linker names.
+    match target_os.as_str() {
+        "macos" => {
+            println!("cargo:rustc-link-lib=dylib=avformat.62.12.100");
+            println!("cargo:rustc-link-lib=dylib=avcodec.62.28.100");
+            println!("cargo:rustc-link-lib=dylib=avutil.60.26.100");
+            println!("cargo:rustc-link-lib=dylib=swscale.9.5.100");
+        }
+        _ => {
+            println!("cargo:rustc-link-lib=dylib=avformat");
+            println!("cargo:rustc-link-lib=dylib=avcodec");
+            println!("cargo:rustc-link-lib=dylib=avutil");
+            println!("cargo:rustc-link-lib=dylib=swscale");
+        }
+    }
+
     match target_os.as_str() {
         "macos" => {
             let soia_utils_dylib = mpv_lib_dir.join("libsoia_utils.dylib");

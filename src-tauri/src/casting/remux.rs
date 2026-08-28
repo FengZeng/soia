@@ -1,10 +1,9 @@
 use log::{info, warn};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
 
 const CMAF_SEGMENT_DURATION_SECONDS: u32 = 2;
@@ -74,8 +73,9 @@ impl ProgressiveRemuxFormat {
 }
 
 /// A compatibility-first cast transport. Unlike HLS, it needs no playlist support from the
-/// receiver and forwards a single progressive remux stream immediately after ffmpeg starts.
+/// receiver and forwards a single progressive remux stream directly from the FFmpeg API.
 pub(crate) struct ProgressiveRemuxBackend {
+    origin: String,
     input: CmafInput,
     output_format: ProgressiveRemuxFormat,
     cancelled: Arc<AtomicBool>,
@@ -86,17 +86,15 @@ pub(crate) struct ProgressiveRemuxBackend {
 impl ProgressiveRemuxBackend {
     pub(crate) fn new(
         output_format: ProgressiveRemuxFormat,
-        video_url: String,
-        audio_url: String,
-        video_headers: Vec<(String, String)>,
-        audio_headers: Vec<(String, String)>,
+        origin: String,
+        video_gateway_url: String,
+        audio_gateway_url: String,
     ) -> Self {
         Self {
+            origin,
             input: CmafInput {
-                video_url,
-                audio_url,
-                video_headers,
-                audio_headers,
+                video_url: video_gateway_url,
+                audio_url: audio_gateway_url,
             },
             output_format,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -112,87 +110,40 @@ impl ProgressiveRemuxBackend {
 
     async fn stream(&self, stream: &mut tokio::net::TcpStream) -> Result<(), String> {
         info!(
-            "casting: preparing {} remux, map=0:v:0+1:a:0 video_url={} audio_url={} video_headers={} audio_headers={}",
+            "casting: preparing {} remux via media gateway, map=0:v:0+1:a:0 origin={}",
             self.output_format.label(),
-            redact_stream_url(&self.input.video_url),
-            redact_stream_url(&self.input.audio_url),
-            header_names(&self.input.video_headers),
-            header_names(&self.input.audio_headers),
+            redact_stream_url(&self.origin),
         );
-        let ffmpeg_path = resolve_ffmpeg_path()
-            .ok_or_else(|| format!("ffmpeg is not available for {} cast remuxing", self.output_format.label()))?;
-        let mut child = tokio::process::Command::new(ffmpeg_path)
-            .args(build_progressive_remux_args(&self.input, self.output_format))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("ffmpeg failed to start: {error}"))?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "ffmpeg stdout pipe is unavailable".to_string())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "ffmpeg stderr pipe is unavailable".to_string())?;
-        let diagnostics = tokio::spawn(collect_ffmpeg_diagnostics(stderr));
         write_progressive_remux_headers(stream, self.output_format).await?;
-        info!("casting: ffmpeg {} stream started", self.output_format.label());
-        let mut buffer = vec![0_u8; 256 * 1024];
-        let result = loop {
-            if self.cancelled.load(Ordering::Acquire) {
-                let _ = child.start_kill();
-                break Ok(());
-            }
-            let read = tokio::select! {
-                _ = self.cancel_notify.notified() => {
-                    let _ = child.start_kill();
-                    break Ok(());
-                }
-                read = stdout.read(&mut buffer) => read,
-            };
-            let bytes = read.map_err(|error| error.to_string())?;
-            if bytes == 0 {
-                break Ok(());
-            }
-            if let Err(error) = stream.write_all(&buffer[..bytes]).await {
-                break Err(error.to_string());
-            }
+        let (packets, mut receiver) = tokio::sync::mpsc::channel(8);
+        let input = ffmpeg_remux_input(&self.input);
+        let output_format = match self.output_format {
+            ProgressiveRemuxFormat::MpegTs => crate::ffmpeg::remux::ProgressiveFormat::MpegTs,
+            ProgressiveRemuxFormat::FragmentedMp4 => crate::ffmpeg::remux::ProgressiveFormat::FragmentedMp4,
         };
-        let status = child
-            .wait()
+        let cancelled = self.cancelled.clone();
+        let producer = tokio::task::spawn_blocking(move || {
+            crate::ffmpeg::remux::remux_progressive(input, output_format, cancelled, packets)
+        });
+        info!("casting: FFmpeg API {} stream started", self.output_format.label());
+        loop {
+            tokio::select! {
+                _ = self.cancel_notify.notified() => {
+                    drop(receiver);
+                    let _ = producer.await;
+                    return Ok(());
+                }
+                packet = receiver.recv() => match packet {
+                    Some(packet) => stream.write_all(&packet).await.map_err(|error| error.to_string())?,
+                    None => break,
+                },
+            }
+        }
+        producer
             .await
-            .map_err(|error| format!("ffmpeg wait failed: {error}"))?;
-        let diagnostics = diagnostics.await.unwrap_or_default();
-        if result.is_err() {
-            return result;
-        }
-        if !status.success() && !self.cancelled.load(Ordering::Acquire) {
-            let detail = if diagnostics.is_empty() {
-                "no diagnostics".to_string()
-            } else {
-                diagnostics.join("; ")
-            };
-            return Err(format!("ffmpeg exited with status {status}: {detail}"));
-        }
-        info!("casting: ffmpeg {} stream finished", self.output_format.label());
+            .map_err(|error| format!("FFmpeg remux worker failed: {error}"))??;
+        info!("casting: FFmpeg API {} stream finished", self.output_format.label());
         Ok(())
-    }
-}
-
-fn header_names(headers: &[(String, String)]) -> String {
-    let mut names = headers
-        .iter()
-        .map(|(name, _)| name.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    names.sort();
-    names.dedup();
-    if names.is_empty() {
-        "<none>".to_string()
-    } else {
-        names.join(",")
     }
 }
 
@@ -211,7 +162,7 @@ impl crate::media_gateway::MediaSourceBackend for ProgressiveRemuxBackend {
     }
 
     fn origin(&self) -> &str {
-        &self.input.video_url
+        &self.origin
     }
 
     fn download_speed_meter(&self) -> &crate::media_gateway::DownloadSpeedMeterHandle {
@@ -243,11 +194,11 @@ impl crate::media_gateway::MediaSourceBackend for ProgressiveRemuxBackend {
 /// DLNA: replacing the command-line producer with an FFmpeg API implementation only changes
 /// `run_cmaf_producer`, while the cast URLs and lease lifecycle stay untouched.
 pub(crate) struct HlsCmafSession {
+    origin: String,
     input: CmafInput,
     output_dir: PathBuf,
     started: AtomicBool,
-    cancelled: AtomicBool,
-    cancel_notify: Notify,
+    cancelled: Arc<AtomicBool>,
     state: Mutex<CmafProducerState>,
     ready_notify: Notify,
     download_speed_meter: crate::media_gateway::DownloadSpeedMeterHandle,
@@ -257,8 +208,17 @@ pub(crate) struct HlsCmafSession {
 struct CmafInput {
     video_url: String,
     audio_url: String,
-    video_headers: Vec<(String, String)>,
-    audio_headers: Vec<(String, String)>,
+}
+
+fn ffmpeg_remux_input(input: &CmafInput) -> crate::ffmpeg::remux::RemuxInput {
+    crate::ffmpeg::remux::RemuxInput {
+        video: crate::ffmpeg::remux::StreamInput {
+            url: input.video_url.clone(),
+        },
+        audio: crate::ffmpeg::remux::StreamInput {
+            url: input.audio_url.clone(),
+        },
+    }
 }
 
 enum CmafProducerState {
@@ -270,10 +230,9 @@ enum CmafProducerState {
 
 impl HlsCmafSession {
     pub(crate) fn new(
-        video_url: String,
-        audio_url: String,
-        video_headers: Vec<(String, String)>,
-        audio_headers: Vec<(String, String)>,
+        origin: String,
+        video_gateway_url: String,
+        audio_gateway_url: String,
     ) -> Result<Arc<Self>, String> {
         remove_stale_cmaf_directories();
         let output_dir = std::env::temp_dir().join(format!(
@@ -283,16 +242,14 @@ impl HlsCmafSession {
         std::fs::create_dir(&output_dir)
             .map_err(|error| format!("could not create CMAF temp directory: {error}"))?;
         Ok(Arc::new(Self {
+            origin,
             input: CmafInput {
-                video_url,
-                audio_url,
-                video_headers,
-                audio_headers,
+                video_url: video_gateway_url,
+                audio_url: audio_gateway_url,
             },
             output_dir,
             started: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-            cancel_notify: Notify::new(),
+            cancelled: Arc::new(AtomicBool::new(false)),
             state: Mutex::new(CmafProducerState::Pending),
             ready_notify: Notify::new(),
             download_speed_meter: crate::media_gateway::new_download_speed_meter(),
@@ -300,7 +257,7 @@ impl HlsCmafSession {
     }
 
     pub(crate) fn origin(&self) -> &str {
-        &self.input.video_url
+        &self.origin
     }
 
     pub(crate) fn download_speed_meter(&self) -> &crate::media_gateway::DownloadSpeedMeterHandle {
@@ -378,7 +335,6 @@ impl HlsCmafSession {
 
     pub(crate) fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
-        self.cancel_notify.notify_waiters();
         self.ready_notify.notify_waiters();
         let producer_is_running = self
             .state
@@ -411,218 +367,33 @@ impl HlsCmafSession {
     }
 }
 
-/// Current producer implementation. This is the only boundary that needs replacing when the
-/// project moves to an FFmpeg API; `HlsCmafSession` still exposes the same files and lifecycle.
+/// The media-gateway-facing session remains independent of transport details; this producer uses
+/// the same in-process FFmpeg API as progressive remuxing.
 async fn run_cmaf_producer(session: Arc<HlsCmafSession>) -> Result<(), String> {
     if session.cancelled.load(Ordering::Acquire) {
         return Ok(());
     }
-    let ffmpeg_path = resolve_ffmpeg_path()
-        .ok_or_else(|| "ffmpeg is not available for CMAF cast remuxing".to_string())?;
-    let args = build_cmaf_args(&session.input, &session.output_dir);
-    let mut child = tokio::process::Command::new(ffmpeg_path)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("ffmpeg failed to start: {error}"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "ffmpeg stderr pipe is unavailable".to_string())?;
-    let diagnostics = tokio::spawn(collect_ffmpeg_diagnostics(stderr));
-    info!("casting: ffmpeg CMAF producer started");
-    let cancelled = session.cancel_notify.notified();
-    tokio::pin!(cancelled);
-    let status = if session.cancelled.load(Ordering::Acquire) {
-        let _ = child.start_kill();
-        child.wait().await.map_err(|error| format!("ffmpeg wait failed: {error}"))?
-    } else {
-        tokio::select! {
-            _ = &mut cancelled => {
-                let _ = child.start_kill();
-                child.wait().await.map_err(|error| format!("ffmpeg wait failed: {error}"))?
-            }
-            status = child.wait() => status.map_err(|error| format!("ffmpeg wait failed: {error}"))?,
-        }
-    };
-    let diagnostics = diagnostics.await.unwrap_or_default();
-    if !status.success() && !session.cancelled.load(Ordering::Acquire) {
-        let detail = if diagnostics.is_empty() {
-            "no diagnostics".to_string()
-        } else {
-            diagnostics.join("; ")
-        };
-        return Err(format!("ffmpeg exited with status {status}: {detail}"));
+    let input = ffmpeg_remux_input(&session.input);
+    let output_dir = session.output_dir.clone();
+    let cancelled = session.cancelled.clone();
+    info!("casting: FFmpeg API CMAF producer started");
+    let producer = tokio::task::spawn_blocking(move || {
+        crate::ffmpeg::remux::remux_hls(
+            input,
+            &output_dir,
+            CMAF_SEGMENT_DURATION_SECONDS,
+            cancelled,
+        )
+    });
+    let result = producer
+        .await
+        .map_err(|error| format!("FFmpeg CMAF worker failed: {error}"))?;
+    if result.is_err() && session.cancelled.load(Ordering::Acquire) {
+        return Ok(());
     }
-    info!("casting: ffmpeg CMAF producer finished");
+    result?;
+    info!("casting: FFmpeg API CMAF producer finished");
     Ok(())
-}
-
-fn build_cmaf_args(input: &CmafInput, output_dir: &Path) -> Vec<String> {
-    let mut args = vec![
-        "-hide_banner".to_string(),
-        "-loglevel".to_string(),
-        "warning".to_string(),
-        "-nostdin".to_string(),
-    ];
-    append_input_args(&mut args, &input.video_url, &input.video_headers);
-    append_input_args(&mut args, &input.audio_url, &input.audio_headers);
-    args.extend(
-        [
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-f",
-            "hls",
-            "-hls_time",
-        ]
-        .into_iter()
-        .map(str::to_string),
-    );
-    args.push(CMAF_SEGMENT_DURATION_SECONDS.to_string());
-    args.extend(
-        [
-            "-hls_list_size",
-            "0",
-            "-hls_segment_type",
-            "fmp4",
-            "-hls_fmp4_init_filename",
-            INIT_FILE_NAME,
-            "-hls_segment_filename",
-        ]
-        .into_iter()
-        .map(str::to_string),
-    );
-    args.push(
-        output_dir
-            .join("segment-%05d.m4s")
-            .to_string_lossy()
-            .to_string(),
-    );
-    args.extend(
-        ["-hls_flags", "independent_segments+temp_file"]
-            .into_iter()
-            .map(str::to_string),
-    );
-    args.push(
-        output_dir
-            .join(PLAYLIST_FILE_NAME)
-            .to_string_lossy()
-            .to_string(),
-    );
-    args
-}
-
-fn build_mpegts_args(input: &CmafInput) -> Vec<String> {
-    let mut args = vec![
-        "-hide_banner".to_string(),
-        "-loglevel".to_string(),
-        "warning".to_string(),
-        "-nostdin".to_string(),
-    ];
-    append_input_args(&mut args, &input.video_url, &input.video_headers);
-    append_input_args(&mut args, &input.audio_url, &input.audio_headers);
-    args.extend(
-        [
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-f",
-            "mpegts",
-            "-flush_packets",
-            "1",
-            "pipe:1",
-        ]
-        .into_iter()
-        .map(str::to_string),
-    );
-    args
-}
-
-fn build_fmp4_args(input: &CmafInput) -> Vec<String> {
-    let mut args = vec![
-        "-hide_banner".to_string(),
-        "-loglevel".to_string(),
-        "warning".to_string(),
-        "-nostdin".to_string(),
-    ];
-    append_input_args(&mut args, &input.video_url, &input.video_headers);
-    append_input_args(&mut args, &input.audio_url, &input.audio_headers);
-    args.extend(
-        [
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-f",
-            "mp4",
-            "-movflags",
-            "frag_keyframe+empty_moov+default_base_moof",
-            "-frag_duration",
-            "2000000",
-            "-flush_packets",
-            "1",
-            "pipe:1",
-        ]
-        .into_iter()
-        .map(str::to_string),
-    );
-    args
-}
-
-fn build_progressive_remux_args(
-    input: &CmafInput,
-    output_format: ProgressiveRemuxFormat,
-) -> Vec<String> {
-    match output_format {
-        ProgressiveRemuxFormat::MpegTs => build_mpegts_args(input),
-        ProgressiveRemuxFormat::FragmentedMp4 => build_fmp4_args(input),
-    }
-}
-
-fn append_input_args(args: &mut Vec<String>, url: &str, headers: &[(String, String)]) {
-    args.push("-user_agent".to_string());
-    args.push(user_agent(headers));
-    if let Some(header_block) = header_option_value(headers) {
-        args.push("-headers".to_string());
-        args.push(header_block);
-    }
-    args.push("-i".to_string());
-    args.push(url.to_string());
-}
-
-fn header_option_value(headers: &[(String, String)]) -> Option<String> {
-    let rendered: String = headers
-        .iter()
-        .filter(|(name, _)| !name.eq_ignore_ascii_case("user-agent"))
-        .map(|(name, value)| format!("{name}: {value}\r\n"))
-        .collect();
-    (!rendered.is_empty()).then_some(rendered)
-}
-
-fn user_agent(headers: &[(String, String)]) -> String {
-    headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
-        .map(|(_, value)| value.clone())
-        .unwrap_or_else(|| "Lavf/61.7.100".to_string())
 }
 
 async fn write_progressive_remux_headers(
@@ -637,23 +408,6 @@ async fn write_progressive_remux_headers(
         .write_all(headers.as_bytes())
         .await
         .map_err(|error| error.to_string())
-}
-
-async fn collect_ffmpeg_diagnostics(stderr: tokio::process::ChildStderr) -> Vec<String> {
-    let mut lines = BufReader::new(stderr).lines();
-    let mut collected = Vec::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        warn!("ffmpeg: {trimmed}");
-        collected.push(trimmed.to_string());
-        if collected.len() > 8 {
-            collected.remove(0);
-        }
-    }
-    collected
 }
 
 fn remove_stale_cmaf_directories() {
@@ -681,91 +435,19 @@ fn remove_stale_cmaf_directories() {
     }
 }
 
-#[cfg(target_os = "macos")]
-const FFMPEG_DEFAULT_PATHS: &[&str] = &["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
-#[cfg(not(target_os = "macos"))]
-const FFMPEG_DEFAULT_PATHS: &[&str] = &["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
-
-fn resolve_ffmpeg_path() -> Option<String> {
-    if let Some(configured) = std::env::var("SOIA_FFMPEG_PATH")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        if Path::new(&configured).is_file() {
-            return Some(configured);
-        }
-    }
-    FFMPEG_DEFAULT_PATHS
-        .iter()
-        .find(|candidate| Path::new(candidate).is_file())
-        .map(|candidate| (*candidate).to_string())
-        .or_else(|| Some("ffmpeg".to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        build_cmaf_args, build_fmp4_args, build_mpegts_args, CmafInput,
-        ProgressiveRemuxFormat, CMAF_SEGMENT_DURATION_SECONDS, FMP4_MIME_TYPE,
-        MPEGTS_MIME_TYPE,
+        ProgressiveRemuxFormat, FMP4_MIME_TYPE, MPEGTS_MIME_TYPE,
     };
-    use std::path::Path;
-
-    #[test]
-    fn builds_copy_only_fmp4_hls_output_with_per_input_headers() {
-        let args = build_cmaf_args(
-            &CmafInput {
-                video_url: "https://cdn.example/video.m4s".to_string(),
-                audio_url: "https://cdn.example/audio.m4s".to_string(),
-                video_headers: vec![("Referer".to_string(), "https://www.bilibili.com/".to_string())],
-                audio_headers: vec![("Cookie".to_string(), "SESSDATA=redacted".to_string())],
-            },
-            Path::new("/tmp/cmaf"),
-        );
-        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
-        assert!(args.windows(2).any(|pair| pair == ["-c:a", "copy"]));
-        assert!(args.windows(2).any(|pair| pair == ["-f", "hls"]));
-        assert!(args.windows(2).any(|pair| pair == ["-hls_segment_type", "fmp4"]));
-        assert!(args.windows(2).any(|pair| pair == ["-hls_time", &CMAF_SEGMENT_DURATION_SECONDS.to_string()]));
-        assert!(args.iter().any(|arg| arg.contains("Referer: https://www.bilibili.com/")));
-        assert!(args.iter().any(|arg| arg.contains("Cookie: SESSDATA=redacted")));
-    }
-
-    #[test]
-    fn builds_copy_only_mpegts_output() {
-        let args = build_mpegts_args(&CmafInput {
-            video_url: "https://cdn.example/video.m4s".to_string(),
-            audio_url: "https://cdn.example/audio.m4s".to_string(),
-            video_headers: Vec::new(),
-            audio_headers: Vec::new(),
-        });
-        assert!(args.windows(2).any(|pair| pair == ["-f", "mpegts"]));
-        assert!(args.windows(2).any(|pair| pair == ["-flush_packets", "1"]));
-        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
-        assert!(args.windows(2).any(|pair| pair == ["-c:a", "copy"]));
-    }
-
-    #[test]
-    fn builds_copy_only_fragmented_mp4_output() {
-        let args = build_fmp4_args(&CmafInput {
-            video_url: "https://cdn.example/video.m4s".to_string(),
-            audio_url: "https://cdn.example/audio.m4s".to_string(),
-            video_headers: Vec::new(),
-            audio_headers: Vec::new(),
-        });
-        assert!(args.windows(2).any(|pair| pair == ["-f", "mp4"]));
-        assert!(args.windows(2).any(|pair| {
-            pair == ["-movflags", "frag_keyframe+empty_moov+default_base_moof"]
-        }));
-        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
-        assert!(args.windows(2).any(|pair| pair == ["-c:a", "copy"]));
-        assert_eq!(ProgressiveRemuxFormat::FragmentedMp4.mime_type(), FMP4_MIME_TYPE);
-    }
 
     #[test]
     fn uses_the_verified_renderer_compatible_mpegts_mime_type() {
         assert_eq!(MPEGTS_MIME_TYPE, "video/mpeg");
+        assert_eq!(
+            ProgressiveRemuxFormat::FragmentedMp4.mime_type(),
+            FMP4_MIME_TYPE
+        );
     }
 
     #[test]

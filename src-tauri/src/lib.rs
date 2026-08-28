@@ -9,6 +9,7 @@ mod audio_output;
 mod casting;
 pub mod protocol;
 mod core;
+mod ffmpeg;
 mod check_update;
 mod commands;
 mod media_extensions;
