@@ -3,21 +3,22 @@ mod lease;
 use lease::{CastMediaLease, CastMediaLeaseRegistry, ResourceRegistration};
 
 use log::{debug, info, warn};
-use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::percent_decode_str;
 use reqwest::header::{
     HeaderName, HeaderValue, ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE,
     CONTENT_TYPE, RANGE, USER_AGENT,
 };
+use reqwest::blocking::{Client as BlockingClient, Response as BlockingResponse};
 use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::net::{IpAddr, Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,6 +29,7 @@ const HTTP_USER_AGENT: &str = "Lavf/61.7.100";
 const MAX_REQUEST_HEADER_BYTES: usize = 128 * 1024;
 const FETCH_REMOTE_MAX_RETRIES: usize = 2;
 const FETCH_REMOTE_RETRY_DELAY: Duration = Duration::from_millis(500);
+const UPSTREAM_RETRY_AFTER_MAX_DELAY: Duration = Duration::from_secs(30);
 const PARALLEL_RANGE_MIN_BYTES: u64 = 16 * 1024 * 1024;
 const PARALLEL_RANGE_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
 const PARALLEL_RANGE_CONNECTIONS: usize = 3;
@@ -49,9 +51,61 @@ const CAST_MEDIA_LEASE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 type BasicAuth = (String, String);
 pub(crate) type ProxyHeaders = Vec<(String, String)>;
 
+/// A direct, seekable byte source for FFmpeg custom AVIO inputs.  It deliberately bypasses the
+/// loopback HTTP listener while retaining the gateway's request policy (proxy, headers, retries
+/// and Range requests).
+#[derive(Clone)]
+pub(crate) struct FfmpegAvioInput {
+    remote_url: String,
+    headers: ProxyHeaders,
+    available_at: Option<i64>,
+    app_handle: AppHandle,
+    download_speed_meter: DownloadSpeedMeterHandle,
+}
+
+pub(crate) struct FfmpegByteStream {
+    remote_url: String,
+    headers: ProxyHeaders,
+    available_at: Option<i64>,
+    basic_auth: Option<BasicAuth>,
+    client: BlockingClient,
+    response: Option<BlockingResponse>,
+    position: u64,
+    size: Option<u64>,
+    parallel_reader: Option<ParallelRangeReader>,
+    cancelled: Arc<AtomicBool>,
+    download_speed_recorder: DownloadSpeedRecorder,
+}
+
+#[derive(Clone)]
+struct FfmpegRangeRequest {
+    remote_url: String,
+    headers: ProxyHeaders,
+    available_at: Option<i64>,
+    basic_auth: Option<BasicAuth>,
+    client: BlockingClient,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct ParallelRangeReader {
+    request: FfmpegRangeRequest,
+    size: u64,
+    chunks: BTreeMap<u64, Vec<u8>>,
+    pending: HashSet<u64>,
+    receiver: mpsc::Receiver<ParallelRangeResult>,
+    sender: mpsc::Sender<ParallelRangeResult>,
+    download_speed_recorder: DownloadSpeedRecorder,
+}
+
+struct ParallelRangeResult {
+    start: u64,
+    data: Result<Vec<u8>, String>,
+}
+
 static LOOPBACK_MEDIA_BASE_URL: OnceLock<String> = OnceLock::new();
 static MEDIA_SOURCE_BASIC_AUTH: OnceLock<Mutex<HashMap<String, BasicAuth>>> = OnceLock::new();
 static MEDIA_SOURCE_HEADERS: OnceLock<Mutex<HashMap<String, ProxyHeaders>>> = OnceLock::new();
+static MEDIA_SOURCE_AVAILABLE_AT: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
 static MEDIA_GATEWAY_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
 static MEDIA_GATEWAY_PARALLEL_RANGE_ENABLED: AtomicBool = AtomicBool::new(false);
 static MEDIA_SOURCE_REGISTRY: OnceLock<Mutex<MediaSourceRegistry>> =
@@ -1039,36 +1093,486 @@ pub(crate) fn register_basic_auth(playback_url: &str, username: &str, password: 
 pub(crate) fn create_loopback_media_url_with_headers(
     url: &str,
     headers: &[(String, String)],
+    available_at: Option<i64>,
 ) -> Option<String> {
     if !is_http_url(url) {
         return None;
     }
     register_headers(url, headers);
+    register_source_available_at(url, available_at);
     let proxied = create_loopback_media_url_for_http(url)?;
     info!("media gateway: rewrote yt-dlp stream url={}", redact_url(url));
     Some(proxied)
 }
 
-/// Gives an in-process FFmpeg client an HTTP-only view of an HTTP(S) source. The original URL,
-/// TLS handshake, proxy configuration, retries, and registered request headers remain inside the
-/// media gateway's reqwest path; FFmpeg only connects to the loopback HTTP listener.
-pub(crate) fn create_loopback_http_proxy_url(
+pub(crate) fn register_source_available_at(url: &str, available_at: Option<i64>) {
+    let Some(available_at) = available_at else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(i64::MAX);
+    if available_at <= now {
+        return;
+    }
+    if let Ok(mut values) = MEDIA_SOURCE_AVAILABLE_AT
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        values.insert(url.to_string(), available_at);
+    }
+}
+
+/// Creates the input passed to FFmpeg's custom AVIO bridge.  Unlike
+/// a loopback proxy URL, this does not start or use the loopback listener.
+pub(crate) fn create_ffmpeg_avio_input(
     app_handle: AppHandle,
     source_url: &str,
     headers: &[(String, String)],
-) -> Result<String, String> {
+    available_at: Option<i64>,
+    download_speed_meter: DownloadSpeedMeterHandle,
+) -> Result<FfmpegAvioInput, String> {
     if !is_http_url(source_url) {
-        return Err("FFmpeg media proxy only accepts HTTP(S) sources".to_string());
+        return Err("FFmpeg AVIO only accepts HTTP(S) sources".to_string());
     }
-    start_loopback_listener(app_handle)?;
-    register_headers(source_url, headers);
-    let base = LOOPBACK_MEDIA_BASE_URL
-        .get()
-        .ok_or_else(|| "media gateway loopback listener is unavailable".to_string())?;
-    Ok(format!(
-        "{base}/?url={}",
-        utf8_percent_encode(source_url, NON_ALPHANUMERIC)
-    ))
+    Ok(FfmpegAvioInput {
+        remote_url: source_url.to_string(),
+        headers: normalize_headers(headers),
+        available_at,
+        app_handle,
+        download_speed_meter,
+    })
+}
+
+impl FfmpegAvioInput {
+    pub(crate) fn open(
+        &self,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<FfmpegByteStream, String> {
+        Ok(FfmpegByteStream {
+            remote_url: self.remote_url.clone(),
+            headers: self.headers.clone(),
+            available_at: self.available_at,
+            basic_auth: lookup_basic_auth(&self.remote_url),
+            client: build_blocking_client(&self.app_handle)?,
+            response: None,
+            position: 0,
+            size: None,
+            parallel_reader: None,
+            cancelled,
+            download_speed_recorder: DownloadSpeedRecorder::new(self.download_speed_meter.clone()),
+        })
+    }
+}
+
+impl FfmpegByteStream {
+    pub(crate) fn read(&mut self, buffer: &mut [u8]) -> Result<usize, String> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err("FFmpeg input was cancelled".to_string());
+        }
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.size.is_some_and(|size| self.position >= size) {
+            return Ok(0);
+        }
+        if self.parallel_reader.is_none() && self.response.is_none() {
+            self.try_start_parallel_reader();
+        }
+        if let Some(reader) = self.parallel_reader.as_mut() {
+            match reader.read_at(self.position, buffer) {
+                Ok(read) => {
+                    self.position = self.position.saturating_add(read as u64);
+                    return Ok(read);
+                }
+                Err(error) => {
+                    warn!(
+                        "media gateway: disabling FFmpeg AVIO parallel range prefetch at offset={} error={error}",
+                        self.position
+                    );
+                    self.parallel_reader = None;
+                }
+            }
+        }
+        if self.response.is_none() {
+            self.open_at(self.position)?;
+        }
+
+        for attempt in 0..=FETCH_REMOTE_MAX_RETRIES {
+            let started_at = Instant::now();
+            match self
+                .response
+                .as_mut()
+                .expect("response was opened above")
+                .read(buffer)
+            {
+                Ok(read) => {
+                    self.download_speed_recorder
+                        .record_transfer(read, started_at, Instant::now());
+                    self.position = self.position.saturating_add(read as u64);
+                    return Ok(read);
+                }
+                Err(error) if attempt < FETCH_REMOTE_MAX_RETRIES => {
+                    debug!(
+                        "media gateway: restarting FFmpeg AVIO range read at offset={} after error={error}",
+                        self.position
+                    );
+                    self.response = None;
+                    std::thread::sleep(FETCH_REMOTE_RETRY_DELAY);
+                    self.open_at(self.position)?;
+                }
+                Err(error) => {
+                    return Err(format!("media gateway response read failed: {error}"));
+                }
+            }
+        }
+        unreachable!("the retry loop always returns")
+    }
+
+    pub(crate) fn seek(&mut self, offset: i64, whence: i32) -> Result<i64, String> {
+        const SEEK_SET: i32 = 0;
+        const SEEK_CUR: i32 = 1;
+        const SEEK_END: i32 = 2;
+        const AVSEEK_SIZE: i32 = 0x10000;
+
+        if whence == AVSEEK_SIZE {
+            return self
+                .size()
+                .map(|size| size.min(i64::MAX as u64) as i64);
+        }
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err("FFmpeg input was cancelled".to_string());
+        }
+        let base = match whence & 0xffff {
+            SEEK_SET => 0,
+            SEEK_CUR => self.position,
+            SEEK_END => self.size()?,
+            _ => return Err("FFmpeg requested an unsupported seek mode".to_string()),
+        };
+        let position = if offset >= 0 {
+            base.checked_add(offset as u64)
+        } else {
+            base.checked_sub(offset.unsigned_abs())
+        }
+        .ok_or_else(|| "FFmpeg requested an invalid input seek position".to_string())?;
+        self.position = position;
+        self.response = None;
+        self.parallel_reader = None;
+        Ok(position.min(i64::MAX as u64) as i64)
+    }
+
+    fn size(&mut self) -> Result<u64, String> {
+        if let Some(size) = self.size {
+            return Ok(size);
+        }
+        let response = self.request_at(0, Some(0))?;
+        let size = response_size(&response, 0)?
+            .ok_or_else(|| "media gateway source did not report a content length".to_string())?;
+        self.size = Some(size);
+        Ok(size)
+    }
+
+    fn open_at(&mut self, position: u64) -> Result<(), String> {
+        let response = self.request_at(position, None)?;
+        if position > 0 && response.status() != StatusCode::PARTIAL_CONTENT {
+            return Err("media gateway source does not support byte-range seeking".to_string());
+        }
+        if let Some(size) = response_size(&response, position)? {
+            self.size = Some(size);
+        }
+        self.response = Some(response);
+        Ok(())
+    }
+
+    fn request_at(&self, position: u64, end: Option<u64>) -> Result<BlockingResponse, String> {
+        self.range_request().fetch(position, end)
+    }
+
+    fn range_request(&self) -> FfmpegRangeRequest {
+        FfmpegRangeRequest {
+            remote_url: self.remote_url.clone(),
+            headers: self.headers.clone(),
+            available_at: self.available_at,
+            basic_auth: self.basic_auth.clone(),
+            client: self.client.clone(),
+            cancelled: self.cancelled.clone(),
+        }
+    }
+
+    fn try_start_parallel_reader(&mut self) {
+        if !parallel_range_enabled() || is_parallel_range_excluded_url(&self.remote_url) {
+            return;
+        }
+        let Ok(response) = self.request_at(0, Some(0)) else {
+            return;
+        };
+        if response.status() != StatusCode::PARTIAL_CONTENT {
+            return;
+        }
+        let Ok(Some(size)) = response_size(&response, 0) else {
+            return;
+        };
+        if size < PARALLEL_RANGE_MIN_BYTES {
+            return;
+        }
+        self.size = Some(size);
+        self.parallel_reader = Some(ParallelRangeReader::new(
+            self.range_request(),
+            size,
+            self.download_speed_recorder.clone(),
+        ));
+        debug!(
+            "media gateway: enabled FFmpeg AVIO parallel range prefetch url={} size={} chunk={} connections={}",
+            redact_url(&self.remote_url),
+            size,
+            PARALLEL_RANGE_CHUNK_BYTES,
+            PARALLEL_RANGE_CONNECTIONS,
+        );
+    }
+}
+
+impl FfmpegRangeRequest {
+    fn fetch(&self, position: u64, end: Option<u64>) -> Result<BlockingResponse, String> {
+        wait_until_source_available_blocking(
+            &self.remote_url,
+            self.available_at,
+            &self.cancelled,
+        )?;
+        let range = end.map_or_else(
+            || format!("bytes={position}-"),
+            |end| format!("bytes={position}-{end}"),
+        );
+        let mut last_error = String::new();
+        let mut retry_delay = FETCH_REMOTE_RETRY_DELAY;
+        for attempt in 0..=FETCH_REMOTE_MAX_RETRIES {
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err("FFmpeg input was cancelled".to_string());
+            }
+            if attempt > 0 {
+                std::thread::sleep(retry_delay);
+            }
+            let mut request = self
+                .client
+                .get(&self.remote_url)
+                .header(ACCEPT_ENCODING, "identity")
+                .header(RANGE, &range);
+            request = apply_blocking_basic_auth(request, self.basic_auth.as_ref());
+            request = apply_blocking_headers(request, &self.headers);
+            match request.send() {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    let status = response.status();
+                    let retry_after = retryable_upstream_status(status)
+                        .then(|| blocking_retry_after_delay(&response))
+                        .flatten();
+                    if attempt < FETCH_REMOTE_MAX_RETRIES && retry_after.is_some() {
+                        retry_delay = retry_after.expect("checked above");
+                        debug!(
+                            "media gateway: honoring upstream Retry-After for FFmpeg AVIO status={} delay_ms={} url={}",
+                            status,
+                            retry_delay.as_millis(),
+                            redact_url(&self.remote_url),
+                        );
+                        continue;
+                    }
+                    return Err(format!(
+                        "media gateway upstream returned HTTP {status} for byte range {range}",
+                    ));
+                }
+                Err(error) => {
+                    last_error = error.to_string();
+                    retry_delay = FETCH_REMOTE_RETRY_DELAY;
+                    if !error.is_connect() && !error.is_request() {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(format!("media gateway range request failed: {last_error}"))
+    }
+}
+
+impl ParallelRangeReader {
+    fn new(
+        request: FfmpegRangeRequest,
+        size: u64,
+        download_speed_recorder: DownloadSpeedRecorder,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            request,
+            size,
+            chunks: BTreeMap::new(),
+            pending: HashSet::new(),
+            receiver,
+            sender,
+            download_speed_recorder,
+        }
+    }
+
+    fn read_at(&mut self, position: u64, buffer: &mut [u8]) -> Result<usize, String> {
+        if position >= self.size {
+            return Ok(0);
+        }
+        let chunk_start = position / PARALLEL_RANGE_CHUNK_BYTES * PARALLEL_RANGE_CHUNK_BYTES;
+        self.schedule_window(chunk_start);
+        loop {
+            if let Some(chunk) = self.chunks.get(&chunk_start) {
+                let chunk_offset = position.saturating_sub(chunk_start) as usize;
+                if chunk_offset >= chunk.len() {
+                    return Err("parallel range chunk ended before the requested offset".to_string());
+                }
+                let read = buffer.len().min(chunk.len() - chunk_offset);
+                buffer[..read].copy_from_slice(&chunk[chunk_offset..chunk_offset + read]);
+                if chunk_offset + read == chunk.len() {
+                    self.chunks.remove(&chunk_start);
+                }
+                return Ok(read);
+            }
+            match self.receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(result) => {
+                    self.pending.remove(&result.start);
+                    let bytes = result.data?;
+                    self.chunks.insert(result.start, bytes);
+                    self.schedule_window(chunk_start);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if self.request.cancelled.load(Ordering::Acquire) => {
+                    return Err("FFmpeg input was cancelled".to_string());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("parallel range workers stopped unexpectedly".to_string());
+                }
+            }
+        }
+    }
+
+    fn schedule_window(&mut self, window_start: u64) {
+        for index in 0..PARALLEL_RANGE_CONNECTIONS {
+            let start = window_start.saturating_add(index as u64 * PARALLEL_RANGE_CHUNK_BYTES);
+            if start >= self.size || self.chunks.contains_key(&start) || self.pending.contains(&start) {
+                continue;
+            }
+            let end = start
+                .saturating_add(PARALLEL_RANGE_CHUNK_BYTES - 1)
+                .min(self.size - 1);
+            self.pending.insert(start);
+            let request = self.request.clone();
+            let sender = self.sender.clone();
+            let recorder = self.download_speed_recorder.clone();
+            std::thread::spawn(move || {
+                let started_at = Instant::now();
+                let data = request
+                    .fetch(start, Some(end))
+                    .and_then(|response| {
+                        if response.status() != StatusCode::PARTIAL_CONTENT {
+                            return Err(format!(
+                                "parallel range request returned {} instead of 206 for range={start}-{end}",
+                                response.status()
+                            ));
+                        }
+                        let content_range = response
+                            .headers()
+                            .get(CONTENT_RANGE)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(parse_content_range)
+                            .ok_or_else(|| "parallel range response is missing Content-Range".to_string())?;
+                        if content_range.0 != start || content_range.1 != end {
+                            return Err(format!(
+                                "parallel range response mismatch: expected={start}-{end} actual={}-{}",
+                                content_range.0,
+                                content_range.1,
+                            ));
+                        }
+                        let expected_size = end.saturating_sub(start).saturating_add(1) as usize;
+                        let bytes = response
+                            .bytes()
+                            .map_err(|error| format!("parallel range body read failed: {error}"))?;
+                        if bytes.len() != expected_size {
+                            return Err(format!(
+                                "parallel range length mismatch: expected={expected_size} actual={} range={start}-{end}",
+                                bytes.len()
+                            ));
+                        }
+                        Ok(bytes.to_vec())
+                    });
+                if let Ok(bytes) = &data {
+                    recorder.record_transfer(bytes.len(), started_at, Instant::now());
+                }
+                let _ = sender.send(ParallelRangeResult { start, data });
+            });
+        }
+    }
+}
+
+fn response_size(response: &BlockingResponse, requested_start: u64) -> Result<Option<u64>, String> {
+    if let Some(value) = response.headers().get(CONTENT_RANGE) {
+        let value = value
+            .to_str()
+            .map_err(|_| "media gateway returned an invalid Content-Range header".to_string())?;
+        let (start, _, total) = parse_content_range(value)
+            .ok_or_else(|| "media gateway returned an invalid Content-Range header".to_string())?;
+        if start != requested_start {
+            return Err(format!(
+                "media gateway range response started at {start}, expected {requested_start}"
+            ));
+        }
+        return Ok(Some(total));
+    }
+    Ok(response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|length| requested_start.checked_add(length)))
+}
+
+fn build_blocking_client(app_handle: &AppHandle) -> Result<BlockingClient, String> {
+    let proxy_key = crate::network::proxy::current_proxy_key(app_handle)?;
+    let builder = BlockingClient::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .pool_idle_timeout(Duration::from_secs(30))
+        .no_gzip()
+        .no_brotli()
+        .no_zstd()
+        .no_deflate();
+    let builder = if let Some(proxy_url) = proxy_key.as_deref() {
+        let proxy = reqwest::Proxy::all(proxy_url).map_err(|error| error.to_string())?;
+        builder.proxy(proxy)
+    } else {
+        builder
+    };
+    builder.build().map_err(|error| error.to_string())
+}
+
+fn apply_blocking_basic_auth(
+    request: reqwest::blocking::RequestBuilder,
+    basic_auth: Option<&BasicAuth>,
+) -> reqwest::blocking::RequestBuilder {
+    match basic_auth {
+        Some((username, password)) => request.basic_auth(username, Some(password)),
+        None => request,
+    }
+}
+
+fn apply_blocking_headers(
+    mut request: reqwest::blocking::RequestBuilder,
+    headers: &ProxyHeaders,
+) -> reqwest::blocking::RequestBuilder {
+    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("user-agent")) {
+        request = request.header(USER_AGENT, HTTP_USER_AGENT);
+    }
+    for (name, value) in headers {
+        let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_str(value) else {
+            continue;
+        };
+        request = request.header(header_name, header_value);
+    }
+    request
 }
 
 pub(crate) fn register_headers(playback_url: &str, headers: &[(String, String)]) {
@@ -1267,18 +1771,32 @@ pub(crate) fn create_cast_hls_cmaf_media_url(
     audio_url: &str,
     video_headers: &[(String, String)],
     audio_headers: &[(String, String)],
+    video_available_at: Option<i64>,
+    audio_available_at: Option<i64>,
 ) -> Result<String, String> {
     if !is_http_url(video_url) || !is_http_url(audio_url) {
         return Err("cast CMAF source URLs must be HTTP(S)".to_string());
     }
-    let video_proxy_url =
-        create_loopback_http_proxy_url(app_handle.clone(), video_url, video_headers)?;
-    let audio_proxy_url =
-        create_loopback_http_proxy_url(app_handle.clone(), audio_url, audio_headers)?;
+    let download_speed_meter = new_download_speed_meter();
+    let video_input = create_ffmpeg_avio_input(
+        app_handle.clone(),
+        video_url,
+        video_headers,
+        video_available_at,
+        download_speed_meter.clone(),
+    )?;
+    let audio_input = create_ffmpeg_avio_input(
+        app_handle.clone(),
+        audio_url,
+        audio_headers,
+        audio_available_at,
+        download_speed_meter.clone(),
+    )?;
     let session = crate::casting::remux::HlsCmafSession::new(
         video_url.to_string(),
-        video_proxy_url,
-        audio_proxy_url,
+        video_input,
+        audio_input,
+        download_speed_meter,
     )?;
     create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |endpoint| {
         Arc::new(HlsCmafMediaSourceBackend::new(session, endpoint))
@@ -1294,19 +1812,33 @@ pub(crate) fn create_cast_progressive_remux_media_url(
     audio_url: &str,
     video_headers: &[(String, String)],
     audio_headers: &[(String, String)],
+    video_available_at: Option<i64>,
+    audio_available_at: Option<i64>,
 ) -> Result<String, String> {
     if !is_http_url(video_url) || !is_http_url(audio_url) {
         return Err("cast progressive remux source URLs must be HTTP(S)".to_string());
     }
-    let video_proxy_url =
-        create_loopback_http_proxy_url(app_handle.clone(), video_url, video_headers)?;
-    let audio_proxy_url =
-        create_loopback_http_proxy_url(app_handle.clone(), audio_url, audio_headers)?;
+    let download_speed_meter = new_download_speed_meter();
+    let video_input = create_ffmpeg_avio_input(
+        app_handle.clone(),
+        video_url,
+        video_headers,
+        video_available_at,
+        download_speed_meter.clone(),
+    )?;
+    let audio_input = create_ffmpeg_avio_input(
+        app_handle.clone(),
+        audio_url,
+        audio_headers,
+        audio_available_at,
+        download_speed_meter.clone(),
+    )?;
     let backend = crate::casting::remux::ProgressiveRemuxBackend::new(
         output_format,
         video_url.to_string(),
-        video_proxy_url,
-        audio_proxy_url,
+        video_input,
+        audio_input,
+        download_speed_meter,
     );
     create_cast_media_url_for_backend(app_handle, session_id, receiver_ip, move |_| {
         Arc::new(backend)
@@ -1456,6 +1988,14 @@ fn remove_media_sources(source_ids: impl IntoIterator<Item = String>) {
     {
         for origin in &removed_origins {
             headers.remove(origin);
+        }
+    }
+    if let Ok(mut availability) = MEDIA_SOURCE_AVAILABLE_AT
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        for origin in &removed_origins {
+            availability.remove(origin);
         }
     }
 }
@@ -1874,7 +2414,28 @@ async fn handle_http_stream_source(
     if !status.is_success() {
         let code = status.as_u16();
         let reason = status.canonical_reason().unwrap_or("Upstream Error").to_string();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("<missing>")
+            .to_string();
         let body = response.bytes().await.map_err(|error| error.to_string())?;
+        warn!(
+            "media gateway: upstream rejected request host={} status={} reason={:?} proxy_configured={} range_requested={} request_headers={:?} response_content_type={:?} response_body_bytes={} response_body_summary={:?}",
+            diagnostic_host(remote_url),
+            code,
+            reason,
+            crate::network::proxy::current_proxy_key(app_handle)
+                .ok()
+                .flatten()
+                .is_some(),
+            range.is_some(),
+            diagnostic_request_header_names(remote_url, range),
+            content_type,
+            body.len(),
+            diagnostic_error_body_summary(&body),
+        );
         write_status(stream, code, &reason, &body).await?;
         return Ok(());
     }
@@ -1934,6 +2495,58 @@ async fn handle_http_stream_source(
         download_speed_recorder,
     )
     .await
+}
+
+fn diagnostic_host(remote_url: &str) -> String {
+    Url::parse(remote_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "<invalid>".to_string())
+}
+
+fn diagnostic_request_header_names(remote_url: &str, range: Option<&str>) -> Vec<String> {
+    let mut names = vec!["accept-encoding".to_string(), "user-agent".to_string()];
+    if range.is_some() {
+        names.push("range".to_string());
+    }
+    if lookup_basic_auth(remote_url).is_some() {
+        names.push("authorization".to_string());
+    }
+    if let Some(headers) = lookup_headers(remote_url) {
+        names.extend(
+            headers
+                .into_iter()
+                .map(|(name, _)| name.to_ascii_lowercase()),
+        );
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Classifies an upstream error body without emitting it.  Response bodies can echo cookies,
+/// signed Googlevideo URLs, or other credentials, so the diagnostics intentionally log only
+/// recognized access-denial hints and byte length.
+fn diagnostic_error_body_summary(body: &[u8]) -> &'static str {
+    if body.is_empty() {
+        return "empty";
+    }
+    let text = String::from_utf8_lossy(&body[..body.len().min(8 * 1024)]).to_ascii_lowercase();
+    if text.contains("po token") {
+        "mentions PO token"
+    } else if text.contains("not a bot") || text.contains("unusual traffic") {
+        "mentions bot verification"
+    } else if text.contains("sign in") || text.contains("login") {
+        "mentions sign-in"
+    } else if text.contains("access denied") || text.contains("forbidden") {
+        "mentions access denied"
+    } else if text.trim_start().starts_with('{') || text.trim_start().starts_with('[') {
+        "unrecognized JSON response"
+    } else if text.contains("<html") {
+        "unrecognized HTML response"
+    } else {
+        "unrecognized response"
+    }
 }
 
 async fn handle_smb_stream_source(
@@ -2169,15 +2782,18 @@ async fn fetch_remote(
     remote_url: &str,
     range: Option<&str>,
 ) -> Result<Response, String> {
+    wait_until_source_available(remote_url).await;
     let mut last_error = String::new();
+    let mut retry_delay = FETCH_REMOTE_RETRY_DELAY;
     for attempt in 0..=FETCH_REMOTE_MAX_RETRIES {
         if attempt > 0 {
             debug!(
-                "media gateway: retrying fetch attempt={} url={}",
+                "media gateway: retrying fetch attempt={} delay_ms={} url={}",
                 attempt,
+                retry_delay.as_millis(),
                 redact_url(remote_url)
             );
-            tokio::time::sleep(FETCH_REMOTE_RETRY_DELAY).await;
+            tokio::time::sleep(retry_delay).await;
         }
         let client = build_client(app_handle)?;
         let mut request = client
@@ -2189,9 +2805,27 @@ async fn fetch_remote(
         request = apply_basic_auth(request, remote_url);
         request = apply_headers(request, remote_url);
         match request.send().await {
-            Ok(response) => return Ok(response),
+            Ok(response) => {
+                let status = response.status();
+                let retry_after = retryable_upstream_status(status)
+                    .then(|| retry_after_delay(&response))
+                    .flatten();
+                if attempt < FETCH_REMOTE_MAX_RETRIES && retry_after.is_some() {
+                    let delay = retry_after.expect("checked above");
+                    retry_delay = delay;
+                    debug!(
+                        "media gateway: honoring upstream Retry-After status={} delay_ms={} url={}",
+                        status,
+                        retry_delay.as_millis(),
+                        redact_url(remote_url),
+                    );
+                    continue;
+                }
+                return Ok(response);
+            }
             Err(error) => {
                 last_error = error.to_string();
+                retry_delay = FETCH_REMOTE_RETRY_DELAY;
                 // Only retry on connection-level errors, not on HTTP-level errors.
                 if !error.is_connect() && !error.is_request() {
                     break;
@@ -2200,6 +2834,92 @@ async fn fetch_remote(
         }
     }
     Err(last_error)
+}
+
+async fn wait_until_source_available(remote_url: &str) {
+    let available_at = MEDIA_SOURCE_AVAILABLE_AT
+        .get()
+        .and_then(|values| values.lock().ok())
+        .and_then(|values| values.get(remote_url).copied());
+    let Some(available_at) = available_at else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(i64::MAX);
+    let delay_seconds = available_at.saturating_sub(now);
+    if delay_seconds <= 0 {
+        return;
+    }
+    let delay = Duration::from_secs(delay_seconds as u64).min(UPSTREAM_RETRY_AFTER_MAX_DELAY);
+    info!(
+        "media gateway: delaying yt-dlp stream request until source availability delay_ms={} url={}",
+        delay.as_millis(),
+        redact_url(remote_url),
+    );
+    tokio::time::sleep(delay).await;
+}
+
+fn wait_until_source_available_blocking(
+    remote_url: &str,
+    available_at: Option<i64>,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let Some(available_at) = available_at else {
+        return Ok(());
+    };
+    let mut logged = false;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("FFmpeg input was cancelled".to_string());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(i64::MAX);
+        let delay_seconds = available_at.saturating_sub(now);
+        if delay_seconds <= 0 {
+            return Ok(());
+        }
+        let delay = Duration::from_secs(delay_seconds as u64);
+        if !logged {
+            info!(
+                "media gateway: delaying FFmpeg AVIO request until source availability delay_ms={} url={}",
+                delay.as_millis(),
+                redact_url(remote_url),
+            );
+            logged = true;
+        }
+        std::thread::sleep(delay.min(Duration::from_millis(250)));
+    }
+}
+
+fn retryable_upstream_status(status: StatusCode) -> bool {
+    status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn retry_after_delay(response: &Response) -> Option<Duration> {
+    let value = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?;
+    retry_after_delay_value(value)
+}
+
+fn blocking_retry_after_delay(response: &BlockingResponse) -> Option<Duration> {
+    let value = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?;
+    retry_after_delay_value(value)
+}
+
+fn retry_after_delay_value(value: &str) -> Option<Duration> {
+    let seconds = value.trim().parse::<u64>().ok()?;
+    Some(Duration::from_secs(seconds).min(UPSTREAM_RETRY_AFTER_MAX_DELAY))
 }
 
 fn build_client(app_handle: &AppHandle) -> Result<Client, String> {
@@ -2925,6 +3645,7 @@ mod tests {
         handle_lan_connection_with_context,
         lookup_media_source, media_source_registry, parse_content_range, parse_request,
         infer_media_mime, parse_cast_media_token, parse_cast_media_route, parse_single_byte_range,
+        retry_after_delay_value, retryable_upstream_status,
         rewrite_playlist, rewrite_playlist_for_endpoint, revoke_cast_media_session,
         CastMediaEndpoint, ResourceRegistration,
         DownloadSpeedMeter, DownloadSpeedMeterHandle,
@@ -3122,6 +3843,18 @@ mod tests {
             ("HEAD".to_string(), "/stream/token".to_string(), Some("bytes=10-".to_string()))
         );
         assert_eq!(parse_content_range("bytes 10-99/100"), Some((10, 99, 100)));
+    }
+
+    #[test]
+    fn retry_after_honors_seconds_and_limits_untrusted_delays() {
+        assert_eq!(retry_after_delay_value("5"), Some(Duration::from_secs(5)));
+        assert_eq!(retry_after_delay_value("120"), Some(Duration::from_secs(30)));
+        assert_eq!(retry_after_delay_value("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+        assert_eq!(retry_after_delay_value("invalid"), None);
+        assert!(retryable_upstream_status(reqwest::StatusCode::FORBIDDEN));
+        assert!(retryable_upstream_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(retryable_upstream_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(!retryable_upstream_status(reqwest::StatusCode::NOT_FOUND));
     }
 
     #[test]

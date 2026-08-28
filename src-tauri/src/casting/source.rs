@@ -28,6 +28,8 @@ pub(crate) enum CastMediaSource {
         audio_url: String,
         video_headers: Vec<(String, String)>,
         audio_headers: Vec<(String, String)>,
+        video_available_at: Option<i64>,
+        audio_available_at: Option<i64>,
     },
     /// A direct, single-URL remux transport for DASH video/audio streams.
     ProgressiveRemuxStream {
@@ -36,6 +38,8 @@ pub(crate) enum CastMediaSource {
         audio_url: String,
         video_headers: Vec<(String, String)>,
         audio_headers: Vec<(String, String)>,
+        video_available_at: Option<i64>,
+        audio_available_at: Option<i64>,
     },
 }
 
@@ -94,6 +98,8 @@ impl CastMediaSource {
                 audio_url,
                 video_headers,
                 audio_headers,
+                video_available_at,
+                audio_available_at,
             } => {
                 let url = crate::media_gateway::create_cast_hls_cmaf_media_url(
                     app,
@@ -103,6 +109,8 @@ impl CastMediaSource {
                     &audio_url,
                     &video_headers,
                     &audio_headers,
+                    video_available_at,
+                    audio_available_at,
                 )?;
                 (url, Some("application/vnd.apple.mpegurl".to_string()))
             }
@@ -112,6 +120,8 @@ impl CastMediaSource {
                 audio_url,
                 video_headers,
                 audio_headers,
+                video_available_at,
+                audio_available_at,
             } => {
                 let url = crate::media_gateway::create_cast_progressive_remux_media_url(
                     app,
@@ -122,6 +132,8 @@ impl CastMediaSource {
                     &audio_url,
                     &video_headers,
                     &audio_headers,
+                    video_available_at,
+                    audio_available_at,
                 )?;
                 (
                     url,
@@ -145,7 +157,11 @@ pub(crate) async fn resolve(
 ) -> Result<CastMediaSource, String> {
     let source = crate::playback_source::resolve::resolve(app, playback_key).await?;
     let media_source = from_resolved(app, source)?;
-    let CastMediaSource::Http { url, basic_auth: None } = &media_source else {
+    let CastMediaSource::Http {
+        url,
+        basic_auth: None,
+        ..
+    } = &media_source else {
         return Ok(media_source);
     };
     if !needs_ytdlp_resolution(url) {
@@ -195,6 +211,8 @@ fn cast_source_from_streams(resolved: ResolvedCastStreams) -> CastMediaSource {
             audio_url,
             video_headers,
             audio_headers,
+            video_available_at,
+            audio_available_at,
         } => {
             let output_format = ProgressiveRemuxFormat::selected_for_cast();
             info!(
@@ -210,6 +228,8 @@ fn cast_source_from_streams(resolved: ResolvedCastStreams) -> CastMediaSource {
                 audio_url,
                 video_headers,
                 audio_headers,
+                video_available_at,
+                audio_available_at,
             }
         }
     }

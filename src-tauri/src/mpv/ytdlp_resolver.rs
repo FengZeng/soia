@@ -21,6 +21,7 @@ const DIRECT_STREAM_EXTENSIONS: &[&str] = &[
 struct Candidate {
     url: String,
     headers: Vec<(String, String)>,
+    available_at: Option<i64>,
     format_id: Option<String>,
     protocol: Option<String>,
     resolution: Option<String>,
@@ -338,6 +339,8 @@ pub(crate) enum ResolvedCastStreams {
         audio_url: String,
         video_headers: Vec<(String, String)>,
         audio_headers: Vec<(String, String)>,
+        video_available_at: Option<i64>,
+        audio_available_at: Option<i64>,
     },
 }
 
@@ -446,8 +449,25 @@ fn log_cast_stream_selection(streams: &ResolvedCastStreams) {
 
 fn select_cast_streams(value: &Value, max_height: u32) -> Option<ResolvedCastStreams> {
     let top_headers = parse_headers(value.get("http_headers"));
+    let requested: Vec<&Value> = value
+        .get("requested_formats")
+        .and_then(Value::as_array)
+        .map(|formats| formats.iter().collect())
+        .unwrap_or_default();
+    let video_only = requested
+        .iter()
+        .copied()
+        .find(|format| format_has_video(format) && !format_has_audio(format));
+    let requested_height = video_only
+        .and_then(|format| format.get("height"))
+        .and_then(Value::as_u64);
 
-    if let Some(candidate) = select_best_cast_combined_candidate(value, &top_headers, max_height) {
+    if let Some(candidate) = select_best_cast_combined_candidate(
+        value,
+        &top_headers,
+        max_height,
+        requested_height,
+    ) {
         info!("yt-dlp: cast prefers a compatible combined stream over remuxing");
         log_selected_candidate("cast combined stream", &candidate);
         return Some(ResolvedCastStreams::Single {
@@ -456,16 +476,6 @@ fn select_cast_streams(value: &Value, max_height: u32) -> Option<ResolvedCastStr
         });
     }
 
-    let requested: Vec<&Value> = value
-        .get("requested_formats")
-        .and_then(Value::as_array)
-        .map(|formats| formats.iter().collect())
-        .unwrap_or_default();
-
-    let video_only = requested
-        .iter()
-        .copied()
-        .find(|format| format_has_video(format) && !format_has_audio(format));
     let requested_audio = requested
         .iter()
         .copied()
@@ -491,6 +501,8 @@ fn select_cast_streams(value: &Value, max_height: u32) -> Option<ResolvedCastStr
                     &top_headers,
                     &parse_headers(audio.get("http_headers")),
                 ),
+                video_available_at: video.get("available_at").and_then(Value::as_i64),
+                audio_available_at: audio.get("available_at").and_then(Value::as_i64),
             });
         }
     }
@@ -502,6 +514,7 @@ fn select_best_cast_combined_candidate(
     value: &Value,
     top_headers: &[(String, String)],
     max_height: u32,
+    requested_height: Option<u64>,
 ) -> Option<Candidate> {
     value
         .get("formats")
@@ -514,6 +527,11 @@ fn select_best_cast_combined_candidate(
                 .get("height")
                 .and_then(Value::as_u64)
                 .is_none_or(|height| height <= u64::from(max_height))
+        })
+        .filter(|format| {
+            requested_height.is_none_or(|height| {
+                format.get("height").and_then(Value::as_u64) == Some(height)
+            })
         })
         .filter_map(|format| format_candidate(format, top_headers))
         .max_by_key(|candidate| candidate.score)
@@ -795,6 +813,7 @@ fn select_candidate(value: &Value) -> Option<Candidate> {
         return Some(Candidate {
             url: url.to_string(),
             headers: top_headers,
+            available_at: value.get("available_at").and_then(Value::as_i64),
             format_id: None,
             protocol: value
                 .get("protocol")
@@ -831,6 +850,7 @@ fn select_requested_formats(value: &Value, top_headers: &[(String, String)]) -> 
             Some(Candidate {
                 url: build_edl_url(candidates),
                 headers: Vec::new(),
+                available_at: None,
                 format_id: value
                     .get("format_id")
                     .and_then(Value::as_str)
@@ -872,7 +892,11 @@ fn select_best_combined_candidate(value: &Value, top_headers: &[(String, String)
 }
 
 fn proxied_candidate_url(candidate: &Candidate) -> String {
-    crate::media_gateway::create_loopback_media_url_with_headers(&candidate.url, &candidate.headers)
+    crate::media_gateway::create_loopback_media_url_with_headers(
+        &candidate.url,
+        &candidate.headers,
+        candidate.available_at,
+    )
         .unwrap_or_else(|| candidate.url.clone())
 }
 
@@ -928,6 +952,7 @@ fn format_candidate(format: &Value, top_headers: &[(String, String)]) -> Option<
     Some(Candidate {
         url: url.to_string(),
         headers,
+        available_at: format.get("available_at").and_then(Value::as_i64),
         format_id: format
             .get("format_id")
             .and_then(Value::as_str)
@@ -1138,11 +1163,36 @@ fn redact_url(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_cast_resolution, cached_cast_resolution, select_cast_streams, ResolvedCastStreams};
+    use super::{
+        cache_cast_resolution, cached_cast_resolution, format_candidate, select_cast_streams,
+        ResolvedCastStreams,
+    };
     use serde_json::json;
 
     #[test]
-    fn cast_prefers_combined_stream_over_separate_requested_streams() {
+    fn cast_prefers_combined_stream_at_requested_height() {
+        let value = json!({
+            "requested_formats": [
+                { "format_id": "137", "url": "https://example.com/video", "vcodec": "avc1", "acodec": "none", "height": 1080 },
+                { "format_id": "251", "url": "https://example.com/opus", "vcodec": "none", "acodec": "opus" }
+            ],
+            "formats": [
+                { "format_id": "137", "url": "https://example.com/video", "protocol": "https", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080, "tbr": 3000 },
+                { "format_id": "251", "url": "https://example.com/opus", "protocol": "https", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 160 },
+                { "format_id": "22", "url": "https://example.com/combined", "protocol": "https", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a.40.2", "height": 1080, "tbr": 1800 }
+            ]
+        });
+
+        let streams = select_cast_streams(&value, 1080).expect("cast streams");
+        assert!(matches!(
+            streams,
+            ResolvedCastStreams::Single { url, .. }
+                if url == "https://example.com/combined"
+        ));
+    }
+
+    #[test]
+    fn cast_remuxes_instead_of_lowering_the_requested_resolution() {
         let value = json!({
             "requested_formats": [
                 { "format_id": "137", "url": "https://example.com/video", "vcodec": "avc1", "acodec": "none", "height": 1080 },
@@ -1158,7 +1208,8 @@ mod tests {
         let streams = select_cast_streams(&value, 1080).expect("cast streams");
         assert!(matches!(
             streams,
-            ResolvedCastStreams::Single { url, .. } if url == "https://example.com/combined"
+            ResolvedCastStreams::VideoAudio { video_url, audio_url, .. }
+                if video_url == "https://example.com/video" && audio_url == "https://example.com/opus"
         ));
     }
 
@@ -1166,21 +1217,29 @@ mod tests {
     fn cast_remux_fallback_prefers_aac_audio() {
         let value = json!({
             "requested_formats": [
-                { "format_id": "137", "url": "https://example.com/video", "vcodec": "avc1", "acodec": "none", "height": 1080 },
+                { "format_id": "137", "url": "https://example.com/video", "vcodec": "avc1", "acodec": "none", "height": 1080, "available_at": 1_789_000_005 },
                 { "format_id": "251", "url": "https://example.com/opus", "vcodec": "none", "acodec": "opus" }
             ],
             "formats": [
                 { "format_id": "137", "url": "https://example.com/video", "protocol": "https", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080 },
                 { "format_id": "251", "url": "https://example.com/opus", "protocol": "https", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 160 },
-                { "format_id": "140", "url": "https://example.com/aac", "protocol": "https", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128 }
+                { "format_id": "140", "url": "https://example.com/aac", "protocol": "https", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128, "available_at": 1_789_000_010 }
             ]
         });
 
         let streams = select_cast_streams(&value, 1080).expect("cast streams");
         assert!(matches!(
             streams,
-            ResolvedCastStreams::VideoAudio { video_url, audio_url, .. }
-                if video_url == "https://example.com/video" && audio_url == "https://example.com/aac"
+            ResolvedCastStreams::VideoAudio {
+                video_url,
+                audio_url,
+                video_available_at,
+                audio_available_at,
+                ..
+            } if video_url == "https://example.com/video"
+                && audio_url == "https://example.com/aac"
+                && video_available_at == Some(1_789_000_005)
+                && audio_available_at == Some(1_789_000_010)
         ));
     }
 
@@ -1198,8 +1257,24 @@ mod tests {
         let streams = cached_cast_resolution(raw_url).expect("cached streams");
         assert!(matches!(
             streams,
-            ResolvedCastStreams::Single { url, headers }
+            ResolvedCastStreams::Single { url, headers, .. }
                 if url == "https://cdn.example.com/stream" && headers.len() == 1
         ));
+    }
+
+    #[test]
+    fn format_candidate_preserves_ytdlp_source_availability_time() {
+        let format = json!({
+            "format_id": "137",
+            "url": "https://example.com/video",
+            "protocol": "https",
+            "ext": "mp4",
+            "vcodec": "avc1",
+            "acodec": "none",
+            "height": 1080,
+            "available_at": 1_789_000_005,
+        });
+        let candidate = format_candidate(&format, &[]).expect("playable candidate");
+        assert_eq!(candidate.available_at, Some(1_789_000_005));
     }
 }

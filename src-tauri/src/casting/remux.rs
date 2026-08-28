@@ -87,19 +87,20 @@ impl ProgressiveRemuxBackend {
     pub(crate) fn new(
         output_format: ProgressiveRemuxFormat,
         origin: String,
-        video_gateway_url: String,
-        audio_gateway_url: String,
+        video_input: crate::media_gateway::FfmpegAvioInput,
+        audio_input: crate::media_gateway::FfmpegAvioInput,
+        download_speed_meter: crate::media_gateway::DownloadSpeedMeterHandle,
     ) -> Self {
         Self {
             origin,
             input: CmafInput {
-                video_url: video_gateway_url,
-                audio_url: audio_gateway_url,
+                video: video_input,
+                audio: audio_input,
             },
             output_format,
             cancelled: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
-            download_speed_meter: crate::media_gateway::new_download_speed_meter(),
+            download_speed_meter,
         }
     }
 
@@ -206,17 +207,17 @@ pub(crate) struct HlsCmafSession {
 
 #[derive(Clone)]
 struct CmafInput {
-    video_url: String,
-    audio_url: String,
+    video: crate::media_gateway::FfmpegAvioInput,
+    audio: crate::media_gateway::FfmpegAvioInput,
 }
 
 fn ffmpeg_remux_input(input: &CmafInput) -> crate::ffmpeg::remux::RemuxInput {
     crate::ffmpeg::remux::RemuxInput {
         video: crate::ffmpeg::remux::StreamInput {
-            url: input.video_url.clone(),
+            source: input.video.clone(),
         },
         audio: crate::ffmpeg::remux::StreamInput {
-            url: input.audio_url.clone(),
+            source: input.audio.clone(),
         },
     }
 }
@@ -231,8 +232,9 @@ enum CmafProducerState {
 impl HlsCmafSession {
     pub(crate) fn new(
         origin: String,
-        video_gateway_url: String,
-        audio_gateway_url: String,
+        video_input: crate::media_gateway::FfmpegAvioInput,
+        audio_input: crate::media_gateway::FfmpegAvioInput,
+        download_speed_meter: crate::media_gateway::DownloadSpeedMeterHandle,
     ) -> Result<Arc<Self>, String> {
         remove_stale_cmaf_directories();
         let output_dir = std::env::temp_dir().join(format!(
@@ -244,15 +246,15 @@ impl HlsCmafSession {
         Ok(Arc::new(Self {
             origin,
             input: CmafInput {
-                video_url: video_gateway_url,
-                audio_url: audio_gateway_url,
+                video: video_input,
+                audio: audio_input,
             },
             output_dir,
             started: AtomicBool::new(false),
             cancelled: Arc::new(AtomicBool::new(false)),
             state: Mutex::new(CmafProducerState::Pending),
             ready_notify: Notify::new(),
-            download_speed_meter: crate::media_gateway::new_download_speed_meter(),
+            download_speed_meter,
         }))
     }
 

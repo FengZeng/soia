@@ -1,6 +1,5 @@
 use super::ffi;
 use std::ffi::{c_char, c_int, c_void, CString};
-use std::net::IpAddr;
 use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +14,7 @@ const CUSTOM_AVIO_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct StreamInput {
-    pub(crate) url: String,
+    pub(crate) source: crate::media_gateway::FfmpegAvioInput,
 }
 
 #[derive(Clone)]
@@ -155,6 +154,12 @@ struct InputContext {
     selected_stream_index: c_int,
     selected_stream: *mut ffi::AVStream,
     cancelled: Arc<AtomicBool>,
+    custom_io: Option<CustomInputIo>,
+}
+
+struct CustomInputIo {
+    raw: *mut ffi::AVIOContext,
+    source: *mut crate::media_gateway::FfmpegByteStream,
 }
 
 impl InputContext {
@@ -163,8 +168,7 @@ impl InputContext {
         media_type: c_int,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        validate_gateway_url(&input.url)?;
-        let url = c_string(&input.url, "input URL")?;
+        let source = input.source.open(cancelled.clone())?;
         let mut raw = unsafe { ffi::avformat_alloc_context() };
         if raw.is_null() {
             return Err("FFmpeg could not allocate an input context".to_string());
@@ -176,14 +180,24 @@ impl InputContext {
             };
         }
 
+        let custom_io = match attach_custom_input_io(raw, source) {
+            Ok(custom_io) => custom_io,
+            Err(error) => {
+                unsafe { ffi::avformat_free_context(raw) };
+                return Err(error);
+            }
+        };
+
         let mut options = ptr::null_mut();
         let result = unsafe {
-            ffi::avformat_open_input(&mut raw, url.as_ptr(), ptr::null(), &mut options)
+            ffi::avformat_open_input(&mut raw, ptr::null(), ptr::null(), &mut options)
         };
         unsafe { ffi::av_dict_free(&mut options) };
         if result < 0 {
+            unsafe { ffi::avformat_close_input(&mut raw) };
+            drop_custom_input_io(custom_io);
             return Err(format!(
-                "FFmpeg could not open the media gateway input: {}",
+                "FFmpeg could not open the custom media gateway input: {}",
                 error_message(result)
             ));
         }
@@ -191,6 +205,7 @@ impl InputContext {
         let result = unsafe { ffi::avformat_find_stream_info(raw, ptr::null_mut()) };
         if result < 0 {
             unsafe { ffi::avformat_close_input(&mut raw) };
+            drop_custom_input_io(custom_io);
             return Err(format!(
                 "FFmpeg could not read media gateway stream information: {}",
                 error_message(result)
@@ -201,6 +216,7 @@ impl InputContext {
             (unsafe { first_stream_of_type(raw, media_type) })
         else {
             unsafe { ffi::avformat_close_input(&mut raw) };
+            drop_custom_input_io(custom_io);
             let label = if media_type == ffi::AVMEDIA_TYPE_VIDEO {
                 "video"
             } else {
@@ -214,6 +230,7 @@ impl InputContext {
             selected_stream_index,
             selected_stream,
             cancelled,
+            custom_io: Some(custom_io),
         })
     }
 
@@ -237,28 +254,56 @@ impl InputContext {
     }
 }
 
-fn validate_gateway_url(raw: &str) -> Result<(), String> {
-    let url = url::Url::parse(raw)
-        .map_err(|_| "FFmpeg media input is not a valid gateway URL".to_string())?;
-    if url.scheme() != "http" {
-        return Err("FFmpeg media input must use the media gateway's HTTP endpoint".to_string());
-    }
-    let is_loopback = url
-        .host_str()
-        .is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
-        });
-    is_loopback
-        .then_some(())
-        .ok_or_else(|| "FFmpeg media input must use the loopback media gateway".to_string())
-}
-
 impl Drop for InputContext {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { ffi::avformat_close_input(&mut self.raw) };
         }
+        if let Some(custom_io) = self.custom_io.take() {
+            drop_custom_input_io(custom_io);
+        }
+    }
+}
+
+fn attach_custom_input_io(
+    format_context: *mut ffi::AVFormatContext,
+    source: crate::media_gateway::FfmpegByteStream,
+) -> Result<CustomInputIo, String> {
+    let buffer = unsafe { ffi::av_malloc(CUSTOM_AVIO_BUFFER_SIZE) }.cast::<u8>();
+    if buffer.is_null() {
+        return Err("FFmpeg could not allocate an input buffer".to_string());
+    }
+    let source = Box::into_raw(Box::new(source));
+    let io = unsafe {
+        ffi::avio_alloc_context(
+            buffer,
+            CUSTOM_AVIO_BUFFER_SIZE as c_int,
+            0,
+            source.cast(),
+            Some(read_packet),
+            None,
+            Some(seek_input),
+        )
+    };
+    if io.is_null() {
+        unsafe {
+            drop(Box::from_raw(source));
+            ffi::av_free(buffer.cast());
+        }
+        return Err("FFmpeg could not create a custom input stream".to_string());
+    }
+    unsafe {
+        (*format_context).pb = io;
+        (*format_context).flags |= ffi::AVFMT_FLAG_CUSTOM_IO;
+    }
+    Ok(CustomInputIo { raw: io, source })
+}
+
+fn drop_custom_input_io(custom_io: CustomInputIo) {
+    let mut io = custom_io.raw;
+    unsafe {
+        ffi::avio_context_free(&mut io);
+        drop(Box::from_raw(custom_io.source));
     }
 }
 
@@ -543,6 +588,27 @@ unsafe extern "C" fn interrupt_callback(opaque: *mut c_void) -> c_int {
     cancelled.load(Ordering::Acquire) as c_int
 }
 
+unsafe extern "C" fn read_packet(opaque: *mut c_void, data: *mut u8, size: c_int) -> c_int {
+    if opaque.is_null() || data.is_null() || size <= 0 {
+        return ffi::AVERROR_EXIT;
+    }
+    let source = &mut *opaque.cast::<crate::media_gateway::FfmpegByteStream>();
+    let buffer = std::slice::from_raw_parts_mut(data, size as usize);
+    match source.read(buffer) {
+        Ok(0) => ffi::AVERROR_EOF,
+        Ok(read) => read.min(c_int::MAX as usize) as c_int,
+        Err(_) => ffi::AVERROR_EXIT,
+    }
+}
+
+unsafe extern "C" fn seek_input(opaque: *mut c_void, offset: i64, whence: c_int) -> i64 {
+    if opaque.is_null() {
+        return -1;
+    }
+    let source = &mut *opaque.cast::<crate::media_gateway::FfmpegByteStream>();
+    source.seek(offset, whence).unwrap_or(-1)
+}
+
 unsafe extern "C" fn write_packet(
     opaque: *mut c_void,
     data: *const u8,
@@ -601,17 +667,10 @@ fn error_message(error: c_int) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_network_ready, validate_gateway_url};
+    use super::ensure_network_ready;
 
     #[test]
     fn initializes_the_bundled_ffmpeg_network_api() {
         ensure_network_ready().expect("bundled FFmpeg network API should initialize");
-    }
-
-    #[test]
-    fn only_accepts_loopback_http_gateway_inputs() {
-        assert!(validate_gateway_url("http://127.0.0.1:1234/?url=source").is_ok());
-        assert!(validate_gateway_url("https://127.0.0.1:1234/?url=source").is_err());
-        assert!(validate_gateway_url("https://cdn.example/video.m4s").is_err());
     }
 }
