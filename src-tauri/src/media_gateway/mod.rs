@@ -1,6 +1,10 @@
+mod backends;
 mod lease;
+mod registry;
 
 use lease::{CastMediaLease, CastMediaLeaseRegistry, ResourceRegistration};
+pub(crate) use backends::ProgressiveRemuxFormat;
+use registry::MediaSourceRegistry;
 
 use log::{debug, info, warn};
 use percent_encoding::percent_decode_str;
@@ -36,10 +40,6 @@ const PARALLEL_RANGE_CONNECTIONS: usize = 3;
 const PARALLEL_RANGE_SETTING_LABEL: &str = "NETWORK_PARALLEL_DOWNLOAD";
 const SMB_STREAM_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const SMB_PIPELINE_DEPTH: usize = 4;
-const MEDIA_SOURCE_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-const MEDIA_SOURCE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-const MEDIA_SOURCE_MAX_ENTRIES: usize = 8192;
-const MEDIA_SOURCE_TARGET_ENTRIES: usize = 6144;
 const DOWNLOAD_SPEED_WINDOW: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_STALE_AFTER: Duration = Duration::from_secs(2);
 const DOWNLOAD_SPEED_MIN_SAMPLE_DURATION: Duration = Duration::from_millis(250);
@@ -361,113 +361,6 @@ struct ParallelRangePlan {
     content_length: u64,
 }
 
-struct MediaSourceEntry {
-    backend: Arc<dyn MediaSourceBackend>,
-    last_access: Instant,
-}
-
-struct MediaSourceRegistry {
-    entries: HashMap<String, MediaSourceEntry>,
-    last_cleanup: Instant,
-}
-
-impl MediaSourceRegistry {
-    fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            entries: HashMap::new(),
-            last_cleanup: now,
-        }
-    }
-
-    fn insert(&mut self, token: String, backend: Arc<dyn MediaSourceBackend>) {
-        let now = Instant::now();
-        self.cleanup_if_due(now);
-        self.entries.insert(
-            token,
-            MediaSourceEntry {
-                backend,
-                last_access: now,
-            },
-        );
-        self.enforce_limit(now);
-    }
-
-    fn get(&mut self, token: &str) -> Option<Arc<dyn MediaSourceBackend>> {
-        let now = Instant::now();
-        self.cleanup_if_due(now);
-        let entry = self.entries.get_mut(token)?;
-        entry.last_access = now;
-        Some(entry.backend.clone())
-    }
-
-    #[allow(dead_code)] // Used by cast-session revocation once CastingService is registered.
-    fn remove(&mut self, token: &str) -> Option<Arc<dyn MediaSourceBackend>> {
-        self.entries.remove(token).map(|entry| entry.backend)
-    }
-
-    fn has_origin(&self, origin: &str) -> bool {
-        self.entries
-            .values()
-            .any(|entry| entry.backend.origin() == origin)
-    }
-
-    fn find_token_by_origin(&mut self, origin: &str) -> Option<String> {
-        let now = Instant::now();
-        self.cleanup_if_due(now);
-        for (token, entry) in self.entries.iter_mut() {
-            if entry.backend.origin() == origin {
-                entry.last_access = now;
-                return Some(token.clone());
-            }
-        }
-        None
-    }
-
-    fn cleanup_if_due(&mut self, now: Instant) {
-        if now.duration_since(self.last_cleanup) < MEDIA_SOURCE_CLEANUP_INTERVAL
-            && self.entries.len() <= MEDIA_SOURCE_MAX_ENTRIES
-        {
-            return;
-        }
-        self.cleanup_idle(now);
-    }
-
-    fn cleanup_idle(&mut self, now: Instant) {
-        let before = self.entries.len();
-        self.entries
-            .retain(|_, entry| now.duration_since(entry.last_access) <= MEDIA_SOURCE_IDLE_TIMEOUT);
-        self.last_cleanup = now;
-        let removed = before.saturating_sub(self.entries.len());
-        if removed > 0 {
-            debug!("media gateway: cleaned up {removed} idle backend token(s)");
-        }
-    }
-
-    fn enforce_limit(&mut self, now: Instant) {
-        if self.entries.len() <= MEDIA_SOURCE_MAX_ENTRIES {
-            return;
-        }
-        let remove_count = self
-            .entries
-            .len()
-            .saturating_sub(MEDIA_SOURCE_TARGET_ENTRIES);
-        let mut oldest = self
-            .entries
-            .iter()
-            .map(|(token, entry)| (token.clone(), entry.last_access))
-            .collect::<Vec<_>>();
-        oldest.sort_by_key(|(_, last_access)| *last_access);
-        for (token, _) in oldest.into_iter().take(remove_count) {
-            self.entries.remove(&token);
-        }
-        self.last_cleanup = now;
-        debug!(
-            "media gateway: evicted {remove_count} backend token(s) to enforce registry limit"
-        );
-    }
-}
-
 pub(crate) trait MediaSourceBackend: Send + Sync {
     fn label(&self) -> &'static str;
 
@@ -574,14 +467,14 @@ impl MediaSourceBackend for HttpMediaSourceBackend {
 /// Serves one locally generated CMAF playlist. Each completed init/segment file is registered as
 /// a separate lease-protected resource before it is mentioned to the receiver.
 struct HlsCmafMediaSourceBackend {
-    session: Arc<crate::casting::remux::HlsCmafSession>,
+    session: Arc<backends::HlsCmafSession>,
     endpoint: CastMediaEndpoint,
     origin_label: String,
 }
 
 impl HlsCmafMediaSourceBackend {
     fn new(
-        session: Arc<crate::casting::remux::HlsCmafSession>,
+        session: Arc<backends::HlsCmafSession>,
         endpoint: CastMediaEndpoint,
     ) -> Self {
         let origin_label = format!("cmaf:{}", session.origin());
@@ -1792,7 +1685,7 @@ pub(crate) fn create_cast_hls_cmaf_media_url(
         audio_available_at,
         download_speed_meter.clone(),
     )?;
-    let session = crate::casting::remux::HlsCmafSession::new(
+    let session = backends::HlsCmafSession::new(
         video_url.to_string(),
         video_input,
         audio_input,
@@ -1807,7 +1700,7 @@ pub(crate) fn create_cast_progressive_remux_media_url(
     app_handle: AppHandle,
     session_id: &str,
     receiver_ip: Ipv4Addr,
-    output_format: crate::casting::remux::ProgressiveRemuxFormat,
+    output_format: ProgressiveRemuxFormat,
     video_url: &str,
     audio_url: &str,
     video_headers: &[(String, String)],
@@ -1833,7 +1726,7 @@ pub(crate) fn create_cast_progressive_remux_media_url(
         audio_available_at,
         download_speed_meter.clone(),
     )?;
-    let backend = crate::casting::remux::ProgressiveRemuxBackend::new(
+    let backend = backends::ProgressiveRemuxBackend::new(
         output_format,
         video_url.to_string(),
         video_input,
@@ -3650,10 +3543,11 @@ mod tests {
         CastMediaEndpoint, ResourceRegistration,
         DownloadSpeedMeter, DownloadSpeedMeterHandle,
         LocalFileMediaSourceBackend,
-        MediaSourceBackend, MediaSourceRegistry, MEDIA_SOURCE_IDLE_TIMEOUT,
+        MediaSourceBackend,
         LOOPBACK_MEDIA_BASE_URL,
     };
     use super::lease::CastMediaLease;
+    use super::registry::{MediaSourceRegistry, MEDIA_SOURCE_IDLE_TIMEOUT};
     use futures_util::future::BoxFuture;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};

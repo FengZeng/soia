@@ -1,6 +1,6 @@
 use log::info;
 
-use crate::casting::remux::ProgressiveRemuxFormat;
+use crate::media_gateway::ProgressiveRemuxFormat;
 use crate::ytdlp::ResolvedCastStreams;
 use crate::playback_source::resolve::ResolvedPlaybackSourceResult;
 use super::CastMediaDescriptor;

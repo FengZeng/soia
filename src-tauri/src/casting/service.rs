@@ -1,63 +1,9 @@
 use super::{CastAdapterSession, CastMediaDescriptor, CastProtocolAdapter, CastProtocolCommand, CastReceiverStatus};
+use super::state::{ActiveCastSession, CastingState};
 use futures_util::future::join_all;
 use soia_protocol::{CastDeviceDto, CastErrorCodeDto, CastErrorDto, CastPhaseDto, CastSnapshotDto};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
-
-struct ActiveCastSession {
-    session_id: String,
-    device: CastDeviceDto,
-    adapter: Arc<dyn CastProtocolAdapter>,
-    adapter_session: Option<CastAdapterSession>,
-    media_title: Option<String>,
-    status: CastReceiverStatus,
-}
-
-struct CastingState {
-    revision: u64,
-    devices: Vec<CastDeviceDto>,
-    phase: CastPhaseDto,
-    active: Option<ActiveCastSession>,
-    last_error: Option<CastErrorDto>,
-}
-
-impl Default for CastingState {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            devices: Vec::new(),
-            phase: CastPhaseDto::Idle,
-            active: None,
-            last_error: None,
-        }
-    }
-}
-
-impl CastingState {
-    fn snapshot(&self) -> CastSnapshotDto {
-        let Some(active) = self.active.as_ref() else {
-            return CastSnapshotDto {
-                revision: self.revision,
-                phase: self.phase.clone(),
-                last_error: self.last_error.clone(),
-                ..Default::default()
-            };
-        };
-        CastSnapshotDto {
-            revision: self.revision,
-            phase: self.phase.clone(),
-            session_id: Some(active.session_id.clone()),
-            device: Some(active.device.clone()),
-            media_title: active.media_title.clone(),
-            position: active.status.position,
-            duration: active.status.duration.unwrap_or(0.0),
-            volume: active.status.volume.unwrap_or(100.0),
-            muted: active.status.muted.unwrap_or(false),
-            seekable: active.status.seekable,
-            last_error: self.last_error.clone(),
-        }
-    }
-}
 
 /// Protocol-neutral Core owner for receiver discovery and one active cast session. Every async
 /// completion is checked against the Core session ID so a previous device cannot overwrite a
