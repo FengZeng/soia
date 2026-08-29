@@ -19,13 +19,19 @@ You can also go to System Settings > Privacy & Security and click "Open Anyway" 
 
 The app is open-source and its code is publicly available for anyone to inspect.
 
-## [0.2.10] - 2026-08-08
+## [0.2.11] - 2026-08-29
 
 ### Highlights
 
-* **Remote Controller: Playlists and Network Media**
-  The browser-based Remote Controller can now browse and play playlists, as well as browse and play media from configured network sources. Network browsing uses the same remembered folder as the desktop app, so you can pick up where you left off on another device.
+* **Cast to DLNA and Chromecast**
+  Cast the currently playing video to a DLNA receiver or Chromecast, whether the source is a local file, a DLNA/SMB/WebDAV stream, or an online video.
+  **Keep Soia running while casting:** Soia relays the media stream between the source and the receiver.
 
-### Fixes
+* **Enhanced YouTube playback**
+  Improved YouTube stream parsing and selection for more reliable online playback.
 
-* Fixed a Windows issue where switching videos or leaving playback could leave the app window fully transparent.
+* **Audio output and passthrough**
+  Choose the audio output device and enable passthrough for supported formats.
+
+* **More playback controls**
+  Adjust playback speed continuously in 0.1 increments, click the video to play or pause when Compact Mode is disabled, and fine-tune the picture with zoom and crop controls.
