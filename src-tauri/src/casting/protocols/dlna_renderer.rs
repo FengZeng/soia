@@ -741,13 +741,19 @@ async fn post_soap(
         .body(envelope)
         .send()
         .await
-        .map_err(|_| format!("{action} request failed"))?
-        .error_for_status()
-        .map_err(|_| format!("{action} was rejected"))?;
-    response
+        .map_err(|_| format!("{action} request failed"))?;
+    let status = response.status();
+    let body = response
         .text()
         .await
-        .map_err(|_| format!("{action} response could not be read"))
+        .map_err(|_| format!("{action} response could not be read"))?;
+    if let Some(fault) = parse_soap_fault(&body) {
+        return Err(format!("{action} failed: {fault}"));
+    }
+    if !status.is_success() {
+        return Err(format!("{action} was rejected (HTTP {})", status.as_u16()));
+    }
+    Ok(body)
 }
 
 fn control_client() -> Result<reqwest::Client, String> {
@@ -1006,6 +1012,84 @@ fn soap_response_text(xml: &str, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("DLNA SOAP response has no {name}"))
 }
 
+fn parse_soap_fault(xml: &str) -> Option<String> {
+    let document = Document::parse(xml).ok()?;
+    let fault = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("Fault"))?;
+    let fault_string = descendant_text(fault, "faultstring");
+    let error_code = descendant_text(fault, "errorCode");
+    let error_description = descendant_text(fault, "errorDescription");
+    match (error_code, error_description, fault_string) {
+        (Some(code), Some(description), _) => Some(format!("UPnP error {code}: {description}")),
+        (Some(code), None, Some(message)) => Some(format!("UPnP error {code}: {message}")),
+        (Some(code), None, None) => Some(format!("UPnP error {code}")),
+        (None, _, Some(message)) => Some(message),
+        (None, Some(description), None) => Some(description),
+        (None, None, None) => Some("receiver returned a SOAP fault".to_string()),
+    }
+}
+
+fn descendant_text(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+    node.descendants()
+        .find(|child| child.is_element() && child.tag_name().name().eq_ignore_ascii_case(name))
+        .and_then(|child| child.text())
+        .map(safe_soap_text)
+        .filter(|value| !value.is_empty())
+}
+
+fn safe_soap_text(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len().min(160));
+    let mut pending_space = false;
+    for character in value.trim().chars() {
+        if character.is_control() || character.is_whitespace() {
+            pending_space = !normalized.is_empty();
+            continue;
+        }
+        if pending_space {
+            normalized.push(' ');
+            pending_space = false;
+        }
+        normalized.push(character);
+    }
+    let mut redacted = String::with_capacity(normalized.len().min(160));
+    for token in normalized.split(' ') {
+        let token = redact_soap_token(token);
+        if !redacted.is_empty() {
+            redacted.push(' ');
+        }
+        if redacted.chars().count() + token.chars().count() > 160 {
+            redacted.push('…');
+            break;
+        }
+        redacted.push_str(&token);
+    }
+    redacted
+}
+
+fn redact_soap_token(token: &str) -> String {
+    let lower = token.to_ascii_lowercase();
+    let looks_like_url = lower.contains("://") || lower.starts_with("www.") || lower.contains('@');
+    let has_sensitive_value = [
+        "token=",
+        "password=",
+        "passwd=",
+        "authorization=",
+        "cookie=",
+        "session=",
+        "signature=",
+        "sig=",
+        "key=",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if looks_like_url || has_sensitive_value {
+        "[redacted]".to_string()
+    } else {
+        token.to_string()
+    }
+}
+
 fn parse_dlna_rel_time(value: &str) -> Option<f64> {
     let mut fields = value.trim().split(':');
     let hours = fields.next()?.parse::<f64>().ok()?;
@@ -1224,8 +1308,8 @@ mod tests {
         is_seekable_position,
         location_ipv4_for_response, parse_get_position_info_response,
         parse_get_protocol_info_response, parse_get_transport_info_response,
-        parse_get_volume_response, parse_renderer_description, parse_scpd_actions, udn_from_usn,
-        DlnaService, RendererServices,
+        parse_get_volume_response, parse_renderer_description, parse_scpd_actions,
+        parse_soap_fault, udn_from_usn, DlnaService, RendererServices,
     };
     use crate::casting::CastMediaDescriptor;
     use std::net::{IpAddr, Ipv4Addr};
@@ -1611,5 +1695,58 @@ mod tests {
         let set_volume = build_set_volume_envelope(rendering_control, 37);
         assert!(set_volume.contains("SetVolume"));
         assert!(set_volume.contains("<DesiredVolume>37</DesiredVolume>"));
+    }
+
+    #[test]
+    fn extracts_user_safe_upnp_error_from_soap_fault() {
+        let fault = r#"
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body><s:Fault>
+                <faultcode>s:Client</faultcode>
+                <faultstring>UPnPError</faultstring>
+                <detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                  <errorCode>701</errorCode>
+                  <errorDescription>Transition not available</errorDescription>
+                </UPnPError></detail>
+              </s:Fault></s:Body>
+            </s:Envelope>
+        "#;
+
+        assert_eq!(
+            parse_soap_fault(fault).as_deref(),
+            Some("UPnP error 701: Transition not available"),
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_soap_fault_string_when_no_upnp_error_is_present() {
+        let fault = r#"
+            <Envelope><Body><Fault>
+              <faultstring>Invalid Action
+                Please retry</faultstring>
+            </Fault></Body></Envelope>
+        "#;
+
+        assert_eq!(
+            parse_soap_fault(fault).as_deref(),
+            Some("Invalid Action Please retry"),
+        );
+    }
+
+    #[test]
+    fn redacts_urls_and_lease_tokens_from_soap_faults() {
+        let fault = r#"
+            <Envelope><Body><Fault><detail>
+              <UPnPError>
+                <errorCode>714</errorCode>
+                <errorDescription>Unable to load https://user:password@example.test/cast/media?token=secret</errorDescription>
+              </UPnPError>
+            </detail></Fault></Body></Envelope>
+        "#;
+
+        assert_eq!(
+            parse_soap_fault(fault).as_deref(),
+            Some("UPnP error 714: Unable to load [redacted]"),
+        );
     }
 }

@@ -173,18 +173,36 @@ impl CastingService {
 
     pub(crate) async fn refresh_status(&self) -> Result<CastSnapshotDto, CastErrorDto> {
         let (session_id, device_id, adapter, adapter_session) = self.active_adapter_session()?;
-        let status = match adapter.status(&adapter_session).await {
-            Ok(status) => status,
-            Err(error) => {
-                let failure = self.fail_session(&session_id, error);
-                let _ = adapter.disconnect(&adapter_session).await;
-                return Err(failure);
-            }
-        };
+        let status = adapter.status(&adapter_session).await?;
         if !self.apply_status(&session_id, status) {
             return Err(stale_session_error(&device_id));
         }
         Ok(self.current_snapshot())
+    }
+
+    pub(crate) async fn disconnect_after_status_failures(
+        &self,
+        session_id: &str,
+        failure: CastErrorDto,
+    ) -> Option<CastSnapshotDto> {
+        let active = {
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active.as_ref().map(|active| active.session_id.as_str()) != Some(session_id) {
+                return None;
+            }
+            let active = state.active.take();
+            state.phase = CastPhaseDto::Disconnected;
+            state.last_error = Some(failure);
+            state.revision = state.revision.saturating_add(1);
+            self.snapshot_sender.send_replace(state.snapshot());
+            active
+        };
+        if let Some(active) = active {
+            if let Err(error) = Self::release_active_session(active).await {
+                log::debug!("casting: receiver cleanup after status failures failed: {}", error.message);
+            }
+        }
+        Some(self.current_snapshot())
     }
 
     pub(crate) async fn disconnect(&self) -> Result<CastSnapshotDto, CastErrorDto> {
@@ -362,6 +380,7 @@ mod tests {
     struct FakeAdapter {
         disconnects: AtomicUsize,
         fail_commands: bool,
+        fail_status: bool,
     }
 
     fn device(id: &str) -> CastDeviceDto {
@@ -445,7 +464,16 @@ mod tests {
             &'a self,
             _session: &'a CastAdapterSession,
         ) -> BoxFuture<'a, Result<CastReceiverStatus, CastErrorDto>> {
-            Box::pin(async { Ok(receiver_status(CastPhaseDto::Playing, 20.0)) })
+            Box::pin(async move {
+                if self.fail_status {
+                    return Err(error(
+                        CastErrorCodeDto::DeviceDisconnected,
+                        "receiver did not answer status request",
+                        None,
+                    ));
+                }
+                Ok(receiver_status(CastPhaseDto::Playing, 20.0))
+            })
         }
 
         fn disconnect<'a>(
@@ -501,6 +529,18 @@ mod tests {
         assert_eq!(current.device.unwrap().id, "device-b");
         assert_eq!(current.phase, CastPhaseDto::Playing);
         assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 1);
+        assert!(service
+            .disconnect_after_status_failures(
+                &first_session_id,
+                error(
+                    CastErrorCodeDto::DeviceDisconnected,
+                    "old receiver stopped responding",
+                    Some("device-a"),
+                ),
+            )
+            .await
+            .is_none());
+        assert_eq!(service.current_snapshot().session_id, second.session_id);
     }
 
     #[tokio::test]
@@ -516,6 +556,37 @@ mod tests {
         assert!(service.command(CastProtocolCommand::Pause).await.is_err());
         assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 1);
         assert_eq!(service.current_snapshot().phase, CastPhaseDto::Error);
+    }
+
+    #[tokio::test]
+    async fn status_failure_is_retriable_until_the_poll_owner_disconnects_the_session() {
+        let adapter = Arc::new(FakeAdapter {
+            fail_status: true,
+            ..Default::default()
+        });
+        let service = CastingService::new(vec![adapter.clone()]);
+        service.discover().await.unwrap();
+        let loaded = service.connect_and_load("device-a", media()).await.unwrap();
+        let session_id = loaded.session_id.unwrap();
+
+        assert!(service.refresh_status().await.is_err());
+        assert_eq!(service.current_snapshot().phase, CastPhaseDto::Playing);
+        assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 0);
+
+        let disconnected = service
+            .disconnect_after_status_failures(
+                &session_id,
+                error(
+                    CastErrorCodeDto::DeviceDisconnected,
+                    "Receiver device-a stopped responding after 3 status checks",
+                    Some("device-a"),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disconnected.phase, CastPhaseDto::Disconnected);
+        assert!(disconnected.session_id.is_none());
+        assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

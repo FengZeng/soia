@@ -8,6 +8,8 @@ use tokio::time::{sleep, Duration};
 const CAST_SNAPSHOT_EVENT: &str = "cast-snapshot";
 const CAST_DEVICES_EVENT: &str = "cast-devices";
 const CAST_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const CAST_STATUS_POLL_MAX_INTERVAL: Duration = Duration::from_secs(6);
+const MAX_CONSECUTIVE_CAST_STATUS_FAILURES: u32 = 3;
 
 #[tauri::command]
 pub(crate) fn get_cast_snapshot(state: tauri::State<'_, AppState>) -> CastSnapshotDto {
@@ -246,9 +248,16 @@ fn emit_devices(app: &tauri::AppHandle, devices: &[CastDeviceDto]) {
 
 fn start_cast_status_poll(app: tauri::AppHandle, session_id: String) {
     tauri::async_runtime::spawn(async move {
-        let mut has_been_active = false;
+        let initial_snapshot = app.state::<AppState>().casting_service.current_snapshot();
+        let mut has_been_active = matches!(
+            initial_snapshot.phase,
+            CastPhaseDto::Playing | CastPhaseDto::Buffering | CastPhaseDto::Paused
+        );
+        let mut last_confirmed_position = initial_snapshot.position.max(0.0);
+        let mut consecutive_failures = 0;
+        let mut poll_delay = CAST_STATUS_POLL_INTERVAL;
         loop {
-            sleep(CAST_STATUS_POLL_INTERVAL).await;
+            sleep(poll_delay).await;
             let state: tauri::State<'_, AppState> = app.state();
             let snapshot = state.casting_service.current_snapshot();
             if snapshot.session_id.as_deref() != Some(session_id.as_str())
@@ -262,8 +271,68 @@ fn start_cast_status_poll(app: tauri::AppHandle, session_id: String) {
             {
                 break;
             }
-            let _ = state.casting_service.refresh_status().await;
-            let snapshot = state.casting_service.current_snapshot();
+            let snapshot = match state.casting_service.refresh_status().await {
+                Ok(snapshot) => {
+                    consecutive_failures = 0;
+                    poll_delay = CAST_STATUS_POLL_INTERVAL;
+                    last_confirmed_position = snapshot.position.max(0.0);
+                    snapshot
+                }
+                Err(error) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures < MAX_CONSECUTIVE_CAST_STATUS_FAILURES {
+                        let factor = 1u32 << consecutive_failures.min(3);
+                        poll_delay = (CAST_STATUS_POLL_INTERVAL * factor)
+                            .min(CAST_STATUS_POLL_MAX_INTERVAL);
+                        log::debug!(
+                            "casting: status poll {}/{} failed for {}: {}",
+                            consecutive_failures,
+                            MAX_CONSECUTIVE_CAST_STATUS_FAILURES,
+                            session_id,
+                            error.message
+                        );
+                        continue;
+                    }
+                    let _playback_command_lock = state.playback_command_lock.lock().await;
+                    let current = state.casting_service.current_snapshot();
+                    if current.session_id.as_deref() != Some(session_id.as_str()) {
+                        break;
+                    }
+                    let device = current.device.as_ref();
+                    let failure = CastErrorDto {
+                        code: CastErrorCodeDto::DeviceDisconnected,
+                        message: format!(
+                            "{} stopped responding after {} status checks: {}",
+                            device.map(|device| device.name.as_str()).unwrap_or("Cast receiver"),
+                            MAX_CONSECUTIVE_CAST_STATUS_FAILURES,
+                            error.message,
+                        ),
+                        device_id: device.map(|device| device.id.clone()),
+                    };
+                    let Some(disconnected) = state
+                        .casting_service
+                        .disconnect_after_status_failures(&session_id, failure)
+                        .await
+                    else {
+                        break;
+                    };
+                    emit_cast_snapshot(&app, &disconnected);
+                    if let Err(error) = state
+                        .playback_service
+                        .restore_local_after_cast(last_confirmed_position)
+                    {
+                        log::warn!(
+                            "casting: could not restore local playback after receiver disconnect: {:?}",
+                            error
+                        );
+                    }
+                    let playback_snapshot = state
+                        .playback_service
+                        .finish_cast_output(&state, last_confirmed_position);
+                    crate::commands::playback::emit_playback_snapshot(&app, &playback_snapshot);
+                    break;
+                }
+            };
             emit_cast_snapshot(&app, &snapshot);
             if let Some(playback_snapshot) = state.playback_service.sync_cast_output(&state) {
                 crate::commands::playback::emit_playback_snapshot(&app, &playback_snapshot);
@@ -286,7 +355,14 @@ fn start_cast_status_poll(app: tauri::AppHandle, session_id: String) {
             // confirmed position. Explicit user stop paths already run this flow themselves;
             // running it again here is idempotent.
             if has_been_active && matches!(snapshot.phase, CastPhaseDto::Stopped) {
-                let position = snapshot.position.max(0.0);
+                let _playback_command_lock = state.playback_command_lock.lock().await;
+                let current = state.casting_service.current_snapshot();
+                if current.session_id.as_deref() != Some(session_id.as_str())
+                    || !matches!(current.phase, CastPhaseDto::Stopped)
+                {
+                    break;
+                }
+                let position = current.position.max(0.0);
                 if let Err(error) = state.casting_service.disconnect().await {
                     log::debug!(
                         "casting: teardown after receiver stopped failed: {}",

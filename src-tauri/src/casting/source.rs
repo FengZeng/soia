@@ -5,7 +5,7 @@ use crate::ytdlp::ResolvedCastStreams;
 use crate::playback_source::resolve::ResolvedPlaybackSourceResult;
 use super::CastMediaDescriptor;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 /// A Core-only source description created before the media gateway allocates a LAN lease. It
@@ -56,15 +56,20 @@ impl CastMediaSource {
         position: f64,
     ) -> Result<CastMediaDescriptor, String> {
         let (url, mime_type) = match self {
-            Self::LocalFile { path } => (
-                crate::media_gateway::create_cast_local_file_media_url(
-                    app,
-                    cast_session_id,
-                    receiver_ip,
-                    &path,
-                )?,
-                Some(crate::media_gateway::infer_media_mime(&path).to_string()),
-            ),
+            Self::LocalFile { path } => {
+                if is_local_hls_path(&path) {
+                    return Err(local_hls_not_supported_error());
+                }
+                (
+                    crate::media_gateway::create_cast_local_file_media_url(
+                        app,
+                        cast_session_id,
+                        receiver_ip,
+                        &path,
+                    )?,
+                    Some(crate::media_gateway::infer_media_mime(&path).to_string()),
+                )
+            }
             Self::Http { url, basic_auth } => {
                 if let Some((username, password)) = basic_auth {
                     crate::media_gateway::register_basic_auth(&url, &username, &password);
@@ -76,7 +81,7 @@ impl CastMediaSource {
                         receiver_ip,
                         &url,
                     )?,
-                    None,
+                    infer_http_mime(&url),
                 )
             }
             Self::Smb { url, basic_auth } => {
@@ -288,20 +293,45 @@ fn classify_direct_source(value: &str) -> Result<CastMediaSource, String> {
                 url: url.to_string(),
                 basic_auth: None,
             }),
-            "file" => Ok(CastMediaSource::LocalFile {
-                path: url.to_file_path().map_err(|_| "invalid local file URL".to_string())?,
-            }),
+            "file" => local_file_source(
+                url.to_file_path().map_err(|_| "invalid local file URL".to_string())?,
+            ),
             scheme => Err(format!("unsupported direct cast source scheme: {scheme}")),
         };
     }
     let path = crate::playback_source::resolve_local_media_path(value)
         .ok_or_else(|| "invalid local cast media path".to_string())?;
+    local_file_source(path)
+}
+
+fn local_file_source(path: PathBuf) -> Result<CastMediaSource, String> {
+    if is_local_hls_path(&path) {
+        return Err(local_hls_not_supported_error());
+    }
     Ok(CastMediaSource::LocalFile { path })
+}
+
+fn is_local_hls_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension) if extension.eq_ignore_ascii_case("m3u8") || extension.eq_ignore_ascii_case("m3u")
+    )
+}
+
+fn local_hls_not_supported_error() -> String {
+    "local HLS casting is unavailable until restricted child-resource authorization is implemented"
+        .to_string()
+}
+
+fn infer_http_mime(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let mime_type = crate::media_gateway::infer_media_mime(Path::new(parsed.path()));
+    (mime_type != "application/octet-stream").then(|| mime_type.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_direct_source, needs_ytdlp_resolution, CastMediaSource};
+    use super::{classify_direct_source, infer_http_mime, needs_ytdlp_resolution, CastMediaSource};
 
     #[test]
     fn classifies_local_http_and_smb_sources_without_leaking_them_to_dtos() {
@@ -317,6 +347,11 @@ mod tests {
             classify_direct_source("smb://nas.example.test/media/video.mkv").unwrap(),
             CastMediaSource::Smb { basic_auth: None, .. }
         ));
+        let error = match classify_direct_source("/Movies/playlist.m3u8") {
+            Err(error) => error,
+            Ok(_) => panic!("local HLS must not be cast before child-resource authorization exists"),
+        };
+        assert!(error.contains("restricted child-resource authorization"));
     }
 
     #[test]
@@ -326,5 +361,18 @@ mod tests {
         assert!(!needs_ytdlp_resolution("https://cdn.example.com/video.mp4"));
         assert!(!needs_ytdlp_resolution("https://cdn.example.com/stream.m3u8"));
         assert!(!needs_ytdlp_resolution("/local/path/video.mkv"));
+    }
+
+    #[test]
+    fn infers_didl_mime_for_known_http_media_extensions() {
+        assert_eq!(
+            infer_http_mime("https://cdn.example.test/movie.MKV?token=redacted"),
+            Some("video/x-matroska".to_string()),
+        );
+        assert_eq!(
+            infer_http_mime("https://cdn.example.test/live/index.m3u8"),
+            Some("application/vnd.apple.mpegurl".to_string()),
+        );
+        assert_eq!(infer_http_mime("https://cdn.example.test/media"), None);
     }
 }
