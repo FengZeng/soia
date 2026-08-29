@@ -18,6 +18,20 @@ const emptySnapshot = (): CastSnapshotDto => ({
 });
 
 export const useCasting = (client: CastingClient) => {
+    let store = castingStores.get(client);
+    if (!store) {
+        store = createCastingStore(client);
+        castingStores.set(client, store);
+    }
+
+    onMounted(store.acquire);
+    onBeforeUnmount(store.release);
+    return store.api;
+};
+
+const castingStores = new WeakMap<CastingClient, ReturnType<typeof createCastingStore>>();
+
+const createCastingStore = (client: CastingClient) => {
     const snapshot = ref<CastSnapshotDto>(emptySnapshot());
     const devices = ref<CastDeviceDto[]>([]);
     const isReady = ref(false);
@@ -25,18 +39,30 @@ export const useCasting = (client: CastingClient) => {
     const isConnecting = ref(false);
     const error = ref("");
     let unsubscribe: (() => void) | null = null;
+    let consumers = 0;
+    let devicesRevision = 0;
 
     const isActive = computed(() => snapshot.value.sessionId !== null);
     const activeDeviceName = computed(() => snapshot.value.device?.name ?? "");
+    const applySnapshot = (nextSnapshot: CastSnapshotDto) => {
+        if (nextSnapshot.revision >= snapshot.value.revision) {
+            snapshot.value = nextSnapshot;
+        }
+    };
 
     const refresh = async () => {
+        const refreshDevicesRevision = devicesRevision;
         try {
             const [nextSnapshot, nextDevices] = await Promise.all([
                 client.getSnapshot(),
                 client.getDevices(),
             ]);
-            snapshot.value = nextSnapshot;
-            devices.value = nextDevices;
+            applySnapshot(nextSnapshot);
+            // Device events do not carry a revision. Do not let a slow initial refresh overwrite
+            // a newer event-delivered device list.
+            if (devicesRevision === refreshDevicesRevision) {
+                devices.value = nextDevices;
+            }
             error.value = "";
             isReady.value = true;
         } catch (cause) {
@@ -49,6 +75,7 @@ export const useCasting = (client: CastingClient) => {
         error.value = "";
         try {
             devices.value = await client.discover();
+            devicesRevision += 1;
         } catch (cause) {
             error.value = toMessage(cause);
         } finally {
@@ -60,7 +87,7 @@ export const useCasting = (client: CastingClient) => {
         isConnecting.value = true;
         error.value = "";
         try {
-            snapshot.value = await client.connect(deviceId);
+            applySnapshot(await client.connect(deviceId));
         } catch (cause) {
             error.value = toMessage(cause);
         } finally {
@@ -70,36 +97,39 @@ export const useCasting = (client: CastingClient) => {
 
     const disconnect = async () => {
         try {
-            snapshot.value = await client.disconnect();
+            applySnapshot(await client.disconnect());
             error.value = "";
         } catch (cause) {
             error.value = toMessage(cause);
         }
     };
 
-    onMounted(() => {
+    const acquire = () => {
+        consumers += 1;
+        if (unsubscribe) return;
         unsubscribe = client.subscribe(
             (nextSnapshot) => {
-                if (nextSnapshot.revision >= snapshot.value.revision) {
-                    snapshot.value = nextSnapshot;
-                }
+                applySnapshot(nextSnapshot);
             },
             (nextDevices) => {
                 devices.value = nextDevices;
+                devicesRevision += 1;
             },
             (cause) => {
                 error.value = cause.message;
             },
         );
         void refresh();
-    });
+    };
 
-    onBeforeUnmount(() => {
+    const release = () => {
+        consumers -= 1;
+        if (consumers > 0) return;
         unsubscribe?.();
         unsubscribe = null;
-    });
+    };
 
-    return {
+    const api = {
         snapshot: readonly(snapshot),
         devices: readonly(devices),
         error: readonly(error),
@@ -112,6 +142,7 @@ export const useCasting = (client: CastingClient) => {
         connect,
         disconnect,
     };
+    return { acquire, release, api };
 };
 
 const toMessage = (cause: unknown) => {

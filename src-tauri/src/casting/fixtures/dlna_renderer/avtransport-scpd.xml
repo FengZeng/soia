@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <actionList>
+    <action><name>SetAVTransportURI</name></action>
+    <action><name>Play</name></action>
+    <action><name>Pause</name></action>
+    <action><name>Stop</name></action>
+    <action><name>Seek</name></action>
+    <action><name>GetTransportInfo</name></action>
+    <action><name>GetPositionInfo</name></action>
+  </actionList>
+</scpd>

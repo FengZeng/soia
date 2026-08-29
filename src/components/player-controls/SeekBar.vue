@@ -9,6 +9,8 @@ const props = defineProps<{
     controlsVisible?: boolean;
     showHoverTooltip?: boolean;
     alwaysShowScrubber?: boolean;
+    disabled?: boolean;
+    disabledReason?: string;
 }>();
 
 const emit = defineEmits<{
@@ -81,7 +83,7 @@ const stopDragging = (event?: PointerEvent) => {
 };
 
 const onPointerDown = (event: PointerEvent) => {
-    if (event.button !== 0 || props.duration <= 0) return;
+    if (props.disabled || event.button !== 0 || props.duration <= 0) return;
     activePointerId.value = event.pointerId;
     isDragging.value = true;
     progressAreaRef.value?.setPointerCapture(event.pointerId);
@@ -160,7 +162,12 @@ onUnmounted(() => {
         :class="{
             'is-dragging': isDragging,
             'always-show-scrubber': props.alwaysShowScrubber,
+            'is-disabled': props.disabled,
         }"
+        :aria-disabled="props.disabled"
+        :aria-description="props.disabledReason"
+        :data-disabled-reason="props.disabled ? props.disabledReason : undefined"
+        :title="props.disabledReason"
         @pointerdown.prevent="onPointerDown"
         @mousemove="onMouseMove"
         @mouseleave="onMouseLeave"
@@ -201,6 +208,34 @@ onUnmounted(() => {
     cursor: pointer;
     position: relative;
     touch-action: none;
+}
+
+.progress-area.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.progress-area.is-disabled:hover .progress-bg {
+    height: 3px;
+}
+
+.progress-area.is-disabled[data-disabled-reason]:hover::after {
+    content: attr(data-disabled-reason);
+    position: absolute;
+    z-index: 6;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    width: max-content;
+    max-width: min(260px, 70vw);
+    padding: 6px 8px;
+    border-radius: 5px;
+    color: rgba(255, 255, 255, 0.94);
+    background: rgba(16, 22, 30, 0.94);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    font-size: 11px;
+    line-height: 1.35;
+    pointer-events: none;
+    transform: translateX(-50%);
 }
 
 .progress-bg {

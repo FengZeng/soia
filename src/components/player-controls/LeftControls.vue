@@ -10,6 +10,14 @@ const props = defineProps<{
     formatTime: (seconds: number) => string;
     badges: string[];
     passthroughActive: boolean;
+    playbackDisabled?: boolean;
+    playbackDisabledReason?: string;
+    navigationDisabled?: boolean;
+    navigationDisabledReason?: string;
+    volumeDisabled?: boolean;
+    volumeDisabledReason?: string;
+    muteDisabled?: boolean;
+    muteDisabledReason?: string;
 }>();
 
 const emit = defineEmits<{
@@ -39,8 +47,11 @@ const onVolumeInput = (event: Event) => {
     <div class="controls-left">
         <button
             class="icon-button icon-button--player icon-button--lg"
+            :disabled="props.navigationDisabled"
+            :aria-description="props.navigationDisabledReason"
+            :data-disabled-reason="props.navigationDisabled ? props.navigationDisabledReason : undefined"
             @click="emit('prev-track')"
-            title="Previous"
+            :title="props.navigationDisabledReason || 'Previous'"
         >
             <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 18V6h2v12H6zm3.5-6 8.5 6V6l-8.5 6z" />
@@ -48,6 +59,12 @@ const onVolumeInput = (event: Event) => {
         </button>
         <button
             class="icon-button icon-button--player icon-button--lg"
+            :disabled="props.playbackDisabled"
+            :aria-description="props.playbackDisabledReason"
+            :data-disabled-reason="props.playbackDisabled ? props.playbackDisabledReason : undefined"
+            :title="
+                props.playbackDisabledReason || (isPlaying ? 'Pause' : 'Play')
+            "
             @click="emit('toggle-play-pause')"
         >
             <svg viewBox="0 0 24 24" fill="currentColor">
@@ -60,8 +77,11 @@ const onVolumeInput = (event: Event) => {
         </button>
         <button
             class="icon-button icon-button--player icon-button--lg"
+            :disabled="props.navigationDisabled"
+            :aria-description="props.navigationDisabledReason"
+            :data-disabled-reason="props.navigationDisabled ? props.navigationDisabledReason : undefined"
             @click="emit('next-track')"
-            title="Next"
+            :title="props.navigationDisabledReason || 'Next'"
         >
             <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M16 6v12h2V6h-2zm-1.5 6L6 18V6l8.5 6z" />
@@ -84,14 +104,26 @@ const onVolumeInput = (event: Event) => {
         <div
             v-else
             class="volume-control"
+            :class="{ 'volume-control--disabled': props.volumeDisabled }"
             :style="{ '--volume-percent': `${volumePercent}%` }"
+            :data-disabled-reason="props.volumeDisabled ? props.volumeDisabledReason : undefined"
+            :title="props.volumeDisabledReason"
         >
             <button
                 class="icon-button icon-button--player volume-control__button"
+                :disabled="props.volumeDisabled || props.muteDisabled"
+                :aria-disabled="props.volumeDisabled || props.muteDisabled"
+                :aria-description="props.volumeDisabledReason || props.muteDisabledReason"
+                :data-disabled-reason="
+                    props.volumeDisabled || props.muteDisabled
+                        ? props.volumeDisabledReason || props.muteDisabledReason
+                        : undefined
+                "
                 :title="
-                    volumePercent > 0
+                    props.volumeDisabledReason || props.muteDisabledReason ||
+                    (volumePercent > 0
                         ? `Mute volume ${volumePercent}%`
-                        : 'Restore volume'
+                        : 'Restore volume')
                 "
                 @click="emit('toggle-muted')"
             >
@@ -108,6 +140,8 @@ const onVolumeInput = (event: Event) => {
                     step="1"
                     :value="volumePercent"
                     :aria-label="`Volume ${volumePercent}%`"
+                    :aria-description="props.volumeDisabledReason"
+                    :disabled="props.volumeDisabled"
                     @input="onVolumeInput"
                 />
             </div>
@@ -141,6 +175,34 @@ const onVolumeInput = (event: Event) => {
     align-items: center;
     border-radius: 8px;
     padding: 2px;
+}
+
+.volume-control--disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.volume-control--disabled .volume-control__popover {
+    display: none;
+}
+
+.volume-control--disabled[data-disabled-reason]:hover::after {
+    content: attr(data-disabled-reason);
+    position: absolute;
+    z-index: 3;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    width: max-content;
+    max-width: min(260px, 70vw);
+    padding: 6px 8px;
+    border-radius: 5px;
+    color: rgba(255, 255, 255, 0.94);
+    background: rgba(16, 22, 30, 0.94);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    font-size: 11px;
+    line-height: 1.35;
+    pointer-events: none;
+    transform: translateX(-50%);
 }
 
 .volume-control:hover,

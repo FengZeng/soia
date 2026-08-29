@@ -13,16 +13,19 @@
         <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
         <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
         <controlURL>/upnp/service/ConnectionManager/Control</controlURL>
+        <SCPDURL>/upnp/service/ConnectionManager/desc.xml</SCPDURL>
       </service>
       <service>
         <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
         <serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>
         <controlURL>/upnp/service/AVTransport/Control</controlURL>
+        <SCPDURL>/upnp/service/AVTransport/desc.xml</SCPDURL>
       </service>
       <service>
         <serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>
         <serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>
         <controlURL>/upnp/service/RenderingControl/Control</controlURL>
+        <SCPDURL>/upnp/service/RenderingControl/desc.xml</SCPDURL>
       </service>
     </serviceList>
   </device>

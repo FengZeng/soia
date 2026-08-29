@@ -2,6 +2,8 @@
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 import type { MediaTrack } from "../types/media";
 import type { SubtitleTarget } from "../composables/useSubtitleState";
+import { useCasting } from "../composables/useCasting";
+import { tauriCastingClient } from "../core-client/tauriCastingClient";
 import SeekBar from "./player-controls/SeekBar.vue";
 import LeftControls from "./player-controls/LeftControls.vue";
 import RightControls from "./player-controls/RightControls.vue";
@@ -56,6 +58,36 @@ const props = defineProps<{
     hasSubTracks: boolean;
     isFullscreen: boolean;
 }>();
+
+const casting = useCasting(tauriCastingClient);
+const activeCastCapabilities = () => casting.snapshot.value.device?.capabilities;
+const isCasting = () => casting.snapshot.value.sessionId !== null;
+const seekDisabled = () =>
+    isCasting() &&
+    (!activeCastCapabilities()?.seek || !casting.snapshot.value.seekable);
+const volumeDisabled = () => isCasting() && !activeCastCapabilities()?.volume;
+const castFeatureDisabled = () => isCasting();
+const playbackDisabled = () => {
+    if (!isCasting()) return false;
+    const capabilities = activeCastCapabilities();
+    return !(props.isPlaying ? capabilities?.pause : capabilities?.play);
+};
+
+const seekDisabledReason = () => {
+    if (!isCasting()) return undefined;
+    if (!activeCastCapabilities()?.seek) return "Seek is not supported by this receiver";
+    if (!casting.snapshot.value.seekable) return "This receiver has not reported a seekable timeline";
+    return undefined;
+};
+
+const volumeDisabledReason = () =>
+    volumeDisabled() ? "Volume control is not supported by this receiver" : undefined;
+const castFeatureDisabledReason = () =>
+    castFeatureDisabled() ? "This control is unavailable while casting" : undefined;
+const muteDisabledReason = () =>
+    isCasting() ? "Mute control is not supported by DLNA casting" : undefined;
+const playbackDisabledReason = () =>
+    playbackDisabled() ? "Play/pause is not supported by this receiver" : undefined;
 
 const emit = defineEmits<{
     (e: "prev-track"): void;
@@ -229,6 +261,8 @@ onUnmounted(() => {
                 :buffered-percent="bufferedPercent"
                 :format-time="formatTime"
                 :controls-visible="controlsVisible"
+                :disabled="seekDisabled()"
+                :disabled-reason="seekDisabledReason()"
                 @seek="emit('seek', $event)"
             />
             <div ref="controlsViewportRef" class="controls-main-viewport">
@@ -247,7 +281,15 @@ onUnmounted(() => {
                         :volume="volume"
                         :format-time="formatTime"
                         :badges="props.statusBadges"
-                        :passthrough-active="audioPassthroughActive"
+                        :passthrough-active="audioPassthroughActive && !isCasting()"
+                        :playback-disabled="playbackDisabled()"
+                        :playback-disabled-reason="playbackDisabledReason()"
+                        :navigation-disabled="isCasting()"
+                        :navigation-disabled-reason="castFeatureDisabledReason()"
+                        :volume-disabled="volumeDisabled()"
+                        :volume-disabled-reason="volumeDisabledReason()"
+                        :mute-disabled="isCasting()"
+                        :mute-disabled-reason="muteDisabledReason()"
                         @prev-track="emit('prev-track')"
                         @toggle-play-pause="emit('toggle-play-pause')"
                         @stop-playback="emit('stop-playback')"
@@ -295,6 +337,8 @@ onUnmounted(() => {
                         :has-audio-tracks="hasAudioTracks"
                         :has-sub-tracks="hasSubTracks"
                         :is-fullscreen="isFullscreen"
+                        :casting-disabled="castFeatureDisabled()"
+                        :casting-disabled-reason="castFeatureDisabledReason()"
                         @toggle-menu="emit('toggle-menu', $event)"
                         @toggle-loop-one="emit('toggle-loop-one')"
                         @set-speed="emit('set-speed', $event)"

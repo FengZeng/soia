@@ -21,6 +21,8 @@ const props = defineProps<{
     showSpeedMenu: boolean;
     showSettingsMenu: boolean;
     speedLocked: boolean;
+    castingDisabled?: boolean;
+    castingDisabledReason?: string;
     audioDelay: number;
     subDelay: number;
     secondarySubDelay: number;
@@ -468,10 +470,26 @@ watch(
         <div class="track-menu-container">
             <button
                 class="icon-button icon-button--player"
-                :disabled="speedLocked"
+                :disabled="speedLocked || props.castingDisabled"
+                :aria-description="
+                    props.castingDisabled
+                        ? props.castingDisabledReason
+                        : speedLocked
+                        ? 'Playback speed is fixed during audio passthrough'
+                        : undefined
+                "
+                :data-disabled-reason="
+                    props.castingDisabled || speedLocked
+                        ? props.castingDisabled
+                            ? props.castingDisabledReason
+                            : 'Playback speed is fixed during audio passthrough'
+                        : undefined
+                "
                 @click.stop="emit('toggle-menu', 'speed')"
                 :title="
-                    speedLocked
+                    props.castingDisabled
+                        ? props.castingDisabledReason
+                        : speedLocked
                         ? 'Playback speed is fixed during audio passthrough'
                         : 'Playback Speed'
                 "
@@ -480,7 +498,7 @@ watch(
             </button>
 
             <transition name="fade-up">
-                <div v-if="showSpeedMenu" class="track-menu">
+                <div v-if="showSpeedMenu && !props.castingDisabled" class="track-menu">
                     <div class="track-menu__header">Playback Speed</div>
                     <div class="track-menu__list">
                         <button
@@ -531,8 +549,11 @@ watch(
             <button
                 class="icon-button icon-button--player loop-toggle"
                 :class="{ 'loop-toggle--active': isLoopOne }"
+                :disabled="props.castingDisabled"
+                :aria-description="props.castingDisabledReason"
+                :data-disabled-reason="props.castingDisabled ? props.castingDisabledReason : undefined"
                 @click.stop="emit('toggle-loop-one')"
-                title="Loop One"
+                :title="props.castingDisabledReason || 'Loop One'"
                 :aria-pressed="isLoopOne"
             >
                 <svg viewBox="0 0 24 24" fill="currentColor">
@@ -546,8 +567,11 @@ watch(
         <div class="track-menu-container">
             <button
                 class="icon-button icon-button--player"
+                :disabled="props.castingDisabled"
+                :aria-description="props.castingDisabledReason"
+                :data-disabled-reason="props.castingDisabled ? props.castingDisabledReason : undefined"
                 @click.stop="emit('toggle-menu', 'audio')"
-                title="Audio Tracks"
+                :title="props.castingDisabledReason || 'Audio Tracks'"
             >
                 <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -562,7 +586,7 @@ watch(
 
             <transition name="fade-up">
                 <div
-                    v-if="showAudioMenu"
+                    v-if="showAudioMenu && !props.castingDisabled"
                     class="track-menu track-menu--wide track-menu--audio"
                 >
                     <div class="track-menu__header">
@@ -644,8 +668,11 @@ watch(
         <div class="track-menu-container">
             <button
                 class="icon-button icon-button--player"
+                :disabled="props.castingDisabled"
+                :aria-description="props.castingDisabledReason"
+                :data-disabled-reason="props.castingDisabled ? props.castingDisabledReason : undefined"
                 @click.stop="emit('toggle-menu', 'sub')"
-                title="Subtitles"
+                :title="props.castingDisabledReason || 'Subtitles'"
             >
                 <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -661,7 +688,7 @@ watch(
 
             <transition name="fade-up">
                 <div
-                    v-if="showSubMenu"
+                    v-if="showSubMenu && !props.castingDisabled"
                     class="track-menu track-menu--wide track-menu--subtitle"
                     :class="{
                         'track-menu--subtitle-advanced':
@@ -949,8 +976,11 @@ watch(
         <div class="track-menu-container">
             <button
                 class="icon-button icon-button--player"
+                :disabled="props.castingDisabled"
+                :aria-description="props.castingDisabledReason"
+                :data-disabled-reason="props.castingDisabled ? props.castingDisabledReason : undefined"
                 @click.stop="emit('toggle-menu', 'settings')"
-                title="Video"
+                :title="props.castingDisabledReason || 'Video'"
             >
                 <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -968,7 +998,7 @@ watch(
 
             <transition name="fade-up">
                 <div
-                    v-if="showSettingsMenu"
+                    v-if="showSettingsMenu && !props.castingDisabled"
                     class="track-menu track-menu--settings track-menu--video-settings"
                 >
                     <div class="track-menu__header">
@@ -1236,10 +1266,15 @@ watch(
             class="icon-button icon-button--player icon-button--lg pip-toggle"
             :class="{ 'pip-toggle--active': isPipEnabled }"
             type="button"
-            :disabled="isTogglingPip"
-            :aria-disabled="isTogglingPip"
+            :disabled="isTogglingPip || props.castingDisabled"
+            :aria-disabled="isTogglingPip || props.castingDisabled"
+            :aria-description="props.castingDisabled ? props.castingDisabledReason : undefined"
+            :data-disabled-reason="props.castingDisabled ? props.castingDisabledReason : undefined"
             :aria-pressed="isPipEnabled"
-            :title="isPipEnabled ? 'Exit Picture in Picture' : 'Picture in Picture'"
+            :title="
+                props.castingDisabledReason ||
+                (isPipEnabled ? 'Exit Picture in Picture' : 'Picture in Picture')
+            "
             :aria-label="isPipEnabled ? 'Exit picture in picture' : 'Enter picture in picture'"
             @click.stop="onTogglePip"
         >

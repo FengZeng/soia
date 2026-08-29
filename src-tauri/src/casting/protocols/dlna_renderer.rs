@@ -8,7 +8,7 @@ use roxmltree::Document;
 use soia_protocol::{
     CastCapabilitiesDto, CastDeviceDto, CastErrorCodeDto, CastErrorDto, CastProtocolDto,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -200,7 +200,9 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
                 duration: media.duration,
                 volume: None,
                 muted: None,
-                seekable: false,
+                seekable: media
+                    .duration
+                    .is_some_and(|duration| duration.is_finite() && duration > 0.0),
             })
         })
     }
@@ -390,7 +392,8 @@ async fn discover_renderer(
         .text()
         .await
         .map_err(|_| "device description response could not be read".to_string())?;
-    let description = parse_renderer_description(&location, &body)?;
+    let mut description = parse_renderer_description(&location, &body)?;
+    populate_service_actions(client, &mut description.services).await;
     let id = description
         .udn
         .clone()
@@ -404,11 +407,57 @@ async fn discover_renderer(
             name: description.name.clone().unwrap_or_else(|| "DLNA Renderer".to_string()),
             model_name: description.model_name.clone(),
             address: address.to_string(),
-            capabilities: conservative_capabilities(),
+            capabilities: description.services.capabilities(),
             last_seen_at: unix_time_secs(),
         },
         description,
     })
+}
+
+async fn populate_service_actions(client: &reqwest::Client, services: &mut RendererServices) {
+    let (av_transport_actions, rendering_control_actions) = tokio::join!(
+        fetch_service_actions(client, services.av_transport.as_ref()),
+        fetch_service_actions(client, services.rendering_control.as_ref()),
+    );
+    if let Some(service) = services.av_transport.as_mut() {
+        service.actions = av_transport_actions;
+    }
+    if let Some(service) = services.rendering_control.as_mut() {
+        service.actions = rendering_control_actions;
+    }
+}
+
+async fn fetch_service_actions(
+    client: &reqwest::Client,
+    service: Option<&DlnaService>,
+) -> Option<HashSet<String>> {
+    let service = service?;
+    let scpd_url = service.scpd_url.as_ref()?;
+    let body = match client
+        .get(scpd_url.clone())
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+    {
+        Ok(response) => match response.text().await {
+            Ok(body) => body,
+            Err(_) => {
+                log::debug!("DLNA SCPD response could not be read for {}", service.service_type);
+                return None;
+            }
+        },
+        Err(_) => {
+            log::debug!("DLNA SCPD request failed for {}", service.service_type);
+            return None;
+        }
+    };
+    match parse_scpd_actions(&body) {
+        Ok(actions) => Some(actions),
+        Err(error) => {
+            log::debug!("DLNA SCPD action list unavailable for {}: {error}", service.service_type);
+            None
+        }
+    }
 }
 
 struct DiscoveredRenderer {
@@ -432,10 +481,35 @@ struct RendererServices {
     connection_manager: Option<DlnaService>,
 }
 
+impl RendererServices {
+    fn capabilities(&self) -> CastCapabilitiesDto {
+        CastCapabilitiesDto {
+            play: self.av_transport.as_ref().is_some_and(|service| service.supports_action("Play")),
+            pause: self.av_transport.as_ref().is_some_and(|service| service.supports_action("Pause")),
+            seek: self.av_transport.as_ref().is_some_and(|service| service.supports_action("Seek")),
+            stop: self.av_transport.as_ref().is_some_and(|service| service.supports_action("Stop")),
+            volume: self
+                .rendering_control
+                .as_ref()
+                .is_some_and(|service| service.supports_action("SetVolume")),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DlnaService {
     service_type: String,
     control_url: Url,
+    scpd_url: Option<Url>,
+    actions: Option<HashSet<String>>,
+}
+
+impl DlnaService {
+    fn supports_action(&self, action: &str) -> bool {
+        self.actions
+            .as_ref()
+            .is_some_and(|actions| actions.contains(&action.to_ascii_lowercase()))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -585,13 +659,14 @@ async fn read_receiver_status(
         },
         None => None,
     };
+    let seekable = is_seekable_position(position, duration);
     Ok(CastReceiverStatus {
         phase,
         position: position.unwrap_or_default(),
         duration,
         volume,
         muted: None,
-        seekable: false,
+        seekable,
     })
 }
 
@@ -1012,9 +1087,14 @@ fn parse_renderer_services(
             continue;
         };
         let control_url = resolve_control_url(description_url, &control_url)?;
+        let scpd_url = child_text(service, "SCPDURL")
+            .map(|scpd_url| resolve_control_url(description_url, &scpd_url))
+            .transpose()?;
         let service = DlnaService {
             service_type,
             control_url,
+            scpd_url,
+            actions: None,
         };
         match kind {
             DlnaServiceKind::AvTransport => services.av_transport = Some(service),
@@ -1070,6 +1150,20 @@ fn child_text(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn parse_scpd_actions(xml: &str) -> Result<HashSet<String>, String> {
+    let document = Document::parse(xml).map_err(|_| "invalid DLNA SCPD XML".to_string())?;
+    let action_list = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("actionList"))
+        .ok_or_else(|| "DLNA SCPD has no actionList".to_string())?;
+    Ok(action_list
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("action"))
+        .filter_map(|action| child_text(action, "name"))
+        .map(|name| name.to_ascii_lowercase())
+        .collect())
+}
+
 fn location_ipv4_for_response(location: &Url, source: IpAddr) -> Result<Ipv4Addr, String> {
     if !matches!(location.scheme(), "http" | "https") || !location.username().is_empty() || location.password().is_some() {
         return Err("LOCATION must be an unauthenticated HTTP URL".to_string());
@@ -1099,10 +1193,9 @@ fn unix_time_secs() -> u64 {
         .unwrap_or_default()
 }
 
-/// Discovery alone does not prove the SOAP services or formats needed for a control are usable.
-/// GetProtocolInfo and the service capability checks promote these values in later milestones.
-fn conservative_capabilities() -> CastCapabilitiesDto {
-    CastCapabilitiesDto::default()
+fn is_seekable_position(position: Option<f64>, duration: Option<f64>) -> bool {
+    position.is_some()
+        && duration.is_some_and(|duration| duration.is_finite() && duration > 0.0)
 }
 
 fn discovery_error(message: &str) -> CastErrorDto {
@@ -1127,10 +1220,12 @@ mod tests {
         build_get_position_info_envelope, build_get_protocol_info_envelope,
         build_get_transport_info_envelope, build_get_volume_envelope, build_pause_envelope,
         build_play_envelope, build_seek_envelope, build_set_av_transport_uri_envelope,
-        build_set_volume_envelope, build_stop_envelope, conservative_capabilities, format_dlna_rel_time,
+        build_set_volume_envelope, build_stop_envelope, format_dlna_rel_time,
+        is_seekable_position,
         location_ipv4_for_response, parse_get_position_info_response,
         parse_get_protocol_info_response, parse_get_transport_info_response,
-        parse_get_volume_response, parse_renderer_description, udn_from_usn,
+        parse_get_volume_response, parse_renderer_description, parse_scpd_actions, udn_from_usn,
+        DlnaService, RendererServices,
     };
     use crate::casting::CastMediaDescriptor;
     use std::net::{IpAddr, Ipv4Addr};
@@ -1154,6 +1249,15 @@ mod tests {
                 .as_ref()
                 .map(|service| service.control_url.as_str()),
             Some("http://192.0.2.20:25826/upnp/service/AVTransport/Control"),
+        );
+        assert_eq!(
+            renderer
+                .services
+                .av_transport
+                .as_ref()
+                .and_then(|service| service.scpd_url.as_ref())
+                .map(Url::as_str),
+            Some("http://192.0.2.20:25826/upnp/service/AVTransport/desc.xml"),
         );
         assert_eq!(
             renderer
@@ -1258,14 +1362,90 @@ mod tests {
     }
 
     #[test]
-    fn discovery_does_not_advertise_controls_before_service_validation() {
-        let capabilities = conservative_capabilities();
+    fn renderer_without_control_services_has_no_capabilities() {
+        let capabilities = RendererServices::default().capabilities();
 
         assert!(!capabilities.play);
         assert!(!capabilities.pause);
         assert!(!capabilities.seek);
         assert!(!capabilities.stop);
         assert!(!capabilities.volume);
+    }
+
+    #[test]
+    fn maps_advertised_scpd_actions_to_shared_capabilities() {
+        let av_transport = DlnaService {
+            service_type: "urn:schemas-upnp-org:service:AVTransport:1".to_string(),
+            control_url: Url::parse("http://192.0.2.20/avtransport").unwrap(),
+            scpd_url: Some(Url::parse("http://192.0.2.20/avtransport/scpd.xml").unwrap()),
+            actions: Some(
+                parse_scpd_actions(include_str!("../fixtures/dlna_renderer/avtransport-scpd.xml"))
+                    .unwrap(),
+            ),
+        };
+        let rendering_control = DlnaService {
+            service_type: "urn:schemas-upnp-org:service:RenderingControl:1".to_string(),
+            control_url: Url::parse("http://192.0.2.20/rendering").unwrap(),
+            scpd_url: Some(Url::parse("http://192.0.2.20/rendering/scpd.xml").unwrap()),
+            actions: Some(
+                parse_scpd_actions(include_str!("../fixtures/dlna_renderer/rendering-control-scpd.xml"))
+                    .unwrap(),
+            ),
+        };
+        let capabilities = RendererServices {
+            av_transport: Some(av_transport),
+            rendering_control: Some(rendering_control),
+            connection_manager: None,
+        }
+        .capabilities();
+
+        assert!(capabilities.play);
+        assert!(capabilities.pause);
+        assert!(capabilities.seek);
+        assert!(capabilities.stop);
+        assert!(capabilities.volume);
+    }
+
+    #[test]
+    fn does_not_advertise_actions_missing_from_scpd() {
+        let av_transport = DlnaService {
+            service_type: "urn:schemas-upnp-org:service:AVTransport:1".to_string(),
+            control_url: Url::parse("http://192.0.2.20/avtransport").unwrap(),
+            scpd_url: Some(Url::parse("http://192.0.2.20/avtransport/scpd.xml").unwrap()),
+            actions: Some(parse_scpd_actions(
+                r#"<scpd><actionList><action><name>Play</name></action></actionList></scpd>"#,
+            )
+            .unwrap()),
+        };
+        let rendering_control = DlnaService {
+            service_type: "urn:schemas-upnp-org:service:RenderingControl:1".to_string(),
+            control_url: Url::parse("http://192.0.2.20/rendering").unwrap(),
+            scpd_url: Some(Url::parse("http://192.0.2.20/rendering/scpd.xml").unwrap()),
+            actions: Some(parse_scpd_actions(
+                r#"<scpd><actionList><action><name>GetVolume</name></action></actionList></scpd>"#,
+            )
+            .unwrap()),
+        };
+        let capabilities = RendererServices {
+            av_transport: Some(av_transport),
+            rendering_control: Some(rendering_control),
+            connection_manager: None,
+        }
+        .capabilities();
+
+        assert!(capabilities.play);
+        assert!(!capabilities.pause);
+        assert!(!capabilities.seek);
+        assert!(!capabilities.stop);
+        assert!(!capabilities.volume);
+    }
+
+    #[test]
+    fn reports_seekable_only_for_a_finite_positive_duration_with_position() {
+        assert!(is_seekable_position(Some(0.0), Some(1.0)));
+        assert!(!is_seekable_position(None, Some(1.0)));
+        assert!(!is_seekable_position(Some(1.0), Some(0.0)));
+        assert!(!is_seekable_position(Some(1.0), Some(f64::NAN)));
     }
 
     #[test]

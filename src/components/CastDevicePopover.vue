@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useCasting } from "../composables/useCasting";
 import { tauriCastingClient } from "../core-client/tauriCastingClient";
+import type { CastDeviceDto } from "../core-client/generated/CastDeviceDto";
 
 const props = defineProps<{
     isFileLoaded: boolean;
@@ -13,6 +14,18 @@ const hasError = computed(() => Boolean(casting.error.value || casting.snapshot.
 const errorMessage = computed(
     () => casting.error.value || casting.snapshot.value.lastError?.message || "",
 );
+const activeCapabilityHint = computed(() => {
+    const capabilities = casting.snapshot.value.device?.capabilities;
+    if (!capabilities) return "";
+    const unavailable: string[] = [];
+    if (!capabilities.play || !capabilities.pause) unavailable.push("play/pause");
+    if (!capabilities.seek) unavailable.push("seeking");
+    if (!capabilities.volume) unavailable.push("volume");
+    const receiverControls = unavailable.length
+        ? `Unavailable on this receiver: ${unavailable.join(", ")}.`
+        : "";
+    return `${receiverControls}${receiverControls ? " " : ""}Speed, track selection, video effects and PiP are unavailable while casting.`;
+});
 const phaseLabel = computed(() => {
     const labels: Record<string, string> = {
         connecting: "Connecting",
@@ -32,6 +45,14 @@ const openAndDiscover = () => {
     if (isOpen.value && !casting.devices.value.length) {
         void casting.discover();
     }
+};
+
+const deviceCapabilityHint = (device: CastDeviceDto) => {
+    const unavailable: string[] = [];
+    if (!device.capabilities.play || !device.capabilities.pause) unavailable.push("playback");
+    if (!device.capabilities.seek) unavailable.push("seek");
+    if (!device.capabilities.volume) unavailable.push("volume");
+    return unavailable.length ? `No ${unavailable.join(" or ")}` : "Playback controls ready";
 };
 </script>
 
@@ -77,6 +98,9 @@ const openAndDiscover = () => {
                 <span>{{ casting.snapshot.value.mediaTitle || "Current media" }}</span>
                 <button type="button" @click="casting.disconnect">Stop casting</button>
             </div>
+            <p v-if="casting.isActive.value && activeCapabilityHint" class="cast-popover__capability-hint">
+                {{ activeCapabilityHint }}
+            </p>
 
             <div v-if="casting.isDiscovering.value && !casting.devices.value.length" class="cast-popover__empty">
                 Looking for receivers…
@@ -92,7 +116,10 @@ const openAndDiscover = () => {
                         @click="casting.connect(device.id)"
                     >
                         <span class="cast-popover__device-name">{{ device.name }}</span>
-                        <span class="cast-popover__device-protocol">{{ device.protocol === "dlna" ? "DLNA" : "Chromecast" }}</span>
+                        <span class="cast-popover__device-meta">
+                            <span class="cast-popover__device-protocol">{{ device.protocol === "dlna" ? "DLNA" : "Chromecast" }}</span>
+                            <span class="cast-popover__device-capabilities">{{ deviceCapabilityHint(device) }}</span>
+                        </span>
                     </button>
                 </li>
             </ul>
@@ -119,13 +146,16 @@ const openAndDiscover = () => {
 .cast-popover__devices button:hover:not(:disabled) { background: rgba(255,255,255,.09); }
 .cast-popover__devices button:disabled { cursor: not-allowed; opacity: .45; }
 .cast-popover__device-name { font-size: 12px; font-weight: 560; }
+.cast-popover__device-meta { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .cast-popover__device-protocol { color: rgba(255,255,255,.5); font-size: 10px; }
+.cast-popover__device-capabilities { color: rgba(255,255,255,.42); font-size: 9px; }
 .cast-popover__empty { padding: 24px 18px; color: rgba(255,255,255,.58); font-size: 12px; line-height: 1.45; text-align: center; }
 .cast-popover__active, .cast-popover__error { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 11px; }
 .cast-popover__active span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cast-popover__error { color: #ffb4ae; background: rgba(190,58,48,.14); }
 .cast-popover__error button { color: inherit; }
 .cast-popover__hint { padding: 0 12px 11px; }
+.cast-popover__capability-hint { margin: 0; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,.08); color: rgba(255,220,150,.78); font-size: 10px; line-height: 1.4; }
 
 :global(:root[data-theme="light"]) .cast-popover__trigger { color: rgba(28,38,52,.9); }
 :global(:root[data-theme="light"]) .cast-popover__trigger:hover { color: rgba(18,28,40,1); }
@@ -133,4 +163,6 @@ const openAndDiscover = () => {
 :global(:root[data-theme="light"]) .cast-popover__panel { border-color: rgba(30,46,63,.14); color: #263545; background: rgba(250,252,255,.97); box-shadow: 0 16px 42px rgba(26,42,58,.18); }
 :global(:root[data-theme="light"]) .cast-popover__header, :global(:root[data-theme="light"]) .cast-popover__active { border-color: rgba(30,46,63,.1); }
 :global(:root[data-theme="light"]) .cast-popover__header p, :global(:root[data-theme="light"]) .cast-popover__hint, :global(:root[data-theme="light"]) .cast-popover__empty, :global(:root[data-theme="light"]) .cast-popover__device-protocol { color: rgba(38,53,69,.58); }
+:global(:root[data-theme="light"]) .cast-popover__device-capabilities { color: rgba(38,53,69,.48); }
+:global(:root[data-theme="light"]) .cast-popover__capability-hint { border-color: rgba(30,46,63,.1); color: rgba(139,92,20,.9); }
 </style>
