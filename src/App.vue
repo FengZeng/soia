@@ -84,6 +84,7 @@ const {
 } = useAppBootstrap(tauriCoreClient);
 
 const clearNavSelectionDuringLoad = ref(false);
+const isCastPopoverOpen = ref(false);
 const playbackLoadingState = usePlaybackLoadingState();
 const { isLoading, loadingUrl } = playbackLoadingState;
 const playlistCreationPrompt = usePlaylistCreationPrompt();
@@ -329,6 +330,7 @@ const isPlaybackMenuOpen = () =>
     playbackContextMenu.isOpen.value ||
     isInfoOpen.value ||
     isPlaylistOpen.value ||
+    isCastPopoverOpen.value ||
     tracks.showAudioMenu.value ||
     tracks.showSubMenu.value ||
     tracks.showSubtitleAdvancedSettings.value ||
@@ -606,6 +608,7 @@ useAppStartupBindings({
             @open-file-picker="requestOpenFilePicker"
             @toggle-info="toggleInfo"
             @toggle-playlist="togglePlaylist"
+            @cast-popover-toggle="isCastPopoverOpen = $event"
             @url-input-mousedown="onDragRegionMouseDown"
             @url-input-touchstart="onDragRegionTouchStart"
         />
@@ -809,7 +812,8 @@ useAppStartupBindings({
                 tracks.showAudioMenu.value ||
                 tracks.showSubMenu.value ||
                 speed.showSpeedMenu.value ||
-                adjustments.showSettingsMenu.value
+                adjustments.showSettingsMenu.value ||
+                isCastPopoverOpen
             "
             @toggle="togglePlaylist"
         />

@@ -42,49 +42,14 @@ fn has_windows_soia_utils_runtime(dir: &Path) -> bool {
     })
 }
 
-fn normalize_windows_import_library(
-    dir: &Path,
-    candidates: &[&str],
-    canonical_name: &str,
-) -> Option<String> {
-    let canonical_path = dir.join(canonical_name);
-    if canonical_path.exists() {
-        return Some(canonical_name.trim_end_matches(".lib").to_string());
-    }
-
-    let existing = candidates.iter().find_map(|candidate| {
-        let candidate_path = dir.join(candidate);
-        if candidate_path.exists() {
-            Some(candidate_path)
-        } else {
-            None
-        }
-    })?;
-
-    if let Err(err) = fs::copy(&existing, &canonical_path) {
-        panic!(
-            "\n[!] Failed to normalize import library to '{}': {}\n    Source: {}\n    Destination: {}\n",
-            canonical_name,
-            err,
-            existing.display(),
-            canonical_path.display()
-        );
-    }
-
-    Some(canonical_name.trim_end_matches(".lib").to_string())
-}
-
-fn soia_windows_link_name(dir: &Path) -> Option<String> {
-    normalize_windows_import_library(
-        dir,
-        &[
-            "soia_utils.lib",
-            "soia_utils.dll.a",
-            "libsoia_utils.lib",
-            "libsoia_utils.dll.a",
-        ],
-        "soia_utils.lib",
-    )
+fn has_windows_ffmpeg_import_library(dir: &Path, name: &str) -> bool {
+    [
+        format!("{name}.lib"),
+        format!("lib{name}.dll.a"),
+        format!("{name}.dll.a"),
+    ]
+    .iter()
+    .any(|candidate| dir.join(candidate).exists())
 }
 
 fn main() {
@@ -156,26 +121,23 @@ fn main() {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .or_else(|| {
-            fs::read(&config_file)
-                .ok()
-                .and_then(|bytes| {
-                    let data: Vec<u8> = bytes
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, b)| b ^ b"HTUA_AI0S"[i % 9])
-                        .collect();
-                    String::from_utf8(data).ok()
-                })
+            fs::read(&config_file).ok().and_then(|bytes| {
+                let data: Vec<u8> = bytes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, b)| b ^ b"HTUA_AI0S"[i % 9])
+                    .collect();
+                String::from_utf8(data).ok()
+            })
         })
-        .unwrap_or_else(|| {
-            String::new()
-        }).replace('\r', "");
+        .unwrap_or_else(|| String::new())
+        .replace('\r', "");
     println!("cargo:rustc-env=SOIA_API={}", api);
 
     println!("cargo:rustc-link-search=native={}", mpv_lib_dir.display());
     if target_os == "windows" {
         let link_name = windows_link_name.unwrap_or("mpv");
-        println!("cargo:rustc-link-lib={}", link_name);
+        println!("cargo:rustc-link-lib=dylib={}", link_name);
     } else {
         println!("cargo:rustc-link-lib=mpv");
     }
@@ -235,6 +197,18 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=avutil");
         }
         "windows" => {
+            for library in ["avformat", "avcodec", "avutil", "swscale"] {
+                if !has_windows_ffmpeg_import_library(&mpv_lib_dir, library) {
+                    panic!(
+                        "\n[!] Cannot find FFmpeg import library for '{}'.\n    Expected '{}.lib' or 'lib{}.dll.a' under: {}\n    Please run: pnpm setup:libs\n",
+                        library,
+                        library,
+                        library,
+                        mpv_lib_dir.display()
+                    );
+                }
+            }
+
             if !has_windows_soia_utils_runtime(&mpv_lib_dir) {
                 panic!(
                     "\n[!] Cannot find soia_utils.dll for target '{}'.\n    Expected under libs/mpv: {}\n    Please run: pnpm setup:libs\n",
@@ -243,16 +217,16 @@ fn main() {
                 );
             }
 
-            let Some(link_name) = soia_windows_link_name(&mpv_lib_dir) else {
+            if !has_windows_ffmpeg_import_library(&mpv_lib_dir, "soia_utils") {
                 panic!(
                     "\n[!] Cannot find soia_utils import library (.lib/.dll.a) for target '{}'.\n    Expected under libs/mpv: {}\n    Please run: pnpm setup:libs\n",
                     target_triple,
                     mpv_lib_dir.display()
                 );
-            };
+            }
 
             println!("cargo:rustc-link-search=native={}", mpv_lib_dir.display());
-            println!("cargo:rustc-link-lib={}", link_name);
+            println!("cargo:rustc-link-lib=dylib=soia_utils");
         }
         _ => {}
     }

@@ -36,6 +36,7 @@ const tauriAdapterFiles = new Set([
   "src/core-client/tauriCoreClient.ts",
   "src/core-client/tauriPlaylistClient.ts",
   "src/core-client/tauriPlaylistSourceClient.ts",
+  "src/core-client/tauriCastingClient.ts",
 ]);
 
 for (const relativePath of await collectFiles("src/core-client")) {

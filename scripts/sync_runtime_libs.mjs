@@ -154,15 +154,17 @@ function syncRuntimeManifest(platform, entries) {
   };
 
   let currentEntries = [];
+  let currentTarget = "";
   if (existsSync(manifestPath)) {
     const raw = readFileSync(manifestPath, "utf8");
     const parsed = JSON.parse(raw);
     currentEntries = Array.isArray(parsed.entries)
       ? [...parsed.entries].sort((a, b) => a.localeCompare(b))
       : [];
+    currentTarget = typeof parsed.target === "string" ? parsed.target : "";
   }
 
-  const changed = !sameStringArray(currentEntries, entries);
+  const changed = currentTarget !== targetTriple || !sameStringArray(currentEntries, entries);
 
   if (checkOnly) {
     if (changed) {

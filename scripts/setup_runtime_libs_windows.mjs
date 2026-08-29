@@ -277,18 +277,10 @@ function findExistingImportLibrary(outputDir) {
 
 function ensureWindowsImportLibrary(outputDir) {
   const existing = findExistingImportLibrary(outputDir);
-  const canonicalLib = resolve(outputDir, "mpv.lib");
-
-  if (existing) {
-    if (basename(existing).toLowerCase() !== "mpv.lib") {
-      copyFileSync(existing, canonicalLib);
-      console.log(`[INFO] Normalized import library name: ${basename(existing)} -> mpv.lib`);
-    }
-    return;
-  }
+  if (existing) return;
 
   throw new Error(
-    "[ERROR] Missing Windows import library (.lib/.dll.a). Please provide mpv.lib (or compatible import lib) together with mpv DLLs."
+    "[ERROR] Missing Windows import library (.lib/.dll.a). Please provide libmpv.dll.a (or a compatible import lib) together with mpv DLLs."
   );
 }
 
@@ -377,6 +369,31 @@ function installFromLocalBundle(outputDir) {
   copyArtifactsToRuntimeDir(localBundleDir, outputDir);
 }
 
+function findLinkedLocalBundle() {
+  const nodeModulesDir = resolve(projectRoot, "node_modules");
+  if (!existsSync(nodeModulesDir)) return "";
+
+  const candidates = readdirSync(nodeModulesDir, { withFileTypes: true })
+    .filter((entry) => entry.name.toLowerCase().startsWith("libmpv-win"))
+    .map((entry) => resolve(nodeModulesDir, entry.name))
+    .filter((candidate) => {
+      try {
+        if (!statSync(candidate).isDirectory()) return false;
+        const files = listFilesRecursive(candidate);
+        return files.some(
+          (filePath) =>
+            /\.dll$/i.test(filePath) &&
+            /(?:^|[\\/])(?:lib)?mpv[^\\/]*\.dll$/i.test(filePath)
+        );
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => a.localeCompare(b));
+
+  return candidates[0] || "";
+}
+
 async function installFromRelease(outputDir) {
   const releaseRepo =
     process.env.MPV_RELEASE_REPO || runtimeReleaseDefaults.MPV_RELEASE_REPO || "";
@@ -434,6 +451,14 @@ function syncRuntimeManifest() {
 
 async function main() {
   mkdirSync(runtimeDir, { recursive: true });
+
+  if (!process.env.MPV_LOCAL_BUNDLE_DIR) {
+    const linkedBundle = findLinkedLocalBundle();
+    if (linkedBundle) {
+      process.env.MPV_LOCAL_BUNDLE_DIR = linkedBundle;
+      console.log(`[INFO] Using linked local mpv bundle: ${linkedBundle}`);
+    }
+  }
 
   if (process.env.MPV_LOCAL_BUNDLE_DIR) {
     installFromLocalBundle(runtimeDir);

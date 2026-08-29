@@ -45,6 +45,7 @@ const emit = defineEmits<{
     (e: "open-file-picker"): void;
     (e: "toggle-info"): void;
     (e: "toggle-playlist"): void;
+    (e: "cast-popover-toggle", value: boolean): void;
     (e: "url-input-mousedown", event: MouseEvent): void;
     (e: "url-input-touchstart", event: TouchEvent): void;
 }>();
@@ -952,7 +953,10 @@ watch(
                     @close="closeUrlContextMenu"
                 />
 
-                <CastDevicePopover :is-file-loaded="props.isFileLoaded" />
+                <CastDevicePopover
+                    :is-file-loaded="props.isFileLoaded"
+                    @update:open="emit('cast-popover-toggle', $event)"
+                />
 
                 <button
                     v-if="props.isUrlModified"

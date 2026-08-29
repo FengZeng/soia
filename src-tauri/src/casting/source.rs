@@ -283,7 +283,18 @@ fn resolve_network_source(
 }
 
 fn classify_direct_source(value: &str) -> Result<CastMediaSource, String> {
-    if let Ok(url) = Url::parse(value.trim()) {
+    let trimmed = value.trim();
+    // `url::Url::parse` interprets a Windows drive letter (for example,
+    // `E:\\Movies\\film.mkv`) as a URI scheme (`e`). Check for drive paths
+    // before attempting URL parsing so local files are not rejected as an
+    // unsupported direct-cast scheme.
+    if is_windows_drive_path(trimmed) {
+        let path = crate::playback_source::resolve_local_media_path(trimmed)
+            .ok_or_else(|| "invalid local cast media path".to_string())?;
+        return local_file_source(path);
+    }
+
+    if let Ok(url) = Url::parse(trimmed) {
         return match url.scheme() {
             "http" | "https" => Ok(CastMediaSource::Http {
                 url: url.to_string(),
@@ -299,9 +310,17 @@ fn classify_direct_source(value: &str) -> Result<CastMediaSource, String> {
             scheme => Err(format!("unsupported direct cast source scheme: {scheme}")),
         };
     }
-    let path = crate::playback_source::resolve_local_media_path(value)
+    let path = crate::playback_source::resolve_local_media_path(trimmed)
         .ok_or_else(|| "invalid local cast media path".to_string())?;
     local_file_source(path)
+}
+
+fn is_windows_drive_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
 fn local_file_source(path: PathBuf) -> Result<CastMediaSource, String> {

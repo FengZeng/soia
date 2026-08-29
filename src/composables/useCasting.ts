@@ -36,6 +36,8 @@ const createCastingStore = (client: CastingClient) => {
     const devices = ref<CastDeviceDto[]>([]);
     const isReady = ref(false);
     const isDiscovering = ref(false);
+    const isBackgroundDiscovering = ref(false);
+    let discoverPromise: Promise<void> | null = null;
     const isConnecting = ref(false);
     const error = ref("");
     let unsubscribe: (() => void) | null = null;
@@ -70,17 +72,28 @@ const createCastingStore = (client: CastingClient) => {
         }
     };
 
-    const discover = async () => {
-        isDiscovering.value = true;
-        error.value = "";
-        try {
-            devices.value = await client.discover();
-            devicesRevision += 1;
-        } catch (cause) {
-            error.value = toMessage(cause);
-        } finally {
-            isDiscovering.value = false;
+    const discover = (showProgress = true) => {
+        if (showProgress) isDiscovering.value = true;
+        else isBackgroundDiscovering.value = true;
+        if (!discoverPromise) {
+            error.value = "";
+            discoverPromise = client
+                .discover()
+                .then((nextDevices) => {
+                    devices.value = nextDevices;
+                    devicesRevision += 1;
+                })
+                .catch((cause) => {
+                    error.value = toMessage(cause);
+                })
+                .finally(() => {
+                    discoverPromise = null;
+                });
         }
+        return discoverPromise.finally(() => {
+            if (showProgress) isDiscovering.value = false;
+            else isBackgroundDiscovering.value = false;
+        });
     };
 
     const connect = async (deviceId: string) => {
@@ -120,6 +133,7 @@ const createCastingStore = (client: CastingClient) => {
             },
         );
         void refresh();
+        void discover(false);
     };
 
     const release = () => {
@@ -135,6 +149,7 @@ const createCastingStore = (client: CastingClient) => {
         error: readonly(error),
         isReady: readonly(isReady),
         isDiscovering: readonly(isDiscovering),
+        isBackgroundDiscovering: readonly(isBackgroundDiscovering),
         isConnecting: readonly(isConnecting),
         isActive,
         activeDeviceName,

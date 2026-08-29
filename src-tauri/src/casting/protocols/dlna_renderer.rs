@@ -156,17 +156,17 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
                     Some(&session.device_id),
                 )
             })?;
-            if let (Some(sink_protocols), Some(mime_type)) =
-                (description.sink_protocols.as_ref(), media.mime_type.as_deref())
-            {
-                if !sink_protocols.supports_mime_type(mime_type) {
-                    return Err(device_error(
-                        CastErrorCodeDto::MediaUnavailable,
-                        "DLNA device does not advertise support for this media format",
-                        Some(&session.device_id),
-                    ));
-                }
-            }
+            // if let (Some(sink_protocols), Some(mime_type)) =
+            //     (description.sink_protocols.as_ref(), media.mime_type.as_deref())
+            // {
+            //     if !sink_protocols.supports_mime_type(mime_type) {
+            //         return Err(device_error(
+            //             CastErrorCodeDto::MediaUnavailable,
+            //             "DLNA device does not advertise support for this media format",
+            //             Some(&session.device_id),
+            //         ));
+            //     }
+            // }
             let client = control_client().map_err(|error| {
                 device_error(
                     CastErrorCodeDto::LoadFailed,
