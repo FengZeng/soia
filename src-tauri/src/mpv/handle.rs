@@ -298,6 +298,10 @@ impl MpvHandle {
         !self.is_rendering.load(Ordering::Acquire)
     }
 
+    pub fn has_loaded_media(&self) -> bool {
+        self.is_rendering.load(Ordering::Acquire)
+    }
+
     pub fn render_target_resize(&mut self, width: u32, height: u32) {
         let utils = self.soia_utils.load(Ordering::Acquire);
         if !utils.is_null() {

@@ -49,8 +49,12 @@ pub(crate) fn apply_to_mpv(
 
         // Recreating the SPDIF decoder in the middle of a TrueHD packet can
         // leave FFmpeg without stream parameters. Refreshing the current
-        // position feeds the new decoder from a valid demux boundary.
-        command(mpv, &["seek", "0", "relative+exact"])?;
+        // position feeds the new decoder from a valid demux boundary. There
+        // is no seekable timeline before a media item is loaded, so skip this
+        // command when changing settings from an idle Settings screen.
+        if mpv.has_loaded_media() {
+            command(mpv, &["seek", "0", "relative+exact"])?;
+        }
     }
     Ok(())
 }

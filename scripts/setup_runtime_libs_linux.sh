@@ -273,6 +273,19 @@ copy_shared_objects_to_dir() {
 
   ln -sf "$canonical_name" "$output_dir/$link_name"
 
+  # The Rust FFI links against the conventional development names (-lavformat,
+  # -lavcodec, ...), while release bundles usually contain only versioned
+  # runtime files such as libavformat.so.62.12.100. Add local linker aliases
+  # without changing the versioned files used at runtime.
+  local ffmpeg_lib
+  local ffmpeg_target
+  for ffmpeg_lib in avformat avcodec avutil swscale; do
+    ffmpeg_target="$(find "$output_dir" -maxdepth 1 -type f -name "lib${ffmpeg_lib}.so.*" | sort | head -n 1 || true)"
+    if [[ -n "$ffmpeg_target" && ! -e "$output_dir/lib${ffmpeg_lib}.so" ]]; then
+      ln -sf "$(basename "$ffmpeg_target")" "$output_dir/lib${ffmpeg_lib}.so"
+    fi
+  done
+
   rm -rf "$staging_dir" 2>/dev/null || true
 }
 

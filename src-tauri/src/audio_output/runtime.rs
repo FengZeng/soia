@@ -3,7 +3,7 @@ use super::model::{
 };
 use super::policy::{codec_is_enabled, is_passthrough_format};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::{collections::HashSet, sync::Mutex};
 
 #[derive(Debug, Clone)]
 struct RuntimeState {
@@ -217,6 +217,8 @@ fn parse_devices(value: &Value) -> Vec<AudioDevice> {
             .cmp(&right.description.to_ascii_lowercase())
             .then_with(|| left.name.cmp(&right.name))
     });
+    let mut seen_names = HashSet::new();
+    devices.retain(|device| seen_names.insert(device.name.clone()));
     devices
 }
 
@@ -271,6 +273,20 @@ mod tests {
         ]));
         assert_eq!(devices[0].name, "a");
         assert_eq!(devices[1].name, "b");
+    }
+
+    #[test]
+    fn removes_duplicate_mpv_audio_device_names() {
+        let runtime = AudioOutputRuntime::new(AudioSettings::default());
+        let (_, devices) = runtime.update_devices(&serde_json::json!([
+            {"name": "coreaudio/phone", "description": "External Headphones"},
+            {"name": "coreaudio/phone", "description": "External Headphones"},
+            {"name": "coreaudio/hdmi", "description": "HDMI"}
+        ]));
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "coreaudio/phone");
+        assert_eq!(devices[1].name, "coreaudio/hdmi");
     }
 
     #[test]

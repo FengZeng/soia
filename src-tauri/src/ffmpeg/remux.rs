@@ -655,12 +655,12 @@ fn c_string(value: &str, label: &str) -> Result<CString, String> {
 }
 
 fn error_message(error: c_int) -> String {
-    let mut buffer = [0_i8; 256];
+    let mut buffer = [0 as c_char; 256];
     let result = unsafe { ffi::av_strerror(error, buffer.as_mut_ptr(), buffer.len()) };
     if result < 0 {
         return format!("FFmpeg error {error}");
     }
-    unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr() as *const c_char) }
+    unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
         .to_string_lossy()
         .into_owned()
 }

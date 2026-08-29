@@ -11,24 +11,22 @@ export const createAudioDeviceOptions = (
     selectedDevice = "auto",
 ): AudioDeviceOption[] => {
     const visible = devices.filter((device) => device.name !== "auto");
-    const totals = new Map<string, number>();
+    const uniqueByDescription = new Map<string, AudioDevice>();
     visible.forEach((device) => {
-        totals.set(device.description, (totals.get(device.description) ?? 0) + 1);
+        const existing = uniqueByDescription.get(device.description);
+        if (!existing || device.name === selectedDevice) {
+            uniqueByDescription.set(device.description, device);
+        }
     });
+    const uniqueVisible = [...uniqueByDescription.values()];
 
-    const occurrences = new Map<string, number>();
     const options: AudioDeviceOption[] = [
         { value: "auto", label: "Automatic", unavailable: false },
     ];
-    visible.forEach((device) => {
-        const occurrence = (occurrences.get(device.description) ?? 0) + 1;
-        occurrences.set(device.description, occurrence);
+    uniqueVisible.forEach((device) => {
         options.push({
             value: device.name,
-            label:
-                (totals.get(device.description) ?? 0) > 1
-                    ? `${device.description} (${occurrence})`
-                    : device.description,
+            label: device.description,
             unavailable: false,
         });
     });
