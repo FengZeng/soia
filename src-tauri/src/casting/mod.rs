@@ -47,6 +47,9 @@ pub(crate) struct CastReceiverStatus {
     pub volume: Option<f64>,
     pub muted: Option<bool>,
     pub seekable: bool,
+    /// True only when the receiver explicitly reports that media reached its natural end, or a
+    /// protocol with no explicit reason can safely infer that from a stopped position at duration.
+    pub ended_naturally: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -114,6 +117,7 @@ mod tests {
                 volume: Some(35.0),
                 muted: Some(false),
                 seekable: true,
+                ended_naturally: false,
             }
         }
     }

@@ -125,6 +125,11 @@ async fn execute_direction(
         });
     }
 
+    let cast_was_active = matches!(
+        crate::core::playback_service::PlaybackService::current_output_target(state),
+        crate::core::playback_service::PlaybackOutputTarget::Cast { .. }
+    );
+
     crate::commands::playback::publish_source_load_state(
         app,
         state,
@@ -133,9 +138,9 @@ async fn execute_direction(
         None,
     );
 
-    // Stop immediately so the current source does not keep playing while a
-    // remote target (for example YouTube) is being resolved and prepared.
-    {
+    // Stop local playback immediately when mpv owns the output. While casting, mpv is already
+    // paused and must keep the current source loaded until the replacement receiver LOAD succeeds.
+    if !cast_was_active {
         let mpv = match state.mpv_player.lock() {
             Ok(mpv) => mpv,
             Err(error) => {
@@ -228,8 +233,14 @@ async fn execute_direction(
         }
     };
 
-    // Step 3: Load the resolved source
-    load_and_get_revision(app, state, target_key, title).await
+    // Step 3: Load the resolved source. A cast navigation reuses the active receiver transport,
+    // allocates a fresh cast session/lease, and loads mpv paused so local restoration remains
+    // possible if the receiver or the local preparation fails.
+    if cast_was_active {
+        load_cast_navigation_target(app, state, target_key, title).await
+    } else {
+        load_and_get_revision(app, state, target_key, title).await
+    }
 }
 
 /// Execute a PlaySource command: load the specified key directly.
@@ -243,6 +254,12 @@ async fn execute_play_source(
         return Err(CoreErrorDto::InvalidCommand {
             message: "playSource key cannot be empty".into(),
         });
+    }
+    if matches!(
+        crate::core::playback_service::PlaybackService::current_output_target(state),
+        crate::core::playback_service::PlaybackOutputTarget::Cast { .. }
+    ) {
+        return load_cast_navigation_target(app, state, key, title).await;
     }
     load_and_get_revision(app, state, key, title).await
 }
@@ -259,6 +276,81 @@ async fn load_and_get_revision(
         .await
         .map(|_| state.playback_state.current().revision)
         .map_err(|e| CoreErrorDto::NavigationFailed { message: e })
+}
+
+async fn load_cast_navigation_target(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    key: String,
+    title: Option<String>,
+) -> Result<u64, CoreErrorDto> {
+    crate::commands::playback::publish_source_load_state(
+        app,
+        state,
+        true,
+        Some(key.clone()),
+        None,
+    );
+    let previous = state.playback_state.current();
+    let cast = crate::commands::casting::reload_active_cast_source(
+        app,
+        state,
+        key.clone(),
+        title.clone(),
+    )
+    .await
+    .map_err(|error| {
+        crate::commands::playback::publish_source_load_state(
+            app,
+            state,
+            false,
+            Some(key.clone()),
+            Some(error.message.clone()),
+        );
+        CoreErrorDto::NavigationFailed { message: error.message }
+    })?;
+
+    let local_load = crate::commands::playback::load_source(
+        app,
+        state,
+        crate::commands::playback::LoadPlaybackSourcePayload::new_cast_navigation(key, title),
+    )
+    .await;
+    if let Err(error) = local_load {
+        log::warn!("casting navigation local preparation failed after receiver LOAD: {error}");
+        let _ = state.casting_service.command(crate::casting::CastProtocolCommand::Stop).await;
+        let _ = state.casting_service.disconnect().await;
+        crate::commands::casting::emit_cast_snapshot(
+            app,
+            &state.casting_service.current_snapshot(),
+        );
+        let restored = state
+            .playback_service
+            .restore_local_after_cast(previous.position.max(0.0));
+        let snapshot = state.playback_service.finish_cast_output(state, previous.position.max(0.0));
+        crate::commands::playback::emit_playback_snapshot(app, &snapshot);
+        crate::commands::playback::publish_source_load_state(
+            app,
+            state,
+            false,
+            snapshot.playback_key.clone(),
+            Some(error.clone()),
+        );
+        return Err(CoreErrorDto::NavigationFailed {
+            message: restored
+                .err()
+                .map(|restore_error| format!("{error}; local rollback failed: {restore_error:?}"))
+                .unwrap_or(error),
+        });
+    }
+
+    // The receiver is authoritative for the active output. Re-apply its status after mpv's paused
+    // preparation so Desktop and Web Remote converge on one playback snapshot.
+    if let Some(snapshot) = state.playback_service.sync_cast_output(state) {
+        crate::commands::playback::emit_playback_snapshot(app, &snapshot);
+        return Ok(snapshot.revision);
+    }
+    Ok(state.playback_state.current().revision.max(cast.revision))
 }
 
 const AUTO_PLAY_NEXT_SETTING_LABEL: &str = "AUTO_PLAY_NEXT_IN_PLAYLIST";
@@ -300,6 +392,17 @@ pub(crate) async fn handle_end_of_file(
         }
     }
 
+    advance_after_eof_locked(app, &state, ended_key).await;
+}
+
+/// Resolves and loads the next item while the playback admission lock is held. Cast output uses
+/// the same receiver handoff path as manual Next, so a remote EOF advances without first dropping
+/// the active transport or leaving the local mpv playing.
+pub(crate) async fn advance_after_eof_locked(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    ended_key: &str,
+) -> bool {
     // Resolve from the SQLite playlist authority (including loop-one semantics).
     let playlist_context = state.navigation_service.playlist_navigation_context();
     let playlist_result = match state
@@ -342,18 +445,32 @@ pub(crate) async fn handle_end_of_file(
                     .or(source.title);
                 (source.playback_key, title)
             }
-            None => return, // No next track — playback ends
+            None => return false, // No next track — playback ends
         }
     };
 
-    // Load the next track
-    let payload = crate::commands::playback::LoadPlaybackSourcePayload::new(target_key, title);
-    if let Err(error) = crate::commands::playback::load_source(app, &state, payload).await {
-        log::warn!("auto-play next after EOF failed: {error}");
+    let result = if matches!(
+        crate::core::playback_service::PlaybackService::current_output_target(state),
+        crate::core::playback_service::PlaybackOutputTarget::Cast { .. }
+    ) {
+        load_cast_navigation_target(app, state, target_key, title).await.map(|_| ())
+    } else {
+        let payload = crate::commands::playback::LoadPlaybackSourcePayload::new(target_key, title);
+        crate::commands::playback::load_source(app, state, payload)
+            .await
+            .map(|_| ())
+            .map_err(|message| CoreErrorDto::NavigationFailed { message })
+    };
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("auto-play next after EOF failed: {error:?}");
+            false
+        }
     }
 }
 
-fn is_auto_play_enabled(app: &tauri::AppHandle) -> bool {
+pub(crate) fn is_auto_play_enabled(app: &tauri::AppHandle) -> bool {
     match crate::store::ui_state_store::load_setting_value(app, AUTO_PLAY_NEXT_SETTING_LABEL) {
         Ok(Some(value)) => value != "Off",
         Ok(None) => true, // Default is enabled

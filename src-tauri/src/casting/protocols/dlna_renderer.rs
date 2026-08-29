@@ -203,6 +203,7 @@ impl CastProtocolAdapter for DlnaRendererAdapter {
                 seekable: media
                     .duration
                     .is_some_and(|duration| duration.is_finite() && duration > 0.0),
+                ended_naturally: false,
             })
         })
     }
@@ -660,6 +661,10 @@ async fn read_receiver_status(
         None => None,
     };
     let seekable = is_seekable_position(position, duration);
+    let ended_naturally = matches!(phase, soia_protocol::CastPhaseDto::Stopped)
+        && position.zip(duration).is_some_and(|(position, duration)| {
+            duration.is_finite() && duration > 0.0 && position >= (duration - 0.75).max(0.0)
+        });
     Ok(CastReceiverStatus {
         phase,
         position: position.unwrap_or_default(),
@@ -667,6 +672,7 @@ async fn read_receiver_status(
         volume,
         muted: None,
         seekable,
+        ended_naturally,
     })
 }
 

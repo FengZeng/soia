@@ -502,7 +502,7 @@ fn default_receiver_transport_id(payload: &Value) -> Option<String> {
         .and_then(|application| application.get("transportId").and_then(Value::as_str))
         .map(str::to_string)
 }
-fn empty_status(phase: CastPhaseDto) -> CastReceiverStatus { CastReceiverStatus { phase, position: 0.0, duration: None, volume: None, muted: None, seekable: false } }
+fn empty_status(phase: CastPhaseDto) -> CastReceiverStatus { CastReceiverStatus { phase, position: 0.0, duration: None, volume: None, muted: None, seekable: false, ended_naturally: false } }
 fn receiver_status_from_media(payload: &Value, fallback: &CastReceiverStatus) -> Result<CastReceiverStatus, String> {
     let statuses = payload.get("status").and_then(Value::as_array).ok_or_else(|| "Chromecast did not return media status".to_string())?;
     let Some(status) = statuses.first() else {
@@ -511,6 +511,9 @@ fn receiver_status_from_media(payload: &Value, fallback: &CastReceiverStatus) ->
         let mut stopped = fallback.clone();
         stopped.phase = CastPhaseDto::Stopped;
         stopped.seekable = false;
+        // An empty status is also returned after an explicit STOP. Preserve only an already
+        // confirmed FINISHED reason; do not infer EOF from the fallback position here.
+        stopped.ended_naturally = fallback.ended_naturally;
         return Ok(stopped);
     };
     let phase = match status.get("playerState").and_then(Value::as_str).unwrap_or("IDLE") { "PLAYING" => CastPhaseDto::Playing, "PAUSED" => CastPhaseDto::Paused, "BUFFERING" => CastPhaseDto::Buffering, _ => CastPhaseDto::Stopped };
@@ -518,7 +521,9 @@ fn receiver_status_from_media(payload: &Value, fallback: &CastReceiverStatus) ->
     let duration = status.pointer("/media/duration").and_then(Value::as_f64).filter(|value| value.is_finite() && *value > 0.0).or(fallback.duration);
     let volume = status.pointer("/volume/level").and_then(Value::as_f64).map(|level| (level * 100.0).clamp(0.0, 100.0)).or(fallback.volume);
     let muted = status.pointer("/volume/muted").and_then(Value::as_bool).or(fallback.muted);
-    Ok(CastReceiverStatus { phase, position, duration, volume, muted, seekable: duration.is_some() })
+    let ended_naturally = matches!(phase, CastPhaseDto::Stopped)
+        && status.get("idleReason").and_then(Value::as_str) == Some("FINISHED");
+    Ok(CastReceiverStatus { phase, position, duration, volume, muted, seekable: duration.is_some(), ended_naturally })
 }
 fn device_error(code: CastErrorCodeDto, message: &str, device_id: Option<&str>) -> CastErrorDto { CastErrorDto { code, message: message.to_string(), device_id: device_id.map(str::to_string) } }
 fn cast_error(code: CastErrorCodeDto, detail: &str, device_id: &str) -> CastErrorDto { log::warn!("Chromecast adapter error for {device_id}: {detail}"); let message = match code { CastErrorCodeDto::DeviceDisconnected => "Chromecast disconnected", CastErrorCodeDto::LoadFailed => "Chromecast could not load this media", _ => "Chromecast command failed" }; device_error(code, message, Some(device_id)) }
@@ -636,6 +641,7 @@ mod tests {
             volume: Some(35.0),
             muted: Some(false),
             seekable: true,
+            ended_naturally: false,
         };
         let status = receiver_status_from_media(
             &serde_json::from_str(r#"{"type":"MEDIA_STATUS","status":[]}"#).unwrap(),
@@ -647,6 +653,29 @@ mod tests {
         assert_eq!(status.position, 42.5);
         assert_eq!(status.duration, Some(120.0));
         assert!(!status.seekable);
+    }
+
+    #[test]
+    fn only_finished_idle_reason_marks_chromecast_media_as_natural_eof() {
+        let finished = receiver_status_from_media(
+            &serde_json::from_str(
+                r#"{"type":"MEDIA_STATUS","status":[{"playerState":"IDLE","idleReason":"FINISHED","currentTime":60,"media":{"duration":60}}]}"#,
+            )
+            .unwrap(),
+            &empty_status(CastPhaseDto::Loading),
+        )
+        .unwrap();
+        let cancelled = receiver_status_from_media(
+            &serde_json::from_str(
+                r#"{"type":"MEDIA_STATUS","status":[{"playerState":"IDLE","idleReason":"CANCELLED","currentTime":12,"media":{"duration":60}}]}"#,
+            )
+            .unwrap(),
+            &empty_status(CastPhaseDto::Loading),
+        )
+        .unwrap();
+
+        assert!(finished.ended_naturally);
+        assert!(!cancelled.ended_naturally);
     }
 
     #[test]

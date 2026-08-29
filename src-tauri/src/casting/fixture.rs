@@ -54,6 +54,7 @@ impl CastProtocolAdapter for FixtureAdapter {
                 volume: Some(25.0),
                 muted: Some(false),
                 seekable: true,
+                ended_naturally: false,
             })
         })
     }
@@ -72,6 +73,7 @@ impl CastProtocolAdapter for FixtureAdapter {
                 volume: Some(25.0),
                 muted: Some(false),
                 seekable: true,
+                ended_naturally: false,
             })
         })
     }
@@ -85,6 +87,7 @@ impl CastProtocolAdapter for FixtureAdapter {
                 volume: Some(25.0),
                 muted: Some(false),
                 seekable: true,
+                ended_naturally: false,
             })
         })
     }

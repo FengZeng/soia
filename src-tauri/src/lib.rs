@@ -493,14 +493,33 @@ fn queue_open_media_paths(app: &tauri::AppHandle, paths: Vec<String>, emit_event
 }
 
 fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    if let tauri::RunEvent::Opened { urls } = event {
-        let paths = collect_open_media_paths_from_urls(urls);
-        queue_open_media_paths(app_handle, paths, true);
+    match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            cleanup_casting_on_exit(app_handle);
+        }
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        tauri::RunEvent::Opened { urls } => {
+            let paths = collect_open_media_paths_from_urls(urls);
+            queue_open_media_paths(app_handle, paths, true);
+        }
+        _ => {}
     }
+}
 
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    let _ = (app_handle, event);
+fn cleanup_casting_on_exit(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<AppState>() else {
+        return;
+    };
+    state.casting_service.revoke_active_media_lease();
+    let app = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let state: tauri::State<'_, AppState> = app.state();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            state.casting_service.disconnect(),
+        )
+        .await;
+    });
 }
 
 #[cfg(desktop)]
@@ -581,11 +600,6 @@ pub fn run() {
             commands::casting::get_cast_devices,
             commands::casting::discover_cast_devices,
             commands::casting::connect_cast_device,
-            commands::casting::cast_play,
-            commands::casting::cast_pause,
-            commands::casting::cast_seek,
-            commands::casting::cast_stop,
-            commands::casting::set_cast_volume,
             commands::casting::disconnect_casting,
             commands::playlist::get_playlist_snapshot,
             commands::playlist::get_playlist_entries_page,

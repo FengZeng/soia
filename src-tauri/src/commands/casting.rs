@@ -104,46 +104,45 @@ pub(crate) async fn connect_cast_device(
     result
 }
 
-#[tauri::command]
-pub(crate) async fn cast_play(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
+/// Reloads the currently selected receiver with a new playback source. The receiver transport is
+/// reused, while CastingService allocates a new Core session ID and media lease. Local mpv is
+/// intentionally updated by the navigation command only after the remote LOAD succeeds.
+pub(crate) async fn reload_active_cast_source(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    playback_key: String,
+    title: Option<String>,
 ) -> Result<CastSnapshotDto, CastErrorDto> {
-    execute_command(&app, &state, CastProtocolCommand::Play).await
-}
-
-#[tauri::command]
-pub(crate) async fn cast_pause(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<CastSnapshotDto, CastErrorDto> {
-    execute_command(&app, &state, CastProtocolCommand::Pause).await
-}
-
-#[tauri::command]
-pub(crate) async fn cast_seek(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    position: f64,
-) -> Result<CastSnapshotDto, CastErrorDto> {
-    execute_command(&app, &state, CastProtocolCommand::SeekAbsolute { position }).await
-}
-
-#[tauri::command]
-pub(crate) async fn cast_stop(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<CastSnapshotDto, CastErrorDto> {
-    execute_command(&app, &state, CastProtocolCommand::Stop).await
-}
-
-#[tauri::command]
-pub(crate) async fn set_cast_volume(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    volume: f64,
-) -> Result<CastSnapshotDto, CastErrorDto> {
-    execute_command(&app, &state, CastProtocolCommand::SetVolume { volume }).await
+    let source = crate::casting::source::resolve(app, &playback_key)
+        .await
+        .map_err(|error| media_error(&error))?;
+    let app_for_media = app.clone();
+    let result = state
+        .casting_service
+        .reload_active_with(move |session_id, device| {
+            let receiver_ip = device.address.parse::<Ipv4Addr>().map_err(|_| CastErrorDto {
+                code: CastErrorCodeDto::DeviceUnsupported,
+                message: "cast device does not have an IPv4 address".to_string(),
+                device_id: Some(device.id.clone()),
+            })?;
+            create_descriptor(
+                source,
+                app_for_media.clone(),
+                session_id,
+                receiver_ip,
+                title,
+                None,
+                0.0,
+            )
+        })
+        .await;
+    emit_cast_snapshot(app, &state.casting_service.current_snapshot());
+    if let Ok(snapshot) = &result {
+        if let Some(session_id) = snapshot.session_id.as_deref() {
+            start_cast_status_poll(app.clone(), session_id.to_string());
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -197,21 +196,6 @@ pub(crate) async fn disconnect_casting(
     result
 }
 
-async fn execute_command(
-    app: &tauri::AppHandle,
-    state: &AppState,
-    command: CastProtocolCommand,
-) -> Result<CastSnapshotDto, CastErrorDto> {
-    let result = state.casting_service.command(command).await;
-    emit_cast_snapshot(app, &state.casting_service.current_snapshot());
-    if result.is_ok() {
-        if let Some(snapshot) = state.playback_service.sync_cast_output(state) {
-            crate::commands::playback::emit_playback_snapshot(app, &snapshot);
-        }
-    }
-    result
-}
-
 fn create_descriptor(
     source: CastMediaSource,
     app: tauri::AppHandle,
@@ -256,6 +240,7 @@ fn start_cast_status_poll(app: tauri::AppHandle, session_id: String) {
         let mut last_confirmed_position = initial_snapshot.position.max(0.0);
         let mut consecutive_failures = 0;
         let mut poll_delay = CAST_STATUS_POLL_INTERVAL;
+        let mut eof_auto_advance_attempted = false;
         loop {
             sleep(poll_delay).await;
             let state: tauri::State<'_, AppState> = app.state();
@@ -354,13 +339,51 @@ fn start_cast_status_poll(app: tauri::AppHandle, session_id: String) {
             // stop; per plan §6.4 release the remote session and pin local mpv to the last
             // confirmed position. Explicit user stop paths already run this flow themselves;
             // running it again here is idempotent.
-            if has_been_active && matches!(snapshot.phase, CastPhaseDto::Stopped) {
+            let receiver_stopped = matches!(snapshot.phase, CastPhaseDto::Stopped);
+            // Chromecast provides idleReason=FINISHED; DLNA derives this only from a stopped
+            // position at the known duration. For receivers which keep reporting PLAYING at the
+            // exact endpoint, use the position fallback but never apply it to a stopped session:
+            // a receiver-side Stop must not start the next item.
+            let reached_end_while_playing = matches!(snapshot.phase, CastPhaseDto::Playing)
+                && has_been_active
+                && snapshot.duration > 0.0
+                && snapshot.position >= (snapshot.duration - 0.75).max(0.0);
+            let ended_naturally = state.casting_service.active_media_ended_naturally(&session_id)
+                || reached_end_while_playing;
+            if receiver_stopped || ended_naturally {
                 let _playback_command_lock = state.playback_command_lock.lock().await;
                 let current = state.casting_service.current_snapshot();
-                if current.session_id.as_deref() != Some(session_id.as_str())
-                    || !matches!(current.phase, CastPhaseDto::Stopped)
-                {
+                if current.session_id.as_deref() != Some(session_id.as_str()) {
                     break;
+                }
+                if ended_naturally
+                    && !eof_auto_advance_attempted
+                    && crate::commands::navigation::is_auto_play_enabled(&app)
+                {
+                    eof_auto_advance_attempted = true;
+                    let ended_key = state
+                        .current_playback_key
+                        .lock()
+                        .ok()
+                        .and_then(|key| key.clone());
+                    if let Some(ended_key) = ended_key {
+                        let advanced = crate::commands::navigation::advance_after_eof_locked(
+                            &app,
+                            &state,
+                            &ended_key,
+                        )
+                        .await;
+                        if advanced {
+                            emit_cast_snapshot(&app, &state.casting_service.current_snapshot());
+                            break;
+                        }
+                    }
+                }
+                // If a receiver is still PLAYING at the final timestamp, leave it alone after a
+                // failed auto-advance attempt and wait for its eventual stopped status. This
+                // avoids cutting off the last fraction of the current item.
+                if !receiver_stopped {
+                    continue;
                 }
                 let position = current.position.max(0.0);
                 if let Err(error) = state.casting_service.disconnect().await {

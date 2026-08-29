@@ -89,6 +89,10 @@ pub(crate) struct LoadPlaybackSourcePayload {
     key_or_url: String,
     #[serde(default)]
     preferred_title: Option<String>,
+    #[serde(default = "default_auto_play")]
+    auto_play: bool,
+    #[serde(default)]
+    resume_position: Option<f64>,
 }
 
 impl LoadPlaybackSourcePayload {
@@ -96,9 +100,27 @@ impl LoadPlaybackSourcePayload {
         Self {
             key_or_url,
             preferred_title,
+            auto_play: true,
+            resume_position: None,
+        }
+    }
+
+    pub(crate) fn new_cast_navigation(
+        key_or_url: String,
+        preferred_title: Option<String>,
+    ) -> Self {
+        Self {
+            key_or_url,
+            preferred_title,
+            auto_play: false,
+            // Cast navigation starts both outputs at the same deterministic position. The
+            // receiver LOAD and paused local preparation must not independently resume history.
+            resume_position: Some(0.0),
         }
     }
 }
+
+fn default_auto_play() -> bool { true }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -721,11 +743,22 @@ pub(crate) async fn load_source(
         return Ok(superseded_load_result());
     }
     let skip_intro_seconds = load_skip_intro_seconds(&app);
-    let resume_position = match crate::store::play_history::resolve_resume_position(
-        &app,
-        &source_key,
-        skip_intro_seconds,
-    ) {
+    let resume_position = match payload.resume_position {
+        Some(position) if position.is_finite() && position >= 0.0 => position,
+        Some(_) => {
+            return source_load_error_or_superseded(
+                &app,
+                &state,
+                generation,
+                &source_key,
+                "resume position must be a non-negative finite number".to_string(),
+            );
+        }
+        None => match crate::store::play_history::resolve_resume_position(
+            &app,
+            &source_key,
+            skip_intro_seconds,
+        ) {
         Ok(position) => position,
         Err(error) => {
             log::warn!("failed to resolve playback resume position: {error}");
@@ -735,11 +768,12 @@ pub(crate) async fn load_source(
                 0.0
             }
         }
+        },
     };
     let playback_speed = state.playback_state.current().speed;
     let load_options = match crate::core::playback_loading::PlaybackLoadOptions::from_optional(
         Some(resume_position),
-        None,
+        Some(payload.auto_play),
         Some(playback_speed),
     ) {
         Ok(options) => options,

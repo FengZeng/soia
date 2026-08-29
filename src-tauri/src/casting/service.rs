@@ -40,6 +40,33 @@ impl CastingService {
             .clone()
     }
 
+    /// Revoke the active LAN media lease synchronously during application shutdown. The adapter
+    /// transport is closed separately on a best-effort async path, but no receiver can continue
+    /// fetching media from this process once this method returns.
+    pub(crate) fn revoke_active_media_lease(&self) {
+        let session_id = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
+            .as_ref()
+            .map(|active| active.session_id.clone());
+        if let Some(session_id) = session_id {
+            crate::media_gateway::revoke_cast_media_session(&session_id);
+        }
+    }
+
+    pub(crate) fn active_media_ended_naturally(&self, session_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                active.session_id == session_id && active.status.ended_naturally
+            })
+    }
+
     pub(crate) async fn discover(&self) -> Result<Vec<CastDeviceDto>, CastErrorDto> {
         let has_active_session = self
             .state
@@ -96,6 +123,60 @@ impl CastingService {
         media: CastMediaDescriptor,
     ) -> Result<CastSnapshotDto, CastErrorDto> {
         self.connect_and_load_with(device_id, move |_, _| Ok(media)).await
+    }
+
+    /// Reload the active receiver without tearing down its transport first. This is used for
+    /// playlist navigation while casting: the new media gets a fresh Core session ID and lease,
+    /// while a failed descriptor/load leaves the existing cast session available for rollback.
+    pub(crate) async fn reload_active_with<F>(
+        &self,
+        create_media: F,
+    ) -> Result<CastSnapshotDto, CastErrorDto>
+    where
+        F: FnOnce(&str, &CastDeviceDto) -> Result<CastMediaDescriptor, CastErrorDto>,
+    {
+        let (old_session_id, device, adapter, adapter_session) = {
+            let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let active = state.active.as_ref().ok_or_else(|| {
+                error(CastErrorCodeDto::CommandFailed, "no active cast session", None)
+            })?;
+            let adapter_session = active.adapter_session.clone().ok_or_else(|| {
+                error(
+                    CastErrorCodeDto::CommandFailed,
+                    "cast session is not connected",
+                    Some(&active.device.id),
+                )
+            })?;
+            (
+                active.session_id.clone(),
+                active.device.clone(),
+                active.adapter.clone(),
+                adapter_session,
+            )
+        };
+        let new_session_id = uuid::Uuid::new_v4().to_string();
+        let media = match create_media(&new_session_id, &device) {
+            Ok(media) => media,
+            Err(error) => return Err(error),
+        };
+        let status = match adapter.load(&adapter_session, &media).await {
+            Ok(status) => status,
+            Err(error) => {
+                crate::media_gateway::revoke_cast_media_session(&new_session_id);
+                return Err(error);
+            }
+        };
+        if !self.publish_if_current(&old_session_id, |state, active| {
+            state.phase = status.phase.clone();
+            active.session_id = new_session_id.clone();
+            active.status = status.clone();
+            active.media_title = media.title.clone();
+        }) {
+            crate::media_gateway::revoke_cast_media_session(&new_session_id);
+            return Err(stale_session_error(&device.id));
+        }
+        crate::media_gateway::revoke_cast_media_session(&old_session_id);
+        Ok(self.current_snapshot())
     }
 
     pub(crate) async fn connect_and_load_with<F>(
@@ -349,6 +430,7 @@ fn empty_status(phase: CastPhaseDto) -> CastReceiverStatus {
         volume: None,
         muted: None,
         seekable: false,
+        ended_naturally: false,
     }
 }
 
@@ -409,6 +491,7 @@ mod tests {
             volume: Some(25.0),
             muted: Some(false),
             seekable: true,
+            ended_naturally: false,
         }
     }
 
@@ -512,6 +595,29 @@ mod tests {
         assert!(paused.revision > loaded.revision);
 
         assert_eq!(service.disconnect().await.unwrap().phase, CastPhaseDto::Idle);
+    }
+
+    #[tokio::test]
+    async fn reload_active_allocates_a_new_cast_session_and_keeps_transport() {
+        let adapter = Arc::new(FakeAdapter::default());
+        let service = CastingService::new(vec![adapter.clone()]);
+        service.discover().await.unwrap();
+        let first = service.connect_and_load("device-a", media()).await.unwrap();
+        let first_session_id = first.session_id.clone().unwrap();
+
+        let second = service
+            .reload_active_with(|session_id, _| {
+                let mut descriptor = media();
+                descriptor.title = Some(format!("next-{session_id}"));
+                Ok(descriptor)
+            })
+            .await
+            .unwrap();
+
+        assert_ne!(second.session_id.as_deref(), Some(first_session_id.as_str()));
+        assert_eq!(second.device.as_ref().map(|device| device.id.as_str()), Some("device-a"));
+        assert!(second.media_title.as_deref().is_some_and(|title| title.starts_with("next-")));
+        assert_eq!(adapter.disconnects.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@ import type {
 } from "./CastingClient";
 import type { CastDeviceDto } from "./generated/CastDeviceDto";
 import type { CastSnapshotDto } from "./generated/CastSnapshotDto";
+import { tauriCoreClient } from "./tauriPlaybackClient";
 
 const CAST_SNAPSHOT_EVENT = "cast-snapshot";
 const CAST_DEVICES_EVENT = "cast-devices";
@@ -59,23 +60,23 @@ export class TauriCastingClient implements CastingClient {
     }
 
     async pause(): Promise<CastSnapshotDto> {
-        return this.invokeSnapshot("cast_pause", {}, "failed to pause casting");
+        return this.executePlayback({ type: "setPaused", paused: true });
     }
 
     async play(): Promise<CastSnapshotDto> {
-        return this.invokeSnapshot("cast_play", {}, "failed to play casting");
+        return this.executePlayback({ type: "setPaused", paused: false });
     }
 
     async seek(position: number): Promise<CastSnapshotDto> {
-        return this.invokeSnapshot("cast_seek", { position }, "failed to seek casting");
+        return this.executePlayback({ type: "seekAbsolute", position });
     }
 
     async stop(): Promise<CastSnapshotDto> {
-        return this.invokeSnapshot("cast_stop", {}, "failed to stop casting");
+        return this.executePlayback({ type: "stop" });
     }
 
     async setVolume(volume: number): Promise<CastSnapshotDto> {
-        return this.invokeSnapshot("set_cast_volume", { volume }, "failed to set cast volume");
+        return this.executePlayback({ type: "setVolume", volume });
     }
 
     async disconnect(): Promise<CastSnapshotDto> {
@@ -122,6 +123,17 @@ export class TauriCastingClient implements CastingClient {
             return await invoke<CastSnapshotDto>(command, payload);
         } catch (error) {
             throw toError(error, fallback);
+        }
+    }
+
+    private async executePlayback(
+        command: import("./generated/PlaybackCommandDto").PlaybackCommandDto,
+    ): Promise<CastSnapshotDto> {
+        try {
+            await tauriCoreClient.execute(command);
+            return await this.getSnapshot();
+        } catch (error) {
+            throw toError(error, "failed to execute casting playback command");
         }
     }
 }
