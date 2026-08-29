@@ -12,14 +12,22 @@ import type { CastSnapshotDto } from "./generated/CastSnapshotDto";
 const CAST_SNAPSHOT_EVENT = "cast-snapshot";
 const CAST_DEVICES_EVENT = "cast-devices";
 
-const toError = (error: unknown, fallback: string): CastingClientError => ({
-    message:
-        error instanceof Error && error.message.trim()
-            ? error.message
-            : typeof error === "string" && error.trim()
-              ? error
-              : fallback,
-});
+const toError = (error: unknown, fallback: string): CastingClientError => {
+    const objectMessage =
+        typeof error === "object" && error !== null && "message" in error
+            ? (error as { message?: unknown }).message
+            : undefined;
+    return {
+        message:
+            error instanceof Error && error.message.trim()
+                ? error.message
+                : typeof error === "string" && error.trim()
+                  ? error
+                  : typeof objectMessage === "string" && objectMessage.trim()
+                    ? objectMessage
+                    : fallback,
+    };
+};
 
 export class TauriCastingClient implements CastingClient {
     async getSnapshot(): Promise<CastSnapshotDto> {

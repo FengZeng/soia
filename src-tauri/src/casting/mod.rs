@@ -13,7 +13,7 @@ mod state;
 #[cfg(test)]
 mod fixture;
 
-pub(crate) use protocols::DlnaRendererAdapter;
+pub(crate) use protocols::{ChromecastAdapter, DlnaRendererAdapter};
 pub(crate) use service::CastingService;
 pub(crate) use source::CastMediaSource;
 

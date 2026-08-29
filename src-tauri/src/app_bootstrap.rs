@@ -104,9 +104,10 @@ fn build_app_state(
     let mpv_player = Arc::new(Mutex::new(mpv_player_handle));
     AppState {
         playback_service: crate::core::playback_service::PlaybackService::new(mpv_player.clone()),
-        casting_service: crate::casting::CastingService::new(vec![Arc::new(
-            crate::casting::DlnaRendererAdapter::new(),
-        )]),
+        casting_service: crate::casting::CastingService::new(vec![
+            Arc::new(crate::casting::DlnaRendererAdapter::new()),
+            Arc::new(crate::casting::ChromecastAdapter::new()),
+        ]),
         playback_load_coordinator: crate::core::playback_loading::PlaybackLoadCoordinator::new(),
         navigation_service: crate::core::navigation::NavigationService::new(),
         playlist_service: crate::core::playlist_service::PlaylistService::new(),
