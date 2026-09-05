@@ -53,7 +53,15 @@ impl YtdlpFormatSettings {
     pub(crate) fn selector(&self) -> String {
         let max_height = self.max_height;
         format!(
-            "bv*[height<={max_height}][vcodec^=avc1]+ba/\
+            "bv*[height={max_height}][vcodec^=avc1]+ba/\
+             bv*[height={max_height}][vcodec^=h264]+ba/\
+             bv*[height={max_height}][vcodec^=vp9.2]+ba/\
+             bv*[height={max_height}][vcodec^=vp9]+ba/\
+             bv*[height={max_height}][vcodec^=av01]+ba/\
+             bv*[height={max_height}][vcodec^=hev1]+ba/\
+             bv*[height={max_height}][vcodec^=hvc1]+ba/\
+             bv*[height={max_height}]+ba/\
+             bv*[height<={max_height}][vcodec^=avc1]+ba/\
              bv*[height<={max_height}][vcodec^=h264]+ba/\
              bv*[height<={max_height}][vcodec^=vp9.2]+ba/\
              bv*[height<={max_height}][vcodec^=vp9]+ba/\
@@ -71,7 +79,16 @@ impl YtdlpFormatSettings {
     pub(crate) fn cast_selector(&self) -> String {
         let max_height = self.max_height;
         format!(
-            "bv*[height<={max_height}][vcodec^=avc1]+ba[acodec^=mp4a]/\
+            "bv*[height={max_height}][vcodec^=avc1]+ba[acodec^=mp4a]/\
+             bv*[height={max_height}][vcodec^=avc1]+ba[ext=m4a]/\
+             bv*[height={max_height}][vcodec^=avc1]+ba/\
+             bv*[height={max_height}][vcodec^=h264]+ba[acodec^=mp4a]/\
+             bv*[height={max_height}][vcodec^=h264]+ba[ext=m4a]/\
+             bv*[height={max_height}][vcodec^=h264]+ba/\
+             bv*[height={max_height}]+ba[acodec^=mp4a]/\
+             bv*[height={max_height}]+ba[ext=m4a]/\
+             bv*[height={max_height}]+ba/\
+             bv*[height<={max_height}][vcodec^=avc1]+ba[acodec^=mp4a]/\
              bv*[height<={max_height}][vcodec^=avc1]+ba[ext=m4a]/\
              bv*[height<={max_height}][vcodec^=avc1]+ba/\
              bv*[height<={max_height}][vcodec^=h264]+ba[acodec^=mp4a]/\
@@ -130,11 +147,27 @@ mod tests {
     use super::YtdlpFormatSettings;
 
     #[test]
+    fn playback_selector_prefers_h264_at_the_requested_height() {
+        let selector = YtdlpFormatSettings { max_height: 1080 }.selector();
+        let h264 = selector.find("height=1080][vcodec^=avc1").expect("H.264 selector");
+        let av1 = selector.find("height=1080][vcodec^=av01").expect("AV1 selector");
+        let lower_h264 = selector
+            .find("height<=1080][vcodec^=avc1")
+            .expect("lower-resolution H.264 fallback");
+
+        assert!(h264 < av1);
+        assert!(av1 < lower_h264);
+    }
+
+    #[test]
     fn cast_selector_prefers_aac_before_generic_audio() {
         let selector = YtdlpFormatSettings { max_height: 1080 }.cast_selector();
         assert!(selector.contains("ba[acodec^=mp4a]"));
         assert!(selector.contains("ba[ext=m4a]"));
         assert!(selector.contains("+ba/"));
         assert!(selector.contains("height<=1080"));
+        assert!(selector.starts_with(
+            "bv*[height=1080][vcodec^=avc1]+ba[acodec^=mp4a]/"
+        ));
     }
 }

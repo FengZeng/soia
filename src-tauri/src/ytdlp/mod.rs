@@ -526,6 +526,29 @@ fn select_cast_streams(value: &Value, max_height: u32) -> Option<ResolvedCastStr
         }
     }
 
+    // Some extractors (notably live HLS channels) return a fully resolved stream only
+    // at the top level, without a `formats`/`requested_formats` array.  yt-dlp logs
+    // these as `format_id=<top-level>` (for example protocol `m3u8_native`).  Treat
+    // that URL as a single castable stream instead of rejecting it as non-castable.
+    if let Some(url) = value
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| is_http_url(url))
+    {
+        let protocol = value
+            .get("protocol")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let is_hls = protocol.contains("m3u8") || url.to_ascii_lowercase().contains(".m3u8");
+        if is_hls {
+            return Some(ResolvedCastStreams::Single {
+                url: url.to_string(),
+                headers: top_headers,
+            });
+        }
+    }
+
     None
 }
 
@@ -552,8 +575,20 @@ fn select_best_cast_combined_candidate(
                 format.get("height").and_then(Value::as_u64) == Some(height)
             })
         })
-        .filter_map(|format| format_candidate(format, top_headers))
-        .max_by_key(|candidate| candidate.score)
+        .filter_map(|format| {
+            format_candidate(format, top_headers).map(|candidate| {
+                let prefers_h264 = format
+                    .get("vcodec")
+                    .and_then(Value::as_str)
+                    .is_some_and(|codec| {
+                        let codec = codec.to_ascii_lowercase();
+                        codec.starts_with("avc1") || codec.starts_with("h264")
+                    });
+                (prefers_h264, candidate)
+            })
+        })
+        .max_by_key(|(prefers_h264, candidate)| (*prefers_h264, candidate.score))
+        .map(|(_, candidate)| candidate)
 }
 
 fn select_aac_audio_format(value: &Value) -> Option<&Value> {
@@ -1164,6 +1199,27 @@ mod tests {
     }
 
     #[test]
+    fn cast_prefers_h264_among_combined_streams_at_requested_height() {
+        let value = json!({
+            "requested_formats": [
+                { "format_id": "137", "url": "https://example.com/video", "vcodec": "avc1.640028", "acodec": "none", "height": 1080 },
+                { "format_id": "140", "url": "https://example.com/audio", "vcodec": "none", "acodec": "mp4a.40.2" }
+            ],
+            "formats": [
+                { "format_id": "av1", "url": "https://example.com/av1", "protocol": "https", "ext": "mp4", "vcodec": "av01.0.08M.08", "acodec": "mp4a.40.2", "height": 1080, "tbr": 5000 },
+                { "format_id": "h264", "url": "https://example.com/h264", "protocol": "https", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "mp4a.40.2", "height": 1080, "tbr": 1800 }
+            ]
+        });
+
+        let streams = select_cast_streams(&value, 1080).expect("cast streams");
+        assert!(matches!(
+            streams,
+            ResolvedCastStreams::Single { url, .. }
+                if url == "https://example.com/h264"
+        ));
+    }
+
+    #[test]
     fn cast_remuxes_instead_of_lowering_the_requested_resolution() {
         let value = json!({
             "requested_formats": [
@@ -1212,6 +1268,23 @@ mod tests {
                 && audio_url == "https://example.com/aac"
                 && video_available_at == Some(1_789_000_005)
                 && audio_available_at == Some(1_789_000_010)
+        ));
+    }
+
+    #[test]
+    fn cast_accepts_top_level_hls_stream() {
+        let value = json!({
+            "url": "https://cdn.example.com/live/main.m3u8",
+            "protocol": "m3u8_native",
+            "http_headers": { "User-Agent": "test-agent" }
+        });
+
+        let streams = select_cast_streams(&value, 2160).expect("cast streams");
+        assert!(matches!(
+            streams,
+            ResolvedCastStreams::Single { url, headers }
+                if url == "https://cdn.example.com/live/main.m3u8"
+                    && headers.iter().any(|(name, value)| name == "User-Agent" && value == "test-agent")
         ));
     }
 
