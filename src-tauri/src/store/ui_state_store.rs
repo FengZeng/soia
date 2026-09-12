@@ -222,6 +222,10 @@ pub struct NetworkState {
     pub selected_connection: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
+    pub sort_field: Option<String>,
+    #[serde(default)]
+    pub sort_direction: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]

@@ -9,6 +9,7 @@ pub(crate) struct NetworkBrowseEntry {
     pub playback_key: Option<String>,
     pub size: Option<u64>,
     pub modified_at: Option<String>,
+    pub created_at: Option<String>,
 }
 
 #[derive(Serialize)]

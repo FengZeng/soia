@@ -17,6 +17,9 @@ type DlnaNavigationState = {
     nameById: Map<string, string>;
 };
 
+export type NetworkSortField = "name" | "added";
+export type NetworkSortDirection = "asc" | "desc";
+
 const normalizePath = (path: string) => {
     const trimmed = path.trim();
     if (!trimmed || trimmed === "/") return "/";
@@ -60,6 +63,8 @@ const mapBrowseEntry = (entry: NetworkBrowseEntry): NetworkFileRow => ({
     playbackKey: entry.playbackKey ?? undefined,
     size: formatSize(entry.size),
     modified: formatModified(entry.modifiedAt),
+    modifiedAt: entry.modifiedAt,
+    createdAt: entry.createdAt,
 });
 
 export const useNetworkBrowser = (
@@ -70,6 +75,8 @@ export const useNetworkBrowser = (
     const currentFiles = ref<NetworkFileRow[]>([]);
     const isLoading = ref(false);
     const errorMessage = ref("");
+    const sortField = ref<NetworkSortField>("name");
+    const sortDirection = ref<NetworkSortDirection>("asc");
     const browseCache = new Map<string, Map<string, NetworkFileRow[]>>();
     const dlnaNavigationByConnection = new Map<string, DlnaNavigationState>();
 
@@ -273,8 +280,47 @@ export const useNetworkBrowser = (
         }));
     });
 
-    const networkEntries = computed(() => {
+    const sortedEntries = computed(() => {
         const entries = [...currentFiles.value];
+        const direction = sortDirection.value === "asc" ? 1 : -1;
+        const dateValue = (entry: NetworkFileRow) => {
+            // WebDAV exposes creationdate as the closest equivalent to “date
+            // added”. Older servers may omit it, so use last-modified as a
+            // useful fallback and place entries without either value last.
+            const raw = entry.createdAt || entry.modifiedAt || "";
+            const value = raw ? Date.parse(raw) : Number.NaN;
+            return Number.isFinite(value) ? value : null;
+        };
+        entries.sort((left, right) => {
+            // Keep folders together at the top in every sort mode, matching the
+            // existing network-browser behavior.
+            if (left.type !== right.type) return left.type === "DIR" ? -1 : 1;
+
+            let comparison = 0;
+            if (sortField.value === "added") {
+                const leftDate = dateValue(left);
+                const rightDate = dateValue(right);
+                if (leftDate !== null && rightDate !== null) {
+                    comparison = leftDate - rightDate;
+                } else if (leftDate !== null) {
+                    return -1;
+                } else if (rightDate !== null) {
+                    return 1;
+                }
+            }
+            if (comparison === 0) {
+                comparison = left.name.localeCompare(right.name, undefined, {
+                    sensitivity: "base",
+                    numeric: true,
+                });
+            }
+            return comparison * direction;
+        });
+        return entries;
+    });
+
+    const networkEntries = computed(() => {
+        const entries = [...sortedEntries.value];
         if (parentPath.value) {
             entries.unshift({
                 name: "..",
@@ -298,6 +344,9 @@ export const useNetworkBrowser = (
         parentPath,
         isLoading,
         errorMessage,
+        sortField,
+        sortDirection,
+        sortedEntries,
         hasFiles,
         connect,
         refresh,

@@ -12,6 +12,7 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
     <d:resourcetype/>
     <d:getcontentlength/>
     <d:getlastmodified/>
+    <d:creationdate/>
   </d:prop>
 </d:propfind>"#;
 
@@ -37,6 +38,7 @@ pub struct WebdavBrowseEntry {
     pub is_dir: bool,
     pub size: Option<u64>,
     pub modified_at: Option<String>,
+    pub created_at: Option<String>,
 }
 
 pub struct WebdavBrowseResult {
@@ -259,6 +261,7 @@ pub async fn list_directory(
         let size =
             node_text(response_node, "getcontentlength").and_then(|value| value.parse().ok());
         let modified_at = node_text(response_node, "getlastmodified");
+        let created_at = node_text(response_node, "creationdate");
 
         entries.push(WebdavBrowseEntry {
             name,
@@ -266,6 +269,7 @@ pub async fn list_directory(
             is_dir,
             size,
             modified_at,
+            created_at,
         });
     }
 

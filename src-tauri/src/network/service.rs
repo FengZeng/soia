@@ -152,6 +152,7 @@ struct NetworkBrowseEntryInput {
     is_dir: bool,
     size: Option<u64>,
     modified_at: Option<String>,
+    created_at: Option<String>,
 }
 
 impl NetworkBrowseEntryInput {
@@ -161,6 +162,7 @@ impl NetworkBrowseEntryInput {
         is_dir: bool,
         size: Option<u64>,
         modified_at: Option<String>,
+        created_at: Option<String>,
     ) -> Self {
         Self {
             name,
@@ -168,6 +170,7 @@ impl NetworkBrowseEntryInput {
             is_dir,
             size,
             modified_at,
+            created_at,
         }
     }
 }
@@ -188,6 +191,7 @@ fn network_browse_entry(
         playback_key,
         size: input.size,
         modified_at: input.modified_at,
+        created_at: input.created_at,
     }
 }
 
@@ -219,6 +223,7 @@ pub(crate) async fn browse_connection(
                                 entry.is_dir,
                                 entry.size,
                                 entry.modified_at,
+                                entry.created_at,
                             ),
                         )
                     })
@@ -246,6 +251,7 @@ pub(crate) async fn browse_connection(
                                 entry.is_dir,
                                 entry.size,
                                 entry.modified_at,
+                                None,
                             ),
                         )
                     })
@@ -272,6 +278,7 @@ pub(crate) async fn browse_connection(
                                 entry.is_dir,
                                 entry.size,
                                 entry.modified_at,
+                                None,
                             ),
                         )
                     })

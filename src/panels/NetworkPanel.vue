@@ -28,6 +28,9 @@ const {
     activeConnectionLabel,
     networkConnections,
     networkEntries,
+    networkSortField,
+    networkSortDirection,
+    setNetworkSort,
     pathCrumbs,
     parentPath,
     selectedConnection,
@@ -124,6 +127,19 @@ const formatPlaybackTime = (value: number) => {
     }
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
+
+const networkSortValue = computed({
+    get: () => `${networkSortField.value}:${networkSortDirection.value}`,
+    set: (value: string) => {
+        const [field, direction] = value.split(":");
+        if (
+            (field === "name" || field === "added") &&
+            (direction === "asc" || direction === "desc")
+        ) {
+            setNetworkSort(field, direction);
+        }
+    },
+});
 
 const createForm = reactive({
     label: "",
@@ -1048,6 +1064,19 @@ const formatProtocolLabel = (protocol: string) =>
                     </button>
                 </template>
                 <template v-else>
+                    <label class="network-sort-control">
+                        <span class="network-sort-control__label">Sort</span>
+                        <select
+                            v-model="networkSortValue"
+                            class="network-sort-control__select"
+                            aria-label="Sort network entries"
+                        >
+                            <option value="name:asc">Alphabetical (A–Z, ascending)</option>
+                            <option value="name:desc">Alphabetical (Z–A, descending)</option>
+                            <option value="added:desc">Date added (newest, descending)</option>
+                            <option value="added:asc">Date added (oldest, ascending)</option>
+                        </select>
+                    </label>
                     <button
                         class="network-icon-btn"
                         type="button"

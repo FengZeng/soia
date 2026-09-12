@@ -5,7 +5,11 @@ import {
     SETTINGS_UPDATED_EVENT,
 } from "../mock/settings";
 import { useNetworkConnections } from "./useNetworkConnections";
-import { useNetworkBrowser } from "./useNetworkBrowser";
+import {
+    useNetworkBrowser,
+    type NetworkSortDirection,
+    type NetworkSortField,
+} from "./useNetworkBrowser";
 import {
     createDebouncedUiStateSaver,
     loadUiState as loadUiStateStore,
@@ -14,6 +18,8 @@ import {
 type StoredNetworkState = {
     selectedConnection?: string;
     path?: string;
+    sortField?: NetworkSortField;
+    sortDirection?: NetworkSortDirection;
 };
 
 type StoredSettingGroups = Array<{
@@ -83,6 +89,8 @@ export const useNetworkPanel = () => {
             network: {
                 selectedConnection: selectedConnectionId.value,
                 path: isDlna ? "0" : browser.networkPath.value,
+                sortField: browser.sortField.value,
+                sortDirection: browser.sortDirection.value,
             },
         });
     };
@@ -114,6 +122,12 @@ export const useNetworkPanel = () => {
                 : selectedConnection.value?.protocol === "http-dlna"
                   ? "0"
                   : browser.normalizePath(network.path);
+        }
+        if (network?.sortField === "name" || network?.sortField === "added") {
+            browser.sortField.value = network.sortField;
+        }
+        if (network?.sortDirection === "asc" || network?.sortDirection === "desc") {
+            browser.sortDirection.value = network.sortDirection;
         }
     };
 
@@ -189,6 +203,15 @@ export const useNetworkPanel = () => {
         }
     };
 
+    const setNetworkSort = (
+        field: NetworkSortField,
+        direction: NetworkSortDirection,
+    ) => {
+        browser.sortField.value = field;
+        browser.sortDirection.value = direction;
+        saveUiState();
+    };
+
     const onSaveConnection = async () => {
         try {
             await saveSelectedConnection();
@@ -259,7 +282,10 @@ export const useNetworkPanel = () => {
         };
     };
 
-    watch([selectedConnectionId, browser.networkPath], saveUiState);
+    watch(
+        [selectedConnectionId, browser.networkPath, browser.sortField, browser.sortDirection],
+        saveUiState,
+    );
 
     watch(
         selectedConnection,
@@ -308,6 +334,9 @@ export const useNetworkPanel = () => {
         selectedConnection: selectedConnectionId,
         selectedConnectionConfig: selectedConnection,
         networkEntries: browser.networkEntries,
+        networkSortField: browser.sortField,
+        networkSortDirection: browser.sortDirection,
+        setNetworkSort,
         pathCrumbs: browser.pathCrumbs,
         parentPath: browser.parentPath,
         networkPath: browser.networkPath,
