@@ -13,9 +13,11 @@
 <b><a href="https://github.com/FengZeng/soia/releases">⬇️ Download Latest Release</a> · <a href="https://github.com/FengZeng/soia/issues">🐞 Report a Bug</a></b>
 </p>
 
+English · [简体中文](README.zh-CN.md)
+
 ![Soia App Preview](docs/assets/screenshots/Soia.webp)
 
-**Soia** brings local files, online video, and network media together in one fast, elegant, cross-platform experience. It’s built for modern media playback, with Dolby Vision support on macOS and Windows, reliable YouTube playback, seamless home-server streaming, living-room casting, and browser-based remote control.
+**Soia** is a cross-platform media player built on mpv, focused on video rendering and network playback, with features such as browser-based remote control and casting.
 
 ---
 
@@ -23,11 +25,9 @@
 
 ### 1. Dolby Vision on macOS and Windows
 
-Enjoy Dolby Vision playback on macOS and Windows.
-
 <sub style="padding-left: 2em;">*Dolby Vision is not currently supported on Linux.*</sub>
 
-### 2. Enhanced YouTube playback
+### 2. Enhanced online video support (YouTube, Bilibili, and more)
 
 - Import a YouTube playlist into Soia as a native playlist.
 - Some links that do not play in other mpv-based players may still work in Soia.
@@ -58,7 +58,7 @@ Enable Remote Controller in Settings, then show its QR code there or from the pl
 
 #### Under the hood
 
-The desktop app and web remote are two clients of the same playback backend. The remote can also continue network browsing from the folder last opened in the desktop app.
+The desktop app and web remote are two independent clients of the same playback backend.
 
 ![Shared Backend Architecture](docs/assets/diagrams/shared-backend.webp)
 
@@ -66,7 +66,7 @@ The desktop app and web remote are two clients of the same playback backend. The
 
 - Picture in Picture (PiP) on macOS and Windows
 - Dual subtitles for bilingual viewing
-- Fuzzy subtitle matching for local and network media
+- Fuzzy subtitle matching
 - Online subtitle search via OpenSubtitles and SubSource
 - Advanced subtitle appearance controls for font, color, size, and position
 - Custom shaders for high-quality scaling and rendering
@@ -94,7 +94,7 @@ winget install soia
 ```
 
 Or you can build it yourself. Soia supports macOS 13+, Windows, and Linux.
-Linux builds have been tested on Ubuntu and Fedora Wayland sessions (`X11` is not currently supported).
+> **Note:** The Linux build supports Wayland only and has been tested on Ubuntu and Fedora under Wayland.
 
 ## FAQ
 
@@ -197,7 +197,7 @@ sudo apt install -y \
     libwebkit2gtk-4.1-dev
 ```
 
-- Linux runtime note: current bundle targets Ubuntu Wayland sessions only; launching under pure `X11` is not supported.
+- Linux runtime note: the current build supports Wayland only and has been tested on Ubuntu and Fedora Wayland sessions; launching under pure `X11` is not supported.
 
 - If build fails with `Cannot find libmpv`, run:
 
