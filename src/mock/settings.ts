@@ -108,6 +108,13 @@ export const YTDL_MAX_RESOLUTION_OPTIONS = [
 export const NETWORK_PARALLEL_DOWNLOAD_SETTING_LABEL =
     "NETWORK_PARALLEL_DOWNLOAD";
 export const ONLINE_SUBTITLES_SETTING_GROUP_TITLE = "Online Subtitles";
+export const LANGUAGE_SETTING_LABEL = "LANGUAGE";
+export const LANGUAGE_ENGLISH_OPTION = "English";
+export const LANGUAGE_SIMPLIFIED_CHINESE_OPTION = "简体中文";
+export const LANGUAGE_OPTIONS = [
+    LANGUAGE_ENGLISH_OPTION,
+    LANGUAGE_SIMPLIFIED_CHINESE_OPTION,
+] as const;
 export const SETTINGS_UPDATED_EVENT = "soia:settings-updated";
 
 export type PlaybackTitleMode = "Show" | "Editable" | "Hidden";
@@ -126,6 +133,13 @@ export const defaultSettingGroups: SettingGroup[] = [
                 value: THEME_GRAPHITE_OPTION,
                 type: "select",
                 options: [...THEME_OPTIONS],
+            },
+            {
+                label: LANGUAGE_SETTING_LABEL,
+                displayLabel: "Language",
+                value: LANGUAGE_OPTIONS[0],
+                type: "select",
+                options: [...LANGUAGE_OPTIONS],
             },
             {
                 label: ENABLE_COMPACT_MODE_SETTING_LABEL,

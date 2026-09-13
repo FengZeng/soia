@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { NetworkConnection } from "../../types/network";
+import { settingsLocale, translateSettingsText } from "../../i18n";
 
 const props = defineProps<{
     networkConnections: NetworkConnection[];
@@ -12,6 +13,9 @@ const emit = defineEmits<{
     (e: "edit", connection: NetworkConnection): void;
     (e: "delete", connection: NetworkConnection): void;
 }>();
+
+const tr = (text: string): string =>
+    translateSettingsText(settingsLocale.value, text);
 </script>
 
 <template>
@@ -42,17 +46,17 @@ const emit = defineEmits<{
                             </span>
                         </div>
                         <div class="network-connection-card__sub">
-                            {{ connection.baseUrl || "Not configured" }}
+                            {{ connection.baseUrl || tr("Not configured") }}
                         </div>
                         <div class="network-connection-card__meta">
-                            User:
-                            {{ connection.username ? connection.username : "Anonymous" }}
+                            {{ tr("User") }}:
+                            {{ connection.username ? connection.username : tr("Anonymous") }}
                         </div>
                         <div class="network-connection-card__actions">
                             <button
                                 class="network-connection-card__action network-connection-card__action--edit"
                                 type="button"
-                                aria-label="Edit connection"
+                                :aria-label="tr('Edit connection')"
                                 @click.stop="emit('edit', connection)"
                                 @keydown.enter.stop
                                 @keydown.space.prevent.stop
@@ -74,7 +78,7 @@ const emit = defineEmits<{
                             <button
                                 class="network-connection-card__action network-connection-card__action--remove"
                                 type="button"
-                                aria-label="Delete connection"
+                                :aria-label="tr('Delete connection')"
                                 @click.stop="emit('delete', connection)"
                                 @keydown.enter.stop
                                 @keydown.space.prevent.stop
@@ -95,9 +99,9 @@ const emit = defineEmits<{
                         v-if="!props.networkConnections.length"
                         class="panel__empty"
                     >
-                        <div class="panel__empty-title">No connections</div>
+                        <div class="panel__empty-title">{{ tr("No connections") }}</div>
                         <div class="panel__empty-body">
-                            Click New to add your first WebDAV connection.
+                            {{ tr("Click New to add your first WebDAV connection.") }}
                         </div>
                     </div>
                 </div>

@@ -7,6 +7,10 @@ import {
     loadUiState,
     saveUiState,
 } from "./useUiStateStore";
+import {
+    extractSettingsLocale,
+    setSettingsLocale,
+} from "../i18n";
 
 type StoredSettingGroup = {
     title: string;
@@ -164,6 +168,11 @@ export const useAppUiPersistence = <PanelId extends string>({
         playlistScrollState.value = playlistStateFromStorage.playlistScrollState;
         playlistDrawerWidthRatio.value =
             playlistStateFromStorage.playlistDrawerWidthRatio;
+        const locale = extractSettingsLocale(stored?.settings?.groups);
+        setSettingsLocale(locale);
+        if (typeof document !== "undefined") {
+            document.documentElement.lang = locale;
+        }
         applyThemeFromSettingGroups(stored?.settings?.groups);
         void applyWindowDecorationsFromSettingGroups(stored?.settings?.groups);
         hasLoadedPanel.value = true;

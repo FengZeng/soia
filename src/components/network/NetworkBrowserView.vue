@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import type { NetworkFileRow } from "../../types/network";
+import { settingsLocale, translateSettingsText } from "../../i18n";
 
 const props = defineProps<{
     isLoading: boolean;
@@ -14,6 +15,8 @@ const emit = defineEmits<{
 }>();
 
 const listEl = ref<HTMLElement | null>(null);
+const tr = (text: string): string =>
+    translateSettingsText(settingsLocale.value, text);
 
 const activeEntryScrollKey = computed(() => {
     if (props.isLoading) return "";
@@ -61,7 +64,7 @@ watch(
                     >
                         <div class="network-files-loader__spinner"></div>
                         <div class="network-files-loader__text">
-                            Loading {{ props.networkPath }}
+                            {{ tr("Loading") }} {{ props.networkPath }}
                         </div>
                     </div>
                     <template v-else>
@@ -134,8 +137,8 @@ watch(
                                     <span>{{
                                         file.type === "DIR"
                                             ? file.isParent
-                                                ? "Parent folder"
-                                                : "Folder"
+                                                ? tr("Parent folder")
+                                                : tr("Folder")
                                             : file.playbackProgressText || file.size
                                     }}</span>
                                     <span>{{ file.modified || "—" }}</span>
@@ -155,9 +158,9 @@ watch(
                             </svg>
                         </button>
                         <div v-if="!props.hasFiles" class="panel__empty">
-                            <div class="panel__empty-title">Empty folder</div>
+                            <div class="panel__empty-title">{{ tr("Empty folder") }}</div>
                             <div class="panel__empty-body">
-                                No files found for this location.
+                                {{ tr("No files found for this location.") }}
                             </div>
                         </div>
                     </template>

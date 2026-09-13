@@ -12,6 +12,7 @@ import { AUDIO_GROUP_TITLE } from "../composables/settings-sections";
 import { getPathDisplayName } from "../utils/getPathDisplayName";
 import {
     ENABLE_COMPACT_MODE_SETTING_LABEL,
+    LANGUAGE_SETTING_LABEL,
     ONLINE_SUBTITLES_SETTING_GROUP_TITLE,
     OPENSUBTITLES_API_KEY_SETTING_LABEL,
     OPENSUBTITLES_ENABLED_SETTING_LABEL,
@@ -23,6 +24,14 @@ import {
     type SettingItem,
     type SettingGroup,
 } from "../mock/settings";
+import {
+    normalizeSettingsLocale,
+    setSettingsLocale,
+    translateSettingItemLabel,
+    translateSettingOption,
+    translateSettingsText,
+    type SettingsLocale,
+} from "../i18n";
 
 const {
     settingGroups,
@@ -69,6 +78,41 @@ const {
     retryAudioOutput,
     isLoading,
 } = useSettingsPanel();
+
+const languageSetting = computed(() =>
+    settingGroups.value
+        .flatMap((group) => group.items)
+        .find((item) => item.label === LANGUAGE_SETTING_LABEL),
+);
+const settingsLocale = computed<SettingsLocale>(() =>
+    normalizeSettingsLocale(languageSetting.value?.value),
+);
+const tr = (text: string | undefined | null): string =>
+    translateSettingsText(settingsLocale.value, text);
+const itemLabel = (item: SettingItem): string =>
+    translateSettingItemLabel(settingsLocale.value, item);
+const itemPlaceholder = (item: SettingItem): string | undefined =>
+    "placeholder" in item && item.placeholder
+        ? tr(item.placeholder)
+        : undefined;
+const itemBrowseTitle = (item: SettingItem): string =>
+    tr("browseTitle" in item ? item.browseTitle ?? "Browse" : "Browse");
+const itemOptions = (item: Extract<SettingItem, { type: "select" }>) =>
+    item.options.map((option) => ({
+        value: option,
+        label: translateSettingOption(settingsLocale.value, option),
+    }));
+
+watch(
+    settingsLocale,
+    (locale) => {
+        setSettingsLocale(locale);
+        if (typeof document !== "undefined") {
+            document.documentElement.lang = locale;
+        }
+    },
+    { immediate: true },
+);
 
 const audioStatusText = computed(() => {
     const status = audioOutputStatus.value;
@@ -255,8 +299,8 @@ const hasEnabledShaderInCurrentMode = computed(
 );
 const shaderModeHintText = computed(() =>
     isAnimeModeRenderingMode.value
-        ? "Anime Mode: Auto-detect anime videos and apply shaders only for anime."
-        : "General Mode: Selected shaders will be applied to all videos.",
+        ? tr("Anime Mode: Auto-detect anime videos and apply shaders only for anime.")
+        : tr("General Mode: Selected shaders will be applied to all videos."),
 );
 
 watch(
@@ -283,18 +327,18 @@ onBeforeUnmount(() => {
 <template>
     <div class="panel panel--settings">
         <div class="panel__header">
-            <div class="panel__title">Settings</div>
+            <div class="panel__title">{{ tr("Settings") }}</div>
             <div class="panel__header-actions">
                 <div v-if="shouldShowUpdateStatus" class="panel__update-status" aria-live="polite">
                     <span class="panel__spinner" aria-hidden="true"></span>
-                    <div class="panel__update-status-text">{{ updateStatusText }}</div>
+                    <div class="panel__update-status-text">{{ tr(updateStatusText) }}</div>
                 </div>
                 <div v-if="shouldShowUpdateButton" class="panel__update-action-wrap">
                     <span
                         v-if="shouldShowUpdateHint"
                         class="panel__update-hint"
                     >
-                        {{ updateHintText }}
+                        {{ tr(updateHintText) }}
                     </span>
                     <button
                         class="panel__action panel__action--glow panel__header-action panel__header-action--compact"
@@ -311,7 +355,7 @@ onBeforeUnmount(() => {
                                 <path d="M5.5 5.5l9 9M14.5 5.5l-9 9" />
                             </svg>
                         </span>
-                        <span>{{ updateButtonText }}</span>
+                        <span>{{ tr(updateButtonText) }}</span>
                     </button>
                 </div>
                 <button
@@ -330,7 +374,7 @@ onBeforeUnmount(() => {
                             <path d="M4.5 10.5l3.4 3.4 7.6-7.8" />
                         </svg>
                     </span>
-                    <span>{{ setDefaultButtonText }}</span>
+                    <span>{{ tr(setDefaultButtonText) }}</span>
                     <span v-if="isSetDefaultButtonLoading" class="panel__loading-dots" aria-hidden="true">
                         <span class="panel__loading-dot"></span>
                         <span class="panel__loading-dot"></span>
@@ -338,7 +382,7 @@ onBeforeUnmount(() => {
                     </span>
                 </button>
                 <button class="panel__reset" type="button" @click="resetAllSettings">
-                    Reset
+                    {{ tr("Reset") }}
                 </button>
             </div>
         </div>
@@ -356,8 +400,8 @@ onBeforeUnmount(() => {
                             </svg>
                         </span>
                         <span class="panel__remote-heading-text">
-                            <span class="panel__remote-title">Remote Controller</span>
-                            <span class="panel__remote-copy">Control playback from a web browser on the same local network</span>
+                            <span class="panel__remote-title">{{ tr("Remote Controller") }}</span>
+                            <span class="panel__remote-copy">{{ tr("Control playback from a web browser on the same local network") }}</span>
                         </span>
                     </div>
                     <label class="panel__toggle panel__remote-toggle">
@@ -366,7 +410,7 @@ onBeforeUnmount(() => {
                             type="checkbox"
                             :checked="remoteControlStatus?.enabled === true"
                             :disabled="isLoadingRemoteControl || !remoteControlStatus"
-                            aria-label="Enable Remote Controller"
+                            :aria-label="tr('Enable Remote Controller')"
                             @change="onRemoteControlToggle"
                         />
                         <span class="panel__toggle-track"><span class="panel__toggle-thumb"></span></span>
@@ -376,9 +420,9 @@ onBeforeUnmount(() => {
                 <div v-if="remoteControlStatus?.enabled" class="panel__remote-toolbar">
                     <div class="panel__remote-state">
                         <span class="panel__remote-state-dot" :class="{ 'panel__remote-state-dot--online': remoteControlStatus?.enabled }"></span>
-                        <span>{{ remoteControlStatus?.enabled ? "Available on local network" : "Remote access is off" }}</span>
+                        <span>{{ tr(remoteControlStatus?.enabled ? "Available on local network" : "Remote access is off") }}</span>
                         <span v-if="remoteControlStatus?.connectedDevices" class="panel__remote-device-count">
-                            {{ remoteControlStatus.connectedDevices }} paired
+                            {{ remoteControlStatus.connectedDevices }} {{ tr("paired") }}
                         </span>
                     </div>
                     <div class="panel__remote-actions">
@@ -388,7 +432,7 @@ onBeforeUnmount(() => {
                             type="button"
                             @click="disconnectRemoteControlDevices"
                         >
-                            Disconnect all
+                            {{ tr("Disconnect all") }}
                         </button>
                         <button
                             class="panel__action panel__action--accent panel__remote-pair-button"
@@ -396,7 +440,7 @@ onBeforeUnmount(() => {
                             :disabled="isLoadingRemoteControl || !remoteControlStatus?.enabled"
                             @click="showRemoteControl"
                         >
-                            {{ isLoadingRemoteControl ? "Preparing…" : "Show QR Code" }}
+                            {{ isLoadingRemoteControl ? tr("Preparing…") : tr("Show QR Code") }}
                         </button>
                     </div>
                 </div>
@@ -408,6 +452,7 @@ onBeforeUnmount(() => {
             :open="isRemoteQrOpen"
             :info="remoteControlInfo"
             :seconds-remaining="remoteQrSecondsRemaining"
+            :locale="settingsLocale"
             @close="closeRemoteQrDialog"
         />
         <div v-if="isLoading" class="panel__skeleton">
@@ -416,9 +461,9 @@ onBeforeUnmount(() => {
             <div class="panel__skeleton-row"></div>
         </div>
         <div v-if="!settingGroups.length" class="panel__empty">
-            <div class="panel__empty-title">No settings yet</div>
+            <div class="panel__empty-title">{{ tr("No settings yet") }}</div>
             <div class="panel__empty-body">
-                Add configuration options to start customizing playback.
+                {{ tr("Add configuration options to start customizing playback.") }}
             </div>
         </div>
         <div v-else class="panel__stack">
@@ -429,7 +474,7 @@ onBeforeUnmount(() => {
                 v-show="shouldShowGroup(group)"
             >
                 <div class="panel__subtitle panel__subtitle--large">
-                    {{ group.title }}
+                    {{ tr(group.title) }}
                 </div>
                 <div
                     v-if="group.title === ONLINE_SUBTITLES_SETTING_GROUP_TITLE"
@@ -438,7 +483,7 @@ onBeforeUnmount(() => {
                     <div
                         class="panel__tabs"
                         role="tablist"
-                        aria-label="Online subtitle providers"
+                        :aria-label="tr('Online subtitle providers')"
                     >
                         <button
                             v-for="tab in onlineSubtitleTabs"
@@ -461,7 +506,7 @@ onBeforeUnmount(() => {
                             class="panel__cache-status"
                             role="status"
                         >
-                            {{ onlineSubtitleCacheStatus }}
+                            {{ tr(onlineSubtitleCacheStatus) }}
                         </div>
                         <button
                             class="panel__action panel__action--ghost panel__action--compact"
@@ -469,7 +514,7 @@ onBeforeUnmount(() => {
                             :disabled="isClearingOnlineSubtitleCache"
                             @click="clearDownloadedSubtitles"
                         >
-                            {{ isClearingOnlineSubtitleCache ? "Clearing..." : "Clear Cache" }}
+                            {{ isClearingOnlineSubtitleCache ? tr("Clearing...") : tr("Clear Cache") }}
                         </button>
                     </div>
                 </div>
@@ -481,7 +526,7 @@ onBeforeUnmount(() => {
                     >
                         <div class="panel__card-text">
                             <div class="panel__card-title">
-                                {{ item.displayLabel ?? item.label }}
+                                {{ itemLabel(item) }}
                             </div>
                         </div>
                         <div class="panel__control panel__control--card">
@@ -490,7 +535,7 @@ onBeforeUnmount(() => {
                                     <div class="panel__path-control">
                                         <template v-if="isFixedLogPathItem(item)">
                                             <span class="panel__value-text panel__path-text panel__path-text--log">
-                                                {{ item.value || item.placeholder || "Unavailable" }}
+                                                {{ item.value || itemPlaceholder(item) || tr("Unavailable") }}
                                             </span>
                                         </template>
                                         <template v-else>
@@ -499,15 +544,15 @@ onBeforeUnmount(() => {
                                                 class="panel__input panel__input--path"
                                                 :class="{ 'panel__input--invalid': item.validationMessage }"
                                                 type="text"
-                                                :placeholder="item.placeholder"
+                                                :placeholder="itemPlaceholder(item)"
                                                 :aria-invalid="Boolean(item.validationMessage)"
                                             />
                                         </template>
                                         <button
                                             class="panel__action panel__action--ghost panel__action--icon panel__path-action"
                                             type="button"
-                                            :title="isFixedLogPathItem(item) ? 'Open Folder' : item.browseTitle ?? 'Browse'"
-                                            :aria-label="isFixedLogPathItem(item) ? 'Open Folder' : item.browseTitle ?? 'Browse'"
+                                            :title="isFixedLogPathItem(item) ? tr('Open Folder') : itemBrowseTitle(item)"
+                                            :aria-label="isFixedLogPathItem(item) ? tr('Open Folder') : itemBrowseTitle(item)"
                                             @click="browseForPath(item)"
                                         >
                                             <svg
@@ -546,7 +591,7 @@ onBeforeUnmount(() => {
                                             <path d="M12 9v4" />
                                             <path d="M12 17h.01" />
                                         </svg>
-                                        <span>{{ item.validationMessage }}</span>
+                                        <span>{{ tr(item.validationMessage) }}</span>
                                     </p>
                                 </div>
                             </template>
@@ -557,7 +602,7 @@ onBeforeUnmount(() => {
                                         class="panel__input panel__input--path"
                                         :class="{ 'panel__input--invalid': item.validationMessage }"
                                         type="text"
-                                        :placeholder="item.placeholder"
+                                        :placeholder="itemPlaceholder(item)"
                                         :aria-invalid="Boolean(item.validationMessage)"
                                     />
                                     <p
@@ -580,7 +625,7 @@ onBeforeUnmount(() => {
                                             <path d="M12 9v4" />
                                             <path d="M12 17h.01" />
                                         </svg>
-                                        <span>{{ item.validationMessage }}</span>
+                                        <span>{{ tr(item.validationMessage) }}</span>
                                     </p>
                                 </div>
                             </template>
@@ -626,8 +671,8 @@ onBeforeUnmount(() => {
                             <template v-else>
                                 <CustomSelect
                                     v-model="item.value"
-                                    :options="item.options"
-                                    :aria-label="item.displayLabel ?? item.label"
+                                    :options="itemOptions(item)"
+                                    :aria-label="itemLabel(item)"
                                 />
                             </template>
                         </div>
@@ -640,26 +685,26 @@ onBeforeUnmount(() => {
                     "
                     class="panel__audio-status"
                 >
-                    <span>{{ audioOutputError || audioStatusText }}</span>
+                    <span>{{ tr(audioOutputError || audioStatusText) }}</span>
                     <button
                         v-if="shouldShowAudioRetry"
                         class="panel__action panel__action--ghost panel__action--compact"
                         type="button"
                         @click="retryAudioOutput"
                     >
-                        Retry
+                        {{ tr("Retry") }}
                     </button>
                 </div>
                 <template v-if="group.title === 'Playback'">
                     <div class="panel__subtitle panel__subtitle--large">
-                        Rendering
+                        {{ tr("Rendering") }}
                     </div>
                     <div class="panel__table panel__table--card">
                         <div class="panel__row panel__row--card panel__row--shader-header">
                             <div class="panel__card-text">
-                                <div class="panel__card-title">Custom Shader</div>
+                                <div class="panel__card-title">{{ tr("Custom Shader") }}</div>
                                 <div class="panel__card-subtitle">
-                                    Select one or more <code>.glsl</code> shader files.
+                                    {{ tr("Select one or more .glsl shader files.") }}
                                 </div>
                             </div>
                             <div class="panel__control panel__control--card panel__control--stack">
@@ -669,7 +714,7 @@ onBeforeUnmount(() => {
                                         type="button"
                                         @click="browseForCustomShaders"
                                     >
-                                        Add Shaders
+                                        {{ tr("Add Shaders") }}
                                     </button>
                                     <button
                                         class="panel__action panel__action--ghost panel__action--compact"
@@ -677,7 +722,7 @@ onBeforeUnmount(() => {
                                         :disabled="!selectedShaderFiles.length"
                                         @click="clearShaders"
                                     >
-                                        Clear
+                                        {{ tr("Clear") }}
                                     </button>
                                 </div>
                             </div>
@@ -691,7 +736,7 @@ onBeforeUnmount(() => {
                                     v-if="!selectedShaderFiles.length"
                                     class="panel__shader-empty"
                                 >
-                                    No shader files selected.
+                                    {{ tr("No shader files selected.") }}
                                 </div>
                                 <div v-else class="panel__shader-list">
                                     <div
@@ -716,7 +761,7 @@ onBeforeUnmount(() => {
                                         "
                                         :title="
                                             isShaderUnavailable(shaderPath)
-                                                ? `File not found: ${shaderPath}`
+                                                ? tr(`File not found: ${shaderPath}`)
                                                 : shaderPath
                                         "
                                         @click="toggleShaderEnabled(shaderPath)"
@@ -738,8 +783,8 @@ onBeforeUnmount(() => {
                                             }"
                                             :title="
                                                 getActiveShaderOrder(shaderPath) !== null
-                                                    ? `Shader order ${getActiveShaderOrder(shaderPath)}`
-                                                    : 'Select shader'
+                                                    ? tr(`Shader order ${getActiveShaderOrder(shaderPath)}`)
+                                                    : tr('Select shader')
                                             "
                                         >
                                             {{ getActiveShaderOrder(shaderPath) ?? "" }}
@@ -751,12 +796,12 @@ onBeforeUnmount(() => {
                                             v-if="isShaderUnavailable(shaderPath)"
                                             class="panel__shader-missing"
                                         >
-                                            Missing
+                                            {{ tr("Missing") }}
                                         </span>
                                         <button
                                             class="panel__shader-remove"
                                             type="button"
-                                            aria-label="Remove shader"
+                                            :aria-label="tr('Remove shader')"
                                             @click.stop.prevent="
                                                 removeShaderFromList(shaderPath)
                                             "
@@ -781,7 +826,7 @@ onBeforeUnmount(() => {
                                             class="panel__shader-multi-toggle"
                                         >
                                             <span class="panel__shader-multi-label">
-                                                Use Multiple Shader
+                                                {{ tr("Use Multiple Shader") }}
                                             </span>
                                             <span class="panel__toggle panel__toggle--shader-multi">
                                                 <input
@@ -821,7 +866,7 @@ onBeforeUnmount(() => {
                                                         hasEnabledShaderInCurrentMode,
                                                 }"
                                             >
-                                                General Mode
+                                                {{ tr("General Mode") }}
                                             </span>
                                             <span
                                                 class="panel__shader-mode-switch-item"
@@ -833,7 +878,7 @@ onBeforeUnmount(() => {
                                                         hasEnabledShaderInCurrentMode,
                                                 }"
                                             >
-                                                Anime Mode
+                                                {{ tr("Anime Mode") }}
                                             </span>
                                         </button>
                                     </div>
@@ -853,8 +898,8 @@ onBeforeUnmount(() => {
                                                 <span>
                                                     {{
                                                         isShaderListExpanded
-                                                            ? `Collapse (${selectedShaderFiles.length})`
-                                                            : `Show all (${selectedShaderFiles.length})`
+                                                            ? tr(`Collapse (${selectedShaderFiles.length})`)
+                                                            : tr(`Show all (${selectedShaderFiles.length})`)
                                                     }}
                                                 </span>
                                                 <svg
@@ -887,12 +932,12 @@ onBeforeUnmount(() => {
             </div>
             <div class="panel__section">
                 <div class="panel__subtitle panel__subtitle--large">
-                    About
+                    {{ tr("About") }}
                 </div>
                 <div class="panel__table panel__table--card">
                     <div class="panel__row panel__row--card" data-window-no-drag>
                         <div class="panel__card-text">
-                            <div class="panel__card-title">GitHub</div>
+                            <div class="panel__card-title">{{ tr("GitHub") }}</div>
                         </div>
                         <div class="panel__control panel__control--card">
                             <div class="panel__social-actions">
@@ -911,7 +956,7 @@ onBeforeUnmount(() => {
                     </div>
                     <div class="panel__row panel__row--card" data-window-no-drag>
                         <div class="panel__card-text">
-                            <div class="panel__card-title">Reddit</div>
+                            <div class="panel__card-title">{{ tr("Reddit") }}</div>
                         </div>
                         <div class="panel__control panel__control--card">
                             <div class="panel__social-actions">
@@ -930,19 +975,19 @@ onBeforeUnmount(() => {
                     </div>
                     <div class="panel__row panel__row--card">
                         <div class="panel__card-text">
-                            <div class="panel__card-title">Runtime</div>
+                            <div class="panel__card-title">{{ tr("Runtime") }}</div>
                         </div>
                         <div class="panel__control panel__control--card">
                             <span class="panel__value-text">
-                                Soia {{ runtimeVersions?.soiaVersion ?? "Unavailable" }}
-                                · mpv {{ runtimeVersions?.mpvVersion ?? "Unavailable" }}
-                                · FFmpeg {{ runtimeVersions?.ffmpegVersion ?? "Unavailable" }}
+                                Soia {{ runtimeVersions?.soiaVersion ?? tr("Unavailable") }}
+                                · mpv {{ runtimeVersions?.mpvVersion ?? tr("Unavailable") }}
+                                · FFmpeg {{ runtimeVersions?.ffmpegVersion ?? tr("Unavailable") }}
                             </span>
                         </div>
                     </div>
                     <div class="panel__row panel__row--card">
                         <div class="panel__card-text">
-                            <div class="panel__card-title">Clear All Local Data</div>
+                            <div class="panel__card-title">{{ tr("Clear All Local Data") }}</div>
                         </div>
                         <div class="panel__control panel__control--card">
                             <button
@@ -953,8 +998,8 @@ onBeforeUnmount(() => {
                             >
                                 {{
                                     isFactoryResetInProgress
-                                        ? "Resetting..."
-                                        : "Factory Reset"
+                                        ? tr("Resetting...")
+                                        : tr("Factory Reset")
                                 }}
                             </button>
                         </div>

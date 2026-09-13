@@ -1,12 +1,21 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from "vue";
 import type { RemoteControlInfo } from "../composables/useRemoteControlQrDialog";
+import {
+    DEFAULT_SETTINGS_LOCALE,
+    translateSettingsText,
+    type SettingsLocale,
+} from "../i18n";
 
-defineProps<{
+const props = defineProps<{
     open: boolean;
     info: RemoteControlInfo | null;
     secondsRemaining: number;
+    locale?: SettingsLocale;
 }>();
+
+const tr = (text: string): string =>
+    translateSettingsText(props.locale ?? DEFAULT_SETTINGS_LOCALE, text);
 
 const emit = defineEmits<{
     (e: "close"): void;
@@ -39,20 +48,20 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
                     <button
                         class="remote-control-qr-dialog__close"
                         type="button"
-                        aria-label="Close QR code"
+                        :aria-label="tr('Close QR code')"
                         @click="emit('close')"
                     >
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
                     </button>
                     <div class="remote-control-qr-dialog__heading">
-                        <span class="remote-control-qr-dialog__eyebrow">Remote Controller</span>
-                        <h2 id="remote-control-qr-dialog-title">Scan to connect</h2>
-                        <p>Use a phone on the same local network.</p>
+                        <span class="remote-control-qr-dialog__eyebrow">{{ tr("Remote Controller") }}</span>
+                        <h2 id="remote-control-qr-dialog-title">{{ tr("Scan to connect") }}</h2>
+                        <p>{{ tr("Use a phone on the same local network.") }}</p>
                     </div>
                     <div class="remote-control-qr-dialog__code" v-html="info.qrSvg"></div>
                     <div class="remote-control-qr-dialog__expiry">
                         <span class="remote-control-qr-dialog__timer">{{ secondsRemaining }}</span>
-                        <span>seconds remaining</span>
+                        <span>{{ tr("seconds remaining") }}</span>
                     </div>
                 </section>
             </div>

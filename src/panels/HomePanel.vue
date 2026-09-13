@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { settingsLocale, translateSettingsText } from "../i18n";
+
 const isAndroidPlatform =
     typeof navigator !== "undefined" && /\bandroid\b/i.test(navigator.userAgent);
 
@@ -11,6 +13,9 @@ const emit = defineEmits<{
     (e: "open-file-picker"): void;
     (e: "update:hover", value: boolean): void;
 }>();
+
+const tr = (text: string): string =>
+    translateSettingsText(settingsLocale.value, text);
 </script>
 
 <template>
@@ -33,23 +38,23 @@ const emit = defineEmits<{
                 <h2 class="home-panel__headline">
                     {{
                         isAndroidPlatform
-                            ? "Tap to choose videos to play"
-                            : "Drag & drop videos to play, or click to browse files"
+                            ? tr("Tap to choose videos to play")
+                            : tr("Drag & drop videos to play, or click to browse files")
                     }}
                 </h2>
                 <p class="home-panel__subtext">
-                    Select one or multiple videos from your device.
+                    {{ tr("Select one or multiple videos from your device.") }}
                 </p>
                 <p class="home-panel__subtext home-panel__subtext--muted">
-                    Selecting multiple files creates a Playlist automatically.
+                    {{ tr("Selecting multiple files creates a Playlist automatically.") }}
                     {{
                         isAndroidPlatform
-                            ? "Use the Playlist button in the top-left corner to view or edit it."
-                            : "Move your cursor to the right side of the window and click to view or edit it."
+                            ? tr("Use the Playlist button in the top-left corner to view or edit it.")
+                            : tr("Move your cursor to the right side of the window and click to view or edit it.")
                     }}
                 </p>
 
-                <span class="home-panel__cta">Choose Files</span>
+                <span class="home-panel__cta">{{ tr("Choose Files") }}</span>
             </button>
         </div>
     </div>

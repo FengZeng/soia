@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { settingsLocale, translateSettingsText } from "../../i18n";
 
 type ProtocolOption = {
     value: string;
@@ -35,6 +36,9 @@ const props = defineProps<{
     isCreatingConnection: boolean;
 }>();
 
+const tr = (text: string): string =>
+    translateSettingsText(settingsLocale.value, text);
+
 const emit = defineEmits<{
     (e: "close"): void;
     (e: "submit"): void;
@@ -53,7 +57,7 @@ const selectedProtocolOption = computed(
 );
 
 const selectedProtocolOptionLabel = computed(
-    () => selectedProtocolOption.value?.label ?? props.selectedProtocolLabel,
+    () => tr(selectedProtocolOption.value?.label ?? props.selectedProtocolLabel),
 );
 
 const getProtocolOptionIndex = () => {
@@ -249,13 +253,13 @@ onBeforeUnmount(() => {
         <div class="network-modal__title">
             {{
                 props.isEditingConnection
-                    ? `Edit ${props.selectedProtocolLabel} Connection`
-                    : `Add ${props.selectedProtocolLabel} Connection`
+                ? `${tr("Edit")} ${props.selectedProtocolLabel} ${tr("Connection")}`
+                : `${tr("Add")} ${props.selectedProtocolLabel} ${tr("Connection")}`
             }}
         </div>
         <div class="network-modal__form">
             <label class="network-modal__field">
-                <span>Protocol</span>
+                <span>{{ tr("Protocol") }}</span>
                 <div
                     class="panel__custom-select"
                     :class="{
@@ -286,7 +290,7 @@ onBeforeUnmount(() => {
                             class="panel__custom-select-menu"
                             :style="protocolSelectMenuStyle"
                             role="listbox"
-                            aria-label="Protocol"
+                            :aria-label="tr('Protocol')"
                         >
                             <button
                                 v-for="(option, optionIndex) in props.protocolOptions"
@@ -311,18 +315,18 @@ onBeforeUnmount(() => {
                 </div>
             </label>
             <label class="network-modal__field">
-                <span>Name</span>
+                <span>{{ tr("Name") }}</span>
                 <input
                     v-model="props.createForm.label"
                     class="panel__input panel__input--path network-modal__input"
                     type="text"
-                    placeholder="Optional (auto fill)"
+                    :placeholder="tr('Optional (auto fill)')"
                 />
             </label>
 
             <template v-if="props.isSmbProtocol">
                 <label class="network-modal__field">
-                    <span>Host</span>
+                    <span>{{ tr("Host") }}</span>
                     <input
                         v-model="props.createForm.host"
                         class="panel__input panel__input--path network-modal__input"
@@ -331,19 +335,19 @@ onBeforeUnmount(() => {
                     />
                 </label>
                 <label class="network-modal__field">
-                    <span>Share (optional)</span>
+                    <span>{{ tr("Share (optional)") }}</span>
                     <input
                         v-model="props.createForm.share"
                         class="panel__input panel__input--path network-modal__input"
                         type="text"
-                        placeholder="Leave empty to browse shares"
+                        :placeholder="tr('Leave empty to browse shares')"
                     />
                 </label>
             </template>
 
             <template v-else-if="props.isFtpProtocol">
                 <label class="network-modal__field">
-                    <span>Host</span>
+                    <span>{{ tr("Host") }}</span>
                     <input
                         v-model="props.createForm.host"
                         class="panel__input panel__input--path network-modal__input"
@@ -352,7 +356,7 @@ onBeforeUnmount(() => {
                     />
                 </label>
                 <label class="network-modal__field">
-                    <span>Port</span>
+                    <span>{{ tr("Port") }}</span>
                     <input
                         v-model="props.createForm.port"
                         class="panel__input panel__input--path network-modal__input"
@@ -377,33 +381,33 @@ onBeforeUnmount(() => {
 
             <template v-if="props.requiresAuthFields">
                 <label class="network-modal__field">
-                    <span>Username</span>
+                    <span>{{ tr("Username") }}</span>
                     <input
                         v-model="props.createForm.username"
                         class="panel__input panel__input--path network-modal__input"
                         type="text"
-                        placeholder="Optional"
+                        :placeholder="tr('Optional')"
                     />
                 </label>
                 <label class="network-modal__field">
-                    <span>Password</span>
+                    <span>{{ tr("Password") }}</span>
                     <input
                         v-model="props.createForm.password"
                         class="panel__input panel__input--path network-modal__input"
                         type="password"
-                        placeholder="Optional"
+                        :placeholder="tr('Optional')"
                     />
                 </label>
                 <label
                     v-if="props.isSmbProtocol"
                     class="network-modal__field"
                 >
-                    <span>Group</span>
+                    <span>{{ tr("Group") }}</span>
                     <input
                         v-model="props.createForm.group"
                         class="panel__input panel__input--path network-modal__input"
                         type="text"
-                        placeholder="Optional"
+                        :placeholder="tr('Optional')"
                     />
                 </label>
             </template>
@@ -427,7 +431,7 @@ onBeforeUnmount(() => {
                 :disabled="props.isCreatingConnection"
                 @click="emit('close')"
             >
-                Cancel
+                {{ tr("Cancel") }}
             </button>
             <button
                 class="panel__action network-modal__btn"
@@ -437,10 +441,10 @@ onBeforeUnmount(() => {
             >
                 {{
                     props.isCreatingConnection
-                        ? "Saving..."
+                        ? tr("Saving...")
                         : props.isEditingConnection
-                          ? "Save"
-                          : "Create"
+                          ? tr("Save")
+                          : tr("Create")
                 }}
             </button>
         </div>

@@ -5,6 +5,10 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import {
+    getSettingsLocale,
+    translateSettingsText,
+} from "../../i18n";
 
 type UpdateButtonPhase =
     | "idle"
@@ -317,12 +321,15 @@ export const useUpdateSection = () => {
                 await update.install();
                 try {
                     const shouldRelaunch = await confirm(
-                        "Update installed. Restart now to apply the new version?",
+                        translateSettingsText(
+                            getSettingsLocale(),
+                            "Update installed. Restart now to apply the new version?",
+                        ),
                         {
-                            title: "Restart Required",
+                            title: translateSettingsText(getSettingsLocale(), "Restart Required"),
                             kind: "info",
-                            okLabel: "Restart now",
-                            cancelLabel: "Later",
+                            okLabel: translateSettingsText(getSettingsLocale(), "Restart now"),
+                            cancelLabel: translateSettingsText(getSettingsLocale(), "Later"),
                         },
                     );
                     if (shouldRelaunch) {

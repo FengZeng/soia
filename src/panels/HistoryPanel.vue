@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { settingsLocale, translateSettingsText } from "../i18n";
 import type { HistoryEntry } from "../types/history";
 import { formatDateTime } from "../utils/formatDateTime";
 import { formatMonthDay } from "../utils/formatMonthDay";
@@ -33,19 +34,22 @@ const onRemoveEntry = (entry: HistoryEntry) => {
     emit("remove-history", entry);
     clearExpandedIfMatches(entry.path);
 };
+
+const tr = (text: string): string =>
+    translateSettingsText(settingsLocale.value, text);
 </script>
 
 <template>
     <div class="history panel panel--history">
         <div class="panel__header">
-            <div class="panel__title">History</div>
+            <div class="panel__title">{{ tr("History") }}</div>
             <button
                 class="panel__reset"
                 type="button"
                 @click.stop="emit('clear-history')"
                 :disabled="props.isLoading"
             >
-                Clear
+                {{ tr("Clear") }}
             </button>
         </div>
         <div class="panel__stack">
@@ -58,9 +62,9 @@ const onRemoveEntry = (entry: HistoryEntry) => {
                     </div>
 
                     <div v-else-if="!props.history.length" class="panel__empty">
-                        <div class="panel__empty-title">No recent plays</div>
+                        <div class="panel__empty-title">{{ tr("No recent plays") }}</div>
                         <div class="panel__empty-body">
-                            Open a file to start building your playback history.
+                            {{ tr("Open a file to start building your playback history.") }}
                         </div>
                     </div>
 
@@ -85,8 +89,8 @@ const onRemoveEntry = (entry: HistoryEntry) => {
                                     :aria-expanded="expandedPath === entry.path"
                                     :title="
                                         expandedPath === entry.path
-                                            ? 'Collapse'
-                                            : 'Expand'
+                                            ? tr('Collapse')
+                                            : tr('Expand')
                                     "
                                 >
                                     <svg
@@ -126,7 +130,7 @@ const onRemoveEntry = (entry: HistoryEntry) => {
                                             :key="badge.id"
                                             class="history__protocol"
                                             :class="`history__protocol--${badge.id}`"
-                                            :title="`Resume ${getPlaybackProgressLabel(entry)}`"
+                                            :title="`${tr('Resume')} ${getPlaybackProgressLabel(entry)}`"
                                             :style="{
                                                 '--history-protocol-progress': badge.showsProgress
                                                     ? `${getPlaybackProgressPercent(entry)}%`
@@ -152,11 +156,11 @@ const onRemoveEntry = (entry: HistoryEntry) => {
                                         type="button"
                                         :aria-label="
                                             entry.isPinned
-                                                ? 'Unpin history item'
-                                                : 'Pin history item'
+                                                ? tr('Unpin history item')
+                                                : tr('Pin history item')
                                         "
                                         :title="
-                                            entry.isPinned ? 'Unpin from top' : 'Pin to top'
+                                            entry.isPinned ? tr('Unpin from top') : tr('Pin to top')
                                         "
                                         @click.stop="emit('toggle-pin-history', entry)"
                                         @keydown.enter.stop
@@ -199,7 +203,7 @@ const onRemoveEntry = (entry: HistoryEntry) => {
                                 <button
                                     class="history__remove"
                                     type="button"
-                                    aria-label="Remove history item"
+                                    :aria-label="tr('Remove history item')"
                                     @click.stop="onRemoveEntry(entry)"
                                     @keydown.enter.stop
                                     @keydown.space.prevent.stop

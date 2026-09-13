@@ -27,14 +27,15 @@ import {
     applyYtdlSettings,
     openLogDirectory,
 } from "../useUiStateStore";
+import {
+    getSettingsLocale,
+    translateSettingsText,
+} from "../../i18n";
 
 export type StoredSettingItem = { label: string; value: string };
 export type StoredSettingGroup = { title: string; items: StoredSettingItem[] };
 
-const DEV_ONLY_SETTING_LABELS = new Set([
-    PROXY_MODE_SETTING_LABEL,
-    PROXY_ADDRESS_SETTING_LABEL,
-]);
+const DEV_ONLY_SETTING_LABELS = new Set<string>();
 
 const normalizeLogLevel = (value: string): string | null => {
     const trimmed = value.trim();
@@ -570,12 +571,15 @@ export const useGeneralSettingsSection = (isWindowsPlatform: boolean) => {
         isWallpaperRestartPromptOpen = true;
         try {
             const shouldRelaunch = await confirm(
-                "Wallpaper Mode change will take effect after restart. Restart now?",
+                translateSettingsText(
+                    getSettingsLocale(),
+                    "Wallpaper Mode change will take effect after restart. Restart now?",
+                ),
                 {
-                    title: "Restart Required",
+                    title: translateSettingsText(getSettingsLocale(), "Restart Required"),
                     kind: "info",
-                    okLabel: "Restart now",
-                    cancelLabel: "Later",
+                    okLabel: translateSettingsText(getSettingsLocale(), "Restart now"),
+                    cancelLabel: translateSettingsText(getSettingsLocale(), "Later"),
                 },
             );
             if (shouldRelaunch) {
@@ -601,7 +605,10 @@ export const useGeneralSettingsSection = (isWindowsPlatform: boolean) => {
         const selected = await open({
             multiple: false,
             directory: false,
-            title: item.browseTitle ?? "Select file",
+            title: translateSettingsText(
+                getSettingsLocale(),
+                item.browseTitle ?? "Select file",
+            ),
         });
         if (selected) {
             item.value = selected as string;

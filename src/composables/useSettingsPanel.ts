@@ -19,6 +19,10 @@ import {
     useAudioSettingsSection,
 } from "./settings-sections";
 import type { AudioSettings } from "../types/audio";
+import {
+    getSettingsLocale,
+    translateSettingsText,
+} from "../i18n";
 
 export const useSettingsPanel = () => {
     const isMacOS =
@@ -101,13 +105,16 @@ export const useSettingsPanel = () => {
     const factoryReset = async () => {
         if (isFactoryResetInProgress.value) return;
 
+        const tr = (text: string): string =>
+            translateSettingsText(getSettingsLocale(), text);
+
         const confirmed = await confirm(
-            "Factory reset will erase local history, playlists, settings, and network records. UUID will be kept. Continue?",
+            tr("Factory reset will erase local history, playlists, settings, and network records. UUID will be kept. Continue?"),
             {
-                title: "Factory Reset",
+                title: tr("Factory Reset"),
                 kind: "warning",
-                okLabel: "Reset and Restart",
-                cancelLabel: "Cancel",
+                okLabel: tr("Reset and Restart"),
+                cancelLabel: tr("Cancel"),
             },
         ).catch(() => false);
 

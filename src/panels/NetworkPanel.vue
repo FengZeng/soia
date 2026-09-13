@@ -16,6 +16,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 import NetworkConnectionsView from "../components/network/NetworkConnectionsView.vue";
 import NetworkBrowserView from "../components/network/NetworkBrowserView.vue";
 import NetworkConnectionModal from "../components/network/NetworkConnectionModal.vue";
+import { settingsLocale, translateSettingsText } from "../i18n";
 
 const props = defineProps<{
     history: HistoryEntry[];
@@ -57,6 +58,9 @@ const {
 const emit = defineEmits<{
     (e: "play-network", payload: NetworkPlayRequest): void;
 }>();
+
+const tr = (text: string): string =>
+    translateSettingsText(settingsLocale.value, text);
 
 const isCreateModalOpen = ref(false);
 const isCreatingConnection = ref(false);
@@ -163,16 +167,16 @@ const requiresAuthFields = computed(
         isWebdavProtocol.value || isSmbProtocol.value || isFtpProtocol.value,
 );
 const serverFieldLabel = computed(() => {
-    if (isHttpDlnaProtocol.value) return "Device URL";
-    return "Server URL";
+    if (isHttpDlnaProtocol.value) return tr("Device URL");
+    return tr("Server URL");
 });
 const serverFieldPlaceholder = computed(() => {
     if (isHttpDlnaProtocol.value) return "http://192.168.31.66:8200/MediaServer";
     return "https://example.com/webdav";
 });
 const defaultPathLabel = computed(() => {
-    if (isHttpDlnaProtocol.value) return "Content Path";
-    return "Default Path";
+    if (isHttpDlnaProtocol.value) return tr("Content Path");
+    return tr("Default Path");
 });
 const selectedProtocolLabel = computed(
     () =>
@@ -781,10 +785,10 @@ const pendingDeleteLabel = computed(
     () =>
         pendingDeleteConnection.value?.label ||
         pendingDeleteConnection.value?.id ||
-        "this connection",
+        tr("this connection"),
 );
 const deleteConfirmMessage = computed(
-    () => `Delete connection "${pendingDeleteLabel.value}"?`,
+    () => `${tr("Delete connection")} "${pendingDeleteLabel.value}"?`,
 );
 
 const formatProtocolLabel = (protocol: string) =>
@@ -803,14 +807,14 @@ const formatProtocolLabel = (protocol: string) =>
                     :class="{ 'network-title--browser': viewMode === 'browser' }"
                 >
                     <template v-if="viewMode === 'connections'">
-                        Network
+                        {{ tr("Network") }}
                     </template>
                     <template v-else>
                         <button
                             class="network-icon-btn network-icon-btn--close network-title__home-btn"
                             type="button"
-                            aria-label="Home"
-                            title="Home"
+                            :aria-label="tr('Home')"
+                            :title="tr('Home')"
                             @click="onBackToConnections"
                         >
                             <svg
@@ -830,7 +834,7 @@ const formatProtocolLabel = (protocol: string) =>
                             v-if="shouldShowTitleStatus"
                             class="network-title__status"
                         >
-                            {{ titleStatusText }}
+                            {{ tr(titleStatusText) }}
                         </span>
                         <span
                             v-if="errorMessage"
@@ -842,7 +846,7 @@ const formatProtocolLabel = (protocol: string) =>
                     </template>
                 </div>
                 <div v-if="viewMode === 'connections'" class="network-header__meta">
-                    {{ `${networkConnections.length} connections` }}
+                    {{ `${networkConnections.length} ${tr("connections")}` }}
                 </div>
                 <div
                     v-else-if="shouldShowPathBar"
@@ -858,7 +862,7 @@ const formatProtocolLabel = (protocol: string) =>
                         class="network-title__back-btn"
                         type="button"
                         :disabled="isLoading"
-                        aria-label="Go to parent folder"
+                        :aria-label="tr('Go to parent folder')"
                         @click="onBackFolderClick"
                     >
                         <svg
@@ -919,7 +923,7 @@ const formatProtocolLabel = (protocol: string) =>
                                 class="network-title__path-crumb network-title__path-ellipsis"
                                 type="button"
                                 :disabled="isLoading"
-                                aria-label="Show hidden path folders"
+                                :aria-label="tr('Show hidden path folders')"
                                 :aria-expanded="isPathOverflowMenuOpen"
                                 @click="togglePathOverflowMenu"
                             >
@@ -1026,8 +1030,8 @@ const formatProtocolLabel = (protocol: string) =>
                         class="network-new-btn network-new-btn--refresh"
                         :class="{ 'network-new-btn--spinning': isDiscovering }"
                         type="button"
-                        aria-label="Refresh connections"
-                        :title="isDiscovering ? 'Refreshing' : 'Refresh'"
+                        :aria-label="tr('Refresh connections')"
+                        :title="isDiscovering ? tr('Refreshing') : tr('Refresh')"
                         :disabled="isDiscovering"
                         @click="onConnectionsRefreshClick"
                     >
@@ -1046,8 +1050,8 @@ const formatProtocolLabel = (protocol: string) =>
                     <button
                         class="network-new-btn"
                         type="button"
-                        aria-label="Add connection"
-                        title="New"
+                        :aria-label="tr('Add connection')"
+                        :title="tr('New')"
                         @click="openCreateModal"
                     >
                         <svg
@@ -1065,23 +1069,23 @@ const formatProtocolLabel = (protocol: string) =>
                 </template>
                 <template v-else>
                     <label class="network-sort-control">
-                        <span class="network-sort-control__label">Sort</span>
+                        <span class="network-sort-control__label">{{ tr("Sort") }}</span>
                         <select
                             v-model="networkSortValue"
                             class="network-sort-control__select"
-                            aria-label="Sort network entries"
+                            :aria-label="tr('Sort network entries')"
                         >
-                            <option value="name:asc">Alphabetical (A–Z, ascending)</option>
-                            <option value="name:desc">Alphabetical (Z–A, descending)</option>
-                            <option value="added:desc">Date added (newest, descending)</option>
-                            <option value="added:asc">Date added (oldest, ascending)</option>
+                            <option value="name:asc">{{ tr("Alphabetical (A–Z, ascending)") }}</option>
+                            <option value="name:desc">{{ tr("Alphabetical (Z–A, descending)") }}</option>
+                            <option value="added:desc">{{ tr("Date added (newest, descending)") }}</option>
+                            <option value="added:asc">{{ tr("Date added (oldest, ascending)") }}</option>
                         </select>
                     </label>
                     <button
                         class="network-icon-btn"
                         type="button"
-                        aria-label="Refresh"
-                        title="Refresh"
+                        :aria-label="tr('Refresh')"
+                        :title="tr('Refresh')"
                         @click="onRefreshClick"
                     >
                         <svg
@@ -1129,7 +1133,7 @@ const formatProtocolLabel = (protocol: string) =>
                 aria-live="polite"
             >
                 <div class="network-switch-spinner"></div>
-                <div class="network-switch-text">Opening connection...</div>
+                <div class="network-switch-text">{{ tr("Opening connection...") }}</div>
             </div>
         </transition>
         </div>
@@ -1146,18 +1150,18 @@ const formatProtocolLabel = (protocol: string) =>
             :server-field-label="serverFieldLabel"
             :server-field-placeholder="serverFieldPlaceholder"
             :default-path-label="defaultPathLabel"
-            :create-error="createError"
+            :create-error="tr(createError)"
             :is-creating-connection="isCreatingConnection"
             @close="closeCreateModal"
             @submit="onCreateConnectionSubmit"
         />
         <ConfirmDialog
             :open="isDeleteModalOpen"
-            title="Delete Connection"
+            :title="tr('Delete Connection')"
             :message="deleteConfirmMessage"
-            :confirm-text="isDeletingConnection ? 'Deleting...' : 'Delete'"
+            :confirm-text="isDeletingConnection ? tr('Deleting...') : tr('Delete')"
             :confirm-loading="isDeletingConnection"
-            :error-message="deleteError"
+            :error-message="tr(deleteError)"
             @cancel="closeDeleteModal"
             @confirm="onDeleteConnectionConfirm"
         />
