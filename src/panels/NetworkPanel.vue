@@ -13,6 +13,7 @@ import {
 } from "../utils/resolvePlaybackSource";
 import { useNetworkPanel } from "../composables/useNetworkPanel";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import CustomSelect from "../components/CustomSelect.vue";
 import NetworkConnectionsView from "../components/network/NetworkConnectionsView.vue";
 import NetworkBrowserView from "../components/network/NetworkBrowserView.vue";
 import NetworkConnectionModal from "../components/network/NetworkConnectionModal.vue";
@@ -144,6 +145,13 @@ const networkSortValue = computed({
         }
     },
 });
+
+const networkSortOptions = computed(() => [
+    { value: "name:asc", label: tr("Alphabetical (A–Z)") },
+    { value: "name:desc", label: tr("Alphabetical (Z–A)") },
+    { value: "added:desc", label: tr("Date added (newest)") },
+    { value: "added:asc", label: tr("Date added (oldest)") },
+]);
 
 const createForm = reactive({
     label: "",
@@ -1069,17 +1077,11 @@ const formatProtocolLabel = (protocol: string) =>
                 </template>
                 <template v-else>
                     <label class="network-sort-control">
-                        <span class="network-sort-control__label">{{ tr("Sort") }}</span>
-                        <select
+                        <CustomSelect
                             v-model="networkSortValue"
-                            class="network-sort-control__select"
+                            :options="networkSortOptions"
                             :aria-label="tr('Sort network entries')"
-                        >
-                            <option value="name:asc">{{ tr("Alphabetical (A–Z, ascending)") }}</option>
-                            <option value="name:desc">{{ tr("Alphabetical (Z–A, descending)") }}</option>
-                            <option value="added:desc">{{ tr("Date added (newest, descending)") }}</option>
-                            <option value="added:asc">{{ tr("Date added (oldest, ascending)") }}</option>
-                        </select>
+                        />
                     </label>
                     <button
                         class="network-icon-btn"

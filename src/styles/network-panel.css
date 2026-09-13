@@ -55,27 +55,25 @@
     color: rgba(0, 0, 0, 0.58);
     font-size: 11px;
     font-weight: 600;
+    --panel-select-card-bg: rgba(255, 255, 255, 0.72);
+    --panel-select-card-border: rgba(0, 0, 0, 0.16);
+    --panel-select-card-text: rgba(0, 0, 0, 0.58);
+    --panel-select-card-arrow: rgba(0, 0, 0, 0.45);
+    --panel-select-card-hover-bg: rgba(255, 255, 255, 0.9);
+    --panel-select-card-hover-border: rgba(0, 0, 0, 0.24);
+    --panel-select-card-focus-bg: rgba(255, 255, 255, 0.92);
+    --panel-select-card-focus-border: rgba(88, 134, 232, 0.64);
+    --panel-select-card-focus-glow: rgba(88, 134, 232, 0.28);
+    --panel-select-menu-bg: rgba(245, 248, 255, 0.98);
+    --panel-select-menu-border: rgba(0, 0, 0, 0.14);
+    --panel-select-menu-hover-bg: rgba(0, 0, 0, 0.05);
+    --panel-select-menu-selected-bg: rgba(0, 0, 0, 0.08);
+    --panel-select-menu-selected-border: rgba(0, 0, 0, 0.2);
 }
 
-.network-sort-control__label {
-    flex: 0 0 auto;
-}
-
-.network-sort-control__select {
+.network-sort-control .panel__custom-select {
     min-width: 148px;
     max-width: min(220px, 28vw);
-    border: 1px solid rgba(0, 0, 0, 0.16);
-    border-radius: 8px;
-    padding: 6px 24px 6px 8px;
-    color: inherit;
-    background: rgba(255, 255, 255, 0.72);
-    font-size: 11px;
-    cursor: pointer;
-}
-
-.network-sort-control__select:focus-visible {
-    outline: 2px solid rgba(88, 134, 232, 0.48);
-    outline-offset: 1px;
 }
 
 .network-title__status {
@@ -897,12 +895,20 @@
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme]) .network-sort-control {
         color: rgba(255, 255, 255, 0.72);
-    }
-
-    :root:not([data-theme]) .network-sort-control__select {
-        border-color: rgba(255, 255, 255, 0.18);
-        color: rgba(255, 255, 255, 0.9);
-        background: rgba(255, 255, 255, 0.08);
+        --panel-select-card-bg: rgba(255, 255, 255, 0.08);
+        --panel-select-card-border: rgba(255, 255, 255, 0.18);
+        --panel-select-card-text: rgba(255, 255, 255, 0.9);
+        --panel-select-card-arrow: rgba(255, 255, 255, 0.72);
+        --panel-select-card-hover-bg: rgba(255, 255, 255, 0.12);
+        --panel-select-card-hover-border: rgba(255, 255, 255, 0.3);
+        --panel-select-card-focus-bg: rgba(255, 255, 255, 0.14);
+        --panel-select-card-focus-border: rgba(147, 197, 253, 0.64);
+        --panel-select-card-focus-glow: rgba(147, 197, 253, 0.3);
+        --panel-select-menu-bg: rgba(46, 58, 77, 0.98);
+        --panel-select-menu-border: rgba(170, 190, 220, 0.18);
+        --panel-select-menu-hover-bg: rgba(210, 220, 238, 0.08);
+        --panel-select-menu-selected-bg: rgba(210, 220, 238, 0.12);
+        --panel-select-menu-selected-border: rgba(170, 190, 220, 0.3);
     }
 
     :root:not([data-theme]) .network-header__meta {
@@ -974,12 +980,20 @@
 
 :root:is([data-theme="dark"], [data-theme="graphite"]) .network-sort-control {
     color: rgba(255, 255, 255, 0.72);
-}
-
-:root:is([data-theme="dark"], [data-theme="graphite"]) .network-sort-control__select {
-    border-color: rgba(255, 255, 255, 0.18);
-    color: rgba(255, 255, 255, 0.9);
-    background: rgba(255, 255, 255, 0.08);
+    --panel-select-card-bg: rgba(255, 255, 255, 0.08);
+    --panel-select-card-border: rgba(255, 255, 255, 0.18);
+    --panel-select-card-text: rgba(255, 255, 255, 0.9);
+    --panel-select-card-arrow: rgba(255, 255, 255, 0.72);
+    --panel-select-card-hover-bg: rgba(255, 255, 255, 0.12);
+    --panel-select-card-hover-border: rgba(255, 255, 255, 0.3);
+    --panel-select-card-focus-bg: rgba(255, 255, 255, 0.14);
+    --panel-select-card-focus-border: rgba(147, 197, 253, 0.64);
+    --panel-select-card-focus-glow: rgba(147, 197, 253, 0.3);
+    --panel-select-menu-bg: rgba(46, 58, 77, 0.98);
+    --panel-select-menu-border: rgba(170, 190, 220, 0.18);
+    --panel-select-menu-hover-bg: rgba(210, 220, 238, 0.08);
+    --panel-select-menu-selected-bg: rgba(210, 220, 238, 0.12);
+    --panel-select-menu-selected-border: rgba(170, 190, 220, 0.3);
 }
 
 :root:is([data-theme="dark"], [data-theme="graphite"]) .network-new-btn {
