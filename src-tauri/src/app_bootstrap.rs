@@ -72,11 +72,13 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
         .and_then(|state| state.audio)
         .unwrap_or_default()
         .normalized();
+    let mpv_config_path = resolve_mpv_config_path(&app.handle());
     let mpv_player_handle = MpvHandle::new(
         render_target,
         display,
         app.handle().clone(),
         audio_settings.clone(),
+        mpv_config_path,
         auth_token,
     )
     .map_err(|e| Box::new(io::Error::other(e)) as Box<dyn Error>)?;
@@ -95,6 +97,32 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
 
     crate::platform::setup(app)?;
     Ok(())
+}
+
+const MPV_CONFIG_PATH_SETTING_LABEL: &str = "MPV_CONFIG_PATH";
+
+fn resolve_mpv_config_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let configured_path = ui_state_store::load_ui_state(app)
+        .ok()
+        .and_then(|state| state.settings)
+        .and_then(|settings| settings.groups)
+        .and_then(|groups| {
+            groups
+                .into_iter()
+                .flat_map(|group| group.items)
+                .find(|item| item.label == MPV_CONFIG_PATH_SETTING_LABEL)
+        })
+        .map(|item| PathBuf::from(item.value.trim()))
+        .filter(|path| !path.as_os_str().is_empty());
+
+    match configured_path {
+        Some(path) if path.is_file() => Some(path),
+        Some(path) => {
+            warn!("Configured mpv config file does not exist: {}", path.display());
+            None
+        }
+        None => None,
+    }
 }
 
 fn build_app_state(

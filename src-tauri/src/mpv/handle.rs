@@ -3,7 +3,7 @@ use super::event_loop::mpv_event_loop;
 use super::ffi::ensure_numeric_locale_for_mpv;
 use super::ffi::{
     mpv_command, mpv_create, mpv_create_client, mpv_destroy, mpv_format, mpv_free,
-    mpv_get_property_string, mpv_initialize, mpv_set_option, mpv_set_option_string,
+    mpv_get_property_string, mpv_initialize, mpv_load_config_file, mpv_set_option, mpv_set_option_string,
     mpv_terminate_destroy, resolve_linked_library_path, soia_utils_create, soia_utils_destroy,
     soia_utils_render_context_update, soia_utils_render_target_resize,
     soia_utils_set_render_target_visible, soia_utils_uses_render_context, SoiaUtils,
@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use std::path::PathBuf;
 use tauri::AppHandle;
 
 #[cfg(target_os = "windows")]
@@ -157,6 +158,7 @@ impl MpvHandle {
         display: Option<*const c_void>,
         app_handle: AppHandle,
         audio_settings: crate::audio_output::AudioSettings,
+        mpv_config_path: Option<PathBuf>,
         _auth_token: Option<SoiaAuthToken>,
     ) -> Result<Self, String> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -171,6 +173,21 @@ impl MpvHandle {
             );
         }
 
+        if let Some(config_path) = mpv_config_path.filter(|path| path.is_file()) {
+            match CString::new(config_path.to_string_lossy().as_bytes()) {
+                Ok(path) => {
+                    let result = unsafe { mpv_load_config_file(ctx, path.as_ptr()) };
+                    if result < 0 {
+                        warn!("Failed to load mpv config file {}: {result}", config_path.display());
+                    } else {
+                        info!("Loaded mpv config file: {}", config_path.display());
+                    }
+                }
+                Err(_) => warn!("Ignoring mpv config path containing a null byte"),
+            }
+        }
+
+        // These options are owned by Soia and intentionally override mpv.conf.
         set_mpv_initial_options(ctx, &audio_settings);
 
         let init_result = unsafe { mpv_initialize(ctx) };

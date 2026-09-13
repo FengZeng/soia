@@ -34,6 +34,9 @@ export const messages: Record<string, string> = {
     "Auto-Play Next": "自动播放下一个",
     "Disable Subtitles": "禁用字幕",
     "Default Speed": "默认速度",
+    "mpv Config File": "mpv 配置文件",
+    "Optional mpv.conf file": "可选的 mpv.conf 文件",
+    "Select mpv.conf": "选择 mpv.conf",
     "Seek Step": "跳转步长",
     "Skip Intro For New Videos": "新视频跳过片头",
     "Image Display Duration": "图片显示时长",
@@ -63,6 +66,8 @@ export const messages: Record<string, string> = {
     "Log File": "日志文件",
     Experiments: "实验功能",
     "Wallpaper Mode": "壁纸模式",
+    "mpv config change will take effect after restart. Restart now?":
+        "mpv 配置更改将在重启后生效。现在重启吗？",
     Audio: "音频",
     Output: "输出设备",
     Passthrough: "直通",

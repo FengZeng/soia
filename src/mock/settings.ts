@@ -84,6 +84,7 @@ export const PLAYBACK_TITLE_SETTING_LABEL = "PLAYBACK_TITLE";
 export const ALLOW_URL_INPUT_DURING_PLAYBACK_SETTING_LABEL =
     "ALLOW_URL_INPUT_DURING_PLAYBACK";
 export const DEFAULT_SPEED_SETTING_LABEL = "Default Speed";
+export const MPV_CONFIG_PATH_SETTING_LABEL = "MPV_CONFIG_PATH";
 export const IMAGE_DISPLAY_DURATION_SETTING_LABEL = "IMAGE_DISPLAY_DURATION";
 export const DISABLE_SUBTITLES_SETTING_LABEL = "DISABLE_SUBTITLES";
 export const OPENSUBTITLES_ENABLED_SETTING_LABEL = "OPENSUBTITLES_ENABLED";
@@ -154,6 +155,14 @@ export const defaultSettingGroups: SettingGroup[] = [
     {
         title: "Playback",
         items: [
+            {
+                label: MPV_CONFIG_PATH_SETTING_LABEL,
+                displayLabel: "mpv Config File",
+                value: "",
+                type: "path",
+                placeholder: "Optional mpv.conf file",
+                browseTitle: "Select mpv.conf",
+            },
             {
                 label: PLAYBACK_TITLE_SETTING_LABEL,
                 displayLabel: "Playback Title",

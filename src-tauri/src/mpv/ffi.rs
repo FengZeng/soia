@@ -195,6 +195,7 @@ pub(crate) struct MpvEventEndFile {
 
 unsafe extern "C" {
     pub(super) fn mpv_create() -> *mut c_void;
+    pub(super) fn mpv_load_config_file(ctx: *mut c_void, filename: *const c_char) -> c_int;
     pub(super) fn mpv_initialize(ctx: *mut c_void) -> c_int;
     pub(super) fn mpv_command(ctx: *mut c_void, args: *const *const c_char) -> c_int;
     pub(super) fn mpv_set_option(
