@@ -9,6 +9,9 @@ pub(crate) mod macos_ffi;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;
 
+#[cfg(target_os = "macos")]
+pub(crate) use macos::set_mpv_hdr_output;
+
 #[cfg(not(target_os = "macos"))]
 mod default;
 

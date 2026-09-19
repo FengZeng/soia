@@ -2,6 +2,7 @@ use super::ffi::{
     mpv_command, mpv_destroy, mpv_event_id, mpv_format, mpv_free, mpv_get_property_string,
     mpv_node, mpv_observe_property, mpv_wait_event, MpvEventEndFile, MpvEventProperty,
 };
+use super::hdr_output::HdrOutputController;
 use super::series_match::SeriesMatcher;
 use crate::AppState;
 use log::{debug, error, info, trace, warn};
@@ -190,25 +191,48 @@ fn emit_event<T: Serialize + Clone>(app_handle: &AppHandle, name: &str, payload:
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn update_hdr_content_state(
+    _app_handle: &AppHandle,
+    _hdr_output: &mut HdrOutputController,
+    _is_hdr_content: bool,
+) {
+}
+
+#[cfg(target_os = "macos")]
 fn update_hdr_content_state(
     app_handle: &AppHandle,
-    last_is_hdr_content: &mut bool,
+    hdr_output: &mut HdrOutputController,
     is_hdr_content: bool,
 ) {
-    if *last_is_hdr_content == is_hdr_content {
+    if hdr_output.is_enabled() == is_hdr_content {
         return;
     }
 
-    *last_is_hdr_content = is_hdr_content;
     let state: tauri::State<'_, AppState> = app_handle.state();
     let result = crate::with_mpv(&state, |mpv_guard| {
+        let output_updated = hdr_output.update(mpv_guard, is_hdr_content);
         state
             .shader_pipeline
             .set_hdr_content(app_handle, mpv_guard, is_hdr_content)
-            .map(|_| ())
+            .map(|_| output_updated)
     });
-    if let Err(error) = result {
-        error!("Failed to update HDR brightness routing: {error}");
+    match result {
+        Ok(_output_updated) => {
+            #[cfg(target_os = "macos")]
+            if _output_updated {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    if let Ok(mpv_guard) = state.mpv_player.lock() {
+                        crate::platform::set_mpv_hdr_output(
+                            &window,
+                            mpv_guard.soia_utils_ptr() as usize,
+                            is_hdr_content,
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => error!("Failed to update HDR brightness routing: {error}"),
     }
 }
 
@@ -722,7 +746,7 @@ pub(super) fn mpv_event_loop(
     let mut last_pip_paused: bool = false;
     let mut last_media_title: Option<String> = None;
     let mut last_hwdec_current: Option<String> = None;
-    let mut last_is_hdr_content = false;
+    let mut hdr_output = HdrOutputController::default();
     let mut end_file_emitted_for_current_item: bool = false;
     let mut ignore_next_cache_update_after_seek: bool = false;
     let mut freeze_buffered_pos_until_cache_refresh: bool = false;
@@ -946,7 +970,7 @@ pub(super) fn mpv_event_loop(
                             .and_then(|mut pending| pending.pop_front())
                     };
                     last_media_title = None;
-                    update_hdr_content_state(&app_handle, &mut last_is_hdr_content, false);
+                    update_hdr_content_state(&app_handle, &mut hdr_output, false);
                     publish_playback_snapshot(
                         &app_handle,
                         last_time_pos,
@@ -1404,10 +1428,13 @@ pub(super) fn mpv_event_loop(
                                 }
                             }
                             VIDEO_TRANSFER_ID => {
+                                if !is_current_file_loaded {
+                                    continue;
+                                }
                                 if (*prop_event).format == mpv_format::MPV_FORMAT_NONE {
                                     update_hdr_content_state(
                                         &app_handle,
-                                        &mut last_is_hdr_content,
+                                        &mut hdr_output,
                                         false,
                                     );
                                 } else {
@@ -1421,7 +1448,7 @@ pub(super) fn mpv_event_loop(
                                             .into_owned();
                                         update_hdr_content_state(
                                             &app_handle,
-                                            &mut last_is_hdr_content,
+                                            &mut hdr_output,
                                             is_hdr_transfer(&transfer),
                                         );
                                         mpv_free(transfer_ptr as *mut c_void);
@@ -1735,7 +1762,7 @@ pub(super) fn mpv_event_loop(
                     last_download_speed_bps = 0.0;
                     seek_speed_refresh_active = false;
                     next_seek_speed_refresh_at = None;
-                    update_hdr_content_state(&app_handle, &mut last_is_hdr_content, false);
+                    update_hdr_content_state(&app_handle, &mut hdr_output, false);
                     let reason = if !(*event).data.is_null() {
                         let end_file = &*((*event).data as *const MpvEventEndFile);
                         end_file.reason

@@ -19,6 +19,7 @@ mod imp {
         soia_sync_layer_geometry, soia_utils_apply_now_playing_info_values,
         soia_utils_apply_now_playing_status_values, soia_utils_clear_now_playing_cache,
         soia_utils_clear_now_playing_info, soia_utils_is_pip_enabled,
+        soia_utils_set_render_target_hdr,
         soia_utils_register_media_remote, soia_utils_set_pip_enabled,
         soia_utils_set_pip_event_callback, soia_utils_update_pip_state_values,
     };
@@ -369,6 +370,22 @@ mod imp {
                 return;
             };
             soia_sync_layer_geometry(ns_view_ptr as *mut c_void, utils);
+        });
+    }
+
+    pub(crate) fn set_mpv_hdr_output(
+        window: &tauri::WebviewWindow,
+        utils: usize,
+        enabled: bool,
+    ) {
+        let app_handle = window.app_handle();
+        let _ = app_handle.run_on_main_thread(move || unsafe {
+            if utils != 0 {
+                soia_utils_set_render_target_hdr(
+                    utils as *mut SoiaUtils,
+                    if enabled { 1 } else { 0 },
+                );
+            }
         });
     }
 
@@ -935,6 +952,7 @@ pub(crate) use imp::{
     is_native_pip_enabled, pick_media_paths_native, set_native_pip_enabled,
     set_window_controls_visible, set_window_vibrancy_visible, setup,
     sync_mpv_metal_layer_geometry, update_native_pip_state, PlatformState,
+    set_mpv_hdr_output,
 };
 
 #[cfg(not(target_os = "macos"))]

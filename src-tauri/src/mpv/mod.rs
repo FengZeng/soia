@@ -1,6 +1,7 @@
 mod event_loop;
 mod ffi;
 mod handle;
+mod hdr_output;
 mod series_match;
 mod stream_https;
 mod ytdlp;

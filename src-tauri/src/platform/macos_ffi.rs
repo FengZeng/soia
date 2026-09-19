@@ -7,6 +7,7 @@ use std::ffi::c_void;
 #[link(name = "soia_utils")]
 unsafe extern "C" {
     pub(crate) fn soia_sync_layer_geometry(ns_view: *mut c_void, utils: usize);
+    pub(crate) fn soia_utils_set_render_target_hdr(utils: *mut SoiaUtils, enabled: i32);
     pub(crate) fn soia_utils_set_pip_enabled(utils: *mut SoiaUtils, enabled: i32) -> i32;
     pub(crate) fn soia_utils_update_pip_state_values(
         utils: *mut SoiaUtils,
