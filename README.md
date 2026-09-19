@@ -109,7 +109,7 @@ Easy fix (recommended):
 
 If that doesn't work, run:
 ```bash
-sudo xattr -r -d com.apple.quarantine /Applications/Soia.app
+xattr -r -d com.apple.quarantine /Applications/Soia.app
 ```
 
 You can also go to System Settings -> Privacy & Security and click "Open Anyway" (it appears after a blocked launch attempt).

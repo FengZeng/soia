@@ -12,26 +12,26 @@ Workaround (Recommended):
 
 If that doesn't work, run:
 ```bash
-sudo xattr -r -d com.apple.quarantine /Applications/Soia.app
+xattr -r -d com.apple.quarantine /Applications/Soia.app
 ```
 
 You can also go to System Settings > Privacy & Security and click "Open Anyway" (it appears after a blocked launch attempt).
 
 The app is open-source and its code is publicly available for anyone to inspect.
 
-## [0.2.11] - 2026-08-29
+## [0.2.12] - 2026-09-19
 
 ### Highlights
 
-* **Cast to DLNA and Chromecast**
-  Cast the currently playing video to a DLNA receiver or Chromecast, whether the source is a local file, a DLNA/SMB/WebDAV stream, or an online video.
-  **Keep Soia running while casting:** Soia relays the media stream between the source and the receiver.
+* **User mpv config file support** ([#12](https://github.com/FengZeng/soia/issues/12))
+  Point Soia at your own mpv config file in Settings > General and it is loaded at startup.
+  **Note:** not every mpv option is fully compatible with Soia's rendering and playback pipeline, so some settings may be ignored or behave differently. Changes take effect after a restart.
 
-* **Enhanced YouTube playback**
-  Improved YouTube stream parsing and selection for more reliable online playback.
+* **Correct HDR and Dolby Vision colors on macOS**
+  Fixed washed-out or overly dark HDR and Dolby Vision playback on macOS with display-P3/PQ output hints and perceptual gamut mapping.
 
-* **Audio output and passthrough**
-  Choose the audio output device and enable passthrough for supported formats.
+* **Sorting in the Network browser** ([#30](https://github.com/FengZeng/soia/issues/30))
+  Sort network folders and files by name or date added, ascending or descending. Folders stay at the top in every sort mode.
 
-* **More playback controls**
-  Adjust playback speed continuously in 0.1 increments, click the video to play or pause when Compact Mode is disabled, and fine-tune the picture with zoom and crop controls.
+* **Simplified Chinese support**
+  Added a Language setting in Settings > General with Simplified Chinese (简体中文) alongside English.

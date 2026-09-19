@@ -111,7 +111,7 @@ Linux 构建版本仅支持 Wayland，已在 Ubuntu 和 Fedora 的 Wayland 会�
 如果仍然无法打开，请运行：
 
 ```bash
-sudo xattr -r -d com.apple.quarantine /Applications/Soia.app
+xattr -r -d com.apple.quarantine /Applications/Soia.app
 ```
 
 也可以前往“系统设置”→“隐私与安全性”，点击“仍要打开”（该选项会在应用启动被阻止后出现）。

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.12] - 2026-09-19
+
+### Features
+
+- Added support for loading a user mpv config file, selectable in Settings > General. Note that not every mpv option is fully compatible with Soia's rendering and playback pipeline.
+- Added sorting options to the Network browser, supporting sort by name or date added in ascending or descending order, with folders kept at the top in every sort mode.
+- Added Simplified Chinese localization, selectable via the new Language setting in Settings > General.
+
+### Fixes
+
+- Fixed incorrect HDR and Dolby Vision color and brightness on macOS by applying display-P3/PQ output hints and perceptual gamut mapping.
+
 ## [0.2.11] - 2026-08-29
 
 ### Features
