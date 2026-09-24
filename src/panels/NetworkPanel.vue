@@ -180,7 +180,7 @@ const serverFieldLabel = computed(() => {
 });
 const serverFieldPlaceholder = computed(() => {
     if (isHttpDlnaProtocol.value) return "http://192.168.31.66:8200/MediaServer";
-    return "https://example.com/webdav";
+    return "http://192.168.31.25:5244/dav";
 });
 const defaultPathLabel = computed(() => {
     if (isHttpDlnaProtocol.value) return tr("Content Path");
@@ -652,6 +652,17 @@ const maybeOpenSmbCredentialsEditor = (error: unknown) => {
     return true;
 };
 
+const hasExplicitScheme = (value: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+
+// `host:port/path` typed without a scheme is either rejected by URL parsing or read as an
+// opaque URL whose scheme is the host name, which drops the port. Add the default scheme
+// here so the saved URL matches what the backend browses.
+const normalizeHttpBaseUrl = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || hasExplicitScheme(trimmed)) return trimmed;
+    return `http://${trimmed}`;
+};
+
 const buildConnectionBaseUrl = () => {
     if (isSmbProtocol.value) {
         const host = createForm.host.trim();
@@ -669,7 +680,7 @@ const buildConnectionBaseUrl = () => {
         }
         return `ftp://${host}:${port}`;
     }
-    const baseUrl = createForm.baseUrl.trim();
+    const baseUrl = normalizeHttpBaseUrl(createForm.baseUrl);
     if (!baseUrl) {
         throw new Error(
             isHttpDlnaProtocol.value

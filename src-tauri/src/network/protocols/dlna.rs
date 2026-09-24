@@ -96,7 +96,7 @@ pub async fn browse_directory(
     connection: &NetworkConnectionRecord,
     object_id: &str,
 ) -> Result<DlnaBrowseResult, String> {
-    let base_url = Url::parse(connection.base_url.trim())
+    let base_url = Url::parse(&super::normalize_http_base_url(&connection.base_url))
         .map_err(|e| format!("Invalid DLNA device URL: {}", e))?;
 
     let service = fetch_content_directory_service(app, &base_url).await?;

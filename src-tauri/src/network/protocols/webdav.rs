@@ -96,8 +96,9 @@ fn normalize_playback_url_path(url: &mut Url) {
 }
 
 fn parse_base_url(connection: &NetworkConnectionRecord) -> Result<Url, String> {
+    let normalized_base_url = super::normalize_http_base_url(&connection.base_url);
     let mut url =
-        Url::parse(connection.base_url.trim()).map_err(|e| format!("Invalid WebDAV URL: {}", e))?;
+        Url::parse(&normalized_base_url).map_err(|e| format!("Invalid WebDAV URL: {}", e))?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err("WebDAV URL must start with http:// or https://".into());
     }
@@ -294,4 +295,53 @@ pub fn build_playback_url(
     let mut target_url = build_target_url(&base_url, &root_segments, file_path)?;
     normalize_playback_url_path(&mut target_url);
     Ok(target_url.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_playback_url, parse_base_url};
+    use crate::store::network_connection_store::NetworkConnectionRecord;
+
+    fn connection(base_url: &str) -> NetworkConnectionRecord {
+        NetworkConnectionRecord {
+            id: "connection".to_string(),
+            label: "WebDAV".to_string(),
+            protocol: "webdav".to_string(),
+            base_url: base_url.to_string(),
+            username: String::new(),
+            password: String::new(),
+            default_path: "/".to_string(),
+        }
+    }
+
+    #[test]
+    fn keeps_custom_ports_when_the_scheme_is_missing() {
+        for base_url in ["192.168.31.25:5244/dav", "nas:5244/dav", "nas.local:5244"] {
+            let url = parse_base_url(&connection(base_url))
+                .unwrap_or_else(|error| panic!("{base_url}: {error}"));
+            assert_eq!(url.scheme(), "http");
+            assert_eq!(url.port(), Some(5244));
+        }
+    }
+
+    #[test]
+    fn keeps_explicit_schemes_and_ports() {
+        let url = parse_base_url(&connection("https://example.com:8443/webdav")).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.port(), Some(8443));
+        assert_eq!(url.path(), "/webdav");
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
+        let error = parse_base_url(&connection("smb://nas/media")).unwrap_err();
+        assert!(error.contains("http://"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn playback_url_keeps_the_custom_port() {
+        let url = build_playback_url(&connection("192.168.31.25:5244/dav"), "/movies/a b[1].mkv")
+            .unwrap();
+        assert_eq!(url, "http://192.168.31.25:5244/dav/movies/a%20b%5B1%5D.mkv");
+    }
 }
