@@ -8,6 +8,7 @@ export type NetworkConnection = {
     username: string;
     password: string;
     defaultPath: string;
+    tlsCertificateDer?: string | null;
 };
 
 export type NetworkBrowseEntry = {

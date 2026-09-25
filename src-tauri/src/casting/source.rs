@@ -273,6 +273,10 @@ fn resolve_network_source(
         Some(protocol),
         file_path,
     )?;
+    crate::media_gateway::register_tls_certificate(
+        &url,
+        connection.tls_certificate_der.as_deref(),
+    );
     let basic_auth = (!connection.username.trim().is_empty())
         .then(|| (connection.username.trim().to_string(), connection.password));
     match protocol {

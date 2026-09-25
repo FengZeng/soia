@@ -104,6 +104,8 @@ struct ParallelRangeResult {
 
 static LOOPBACK_MEDIA_BASE_URL: OnceLock<String> = OnceLock::new();
 static MEDIA_SOURCE_BASIC_AUTH: OnceLock<Mutex<HashMap<String, BasicAuth>>> = OnceLock::new();
+static MEDIA_SOURCE_TLS_CERTIFICATES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static MEDIA_GATEWAY_PINNED_CLIENTS: OnceLock<Mutex<HashMap<String, Client>>> = OnceLock::new();
 static MEDIA_SOURCE_HEADERS: OnceLock<Mutex<HashMap<String, ProxyHeaders>>> = OnceLock::new();
 static MEDIA_SOURCE_AVAILABLE_AT: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
 static MEDIA_GATEWAY_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
@@ -983,6 +985,28 @@ pub(crate) fn register_basic_auth(playback_url: &str, username: &str, password: 
     }
 }
 
+pub(crate) fn register_tls_certificate(playback_url: &str, certificate_der: Option<&str>) {
+    let Some(certificate_der) = certificate_der
+        .map(str::trim)
+        .filter(|certificate_der| !certificate_der.is_empty())
+    else {
+        return;
+    };
+    if let Ok(mut certificates) = MEDIA_SOURCE_TLS_CERTIFICATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        certificates.insert(playback_url.to_string(), certificate_der.to_string());
+    }
+}
+
+fn lookup_tls_certificate(url: &str) -> Option<String> {
+    MEDIA_SOURCE_TLS_CERTIFICATES
+        .get()
+        .and_then(|certificates| certificates.lock().ok())
+        .and_then(|certificates| certificates.get(url).cloned())
+}
+
 pub(crate) fn create_loopback_media_url_with_headers(
     url: &str,
     headers: &[(String, String)],
@@ -1048,7 +1072,7 @@ impl FfmpegAvioInput {
             headers: self.headers.clone(),
             available_at: self.available_at,
             basic_auth: lookup_basic_auth(&self.remote_url),
-            client: build_blocking_client(&self.app_handle)?,
+            client: build_blocking_client(&self.app_handle, &self.remote_url)?,
             response: None,
             position: 0,
             size: None,
@@ -1421,16 +1445,27 @@ fn response_size(response: &BlockingResponse, requested_start: u64) -> Result<Op
         .and_then(|length| requested_start.checked_add(length)))
 }
 
-fn build_blocking_client(app_handle: &AppHandle) -> Result<BlockingClient, String> {
+fn build_blocking_client(
+    app_handle: &AppHandle,
+    remote_url: &str,
+) -> Result<BlockingClient, String> {
+    let certificate = lookup_tls_certificate(remote_url);
     let proxy_key = crate::network::proxy::current_proxy_key(app_handle)?;
     let builder = BlockingClient::builder()
         .connect_timeout(Duration::from_secs(15))
         .pool_idle_timeout(Duration::from_secs(30))
+        .redirect(crate::network::tls::no_tls_downgrade_redirects())
         .no_gzip()
         .no_brotli()
         .no_zstd()
         .no_deflate();
-    let builder = if let Some(proxy_url) = proxy_key.as_deref() {
+    let builder = crate::network::tls::configure_pinned_blocking_client_builder(
+        builder,
+        certificate.as_deref(),
+    )?;
+    let builder = if certificate.is_some() {
+        builder
+    } else if let Some(proxy_url) = proxy_key.as_deref() {
         let proxy = reqwest::Proxy::all(proxy_url).map_err(|error| error.to_string())?;
         builder.proxy(proxy)
     } else {
@@ -1873,6 +1908,24 @@ fn remove_media_sources(source_ids: impl IntoIterator<Item = String>) {
     {
         for origin in &removed_origins {
             auth.remove(origin);
+        }
+    }
+    let active_certificates = MEDIA_SOURCE_TLS_CERTIFICATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .map(|mut certificates| {
+            for origin in &removed_origins {
+                certificates.remove(origin);
+            }
+            certificates.values().cloned().collect::<HashSet<_>>()
+        });
+    if let Some(active_certificates) = active_certificates {
+        if let Ok(mut clients) = MEDIA_GATEWAY_PINNED_CLIENTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
+            clients.retain(|certificate, _| active_certificates.contains(certificate));
         }
     }
     if let Ok(mut headers) = MEDIA_SOURCE_HEADERS
@@ -2688,7 +2741,7 @@ async fn fetch_remote(
             );
             tokio::time::sleep(retry_delay).await;
         }
-        let client = build_client(app_handle)?;
+        let client = build_client(app_handle, remote_url)?;
         let mut request = client
             .get(remote_url)
             .header(ACCEPT_ENCODING, "identity");
@@ -2815,7 +2868,35 @@ fn retry_after_delay_value(value: &str) -> Option<Duration> {
     Some(Duration::from_secs(seconds).min(UPSTREAM_RETRY_AFTER_MAX_DELAY))
 }
 
-fn build_client(app_handle: &AppHandle) -> Result<Client, String> {
+fn build_client(app_handle: &AppHandle, remote_url: &str) -> Result<Client, String> {
+    let certificate = lookup_tls_certificate(remote_url);
+    if let Some(certificate) = certificate {
+        let mut clients = MEDIA_GATEWAY_PINNED_CLIENTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if let Some(client) = clients.get(&certificate) {
+            return Ok(client.clone());
+        }
+        let builder = Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .redirect(crate::network::tls::no_tls_downgrade_redirects())
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .no_deflate();
+        return crate::network::tls::configure_pinned_client_builder(
+            builder,
+            Some(&certificate),
+        )?
+        .build()
+        .map_err(|error| error.to_string())
+        .map(|client| {
+            clients.insert(certificate, client.clone());
+            client
+        });
+    }
     let proxy_key = crate::network::proxy::current_proxy_key(app_handle)?;
     let client_cache = MEDIA_GATEWAY_CLIENT.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = client_cache.lock() {
@@ -2829,6 +2910,7 @@ fn build_client(app_handle: &AppHandle) -> Result<Client, String> {
     let builder = Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .pool_idle_timeout(Duration::from_secs(30))
+        .redirect(crate::network::tls::no_tls_downgrade_redirects())
         .no_gzip()
         .no_brotli()
         .no_zstd()
@@ -3251,7 +3333,7 @@ async fn fetch_range_bytes(
     range: ByteRange,
     download_speed_recorder: &DownloadSpeedRecorder,
 ) -> Result<(u64, Vec<u8>), String> {
-    let client = build_client(app_handle)?;
+    let client = build_client(app_handle, remote_url)?;
     let mut request = client
         .get(remote_url)
         .header(ACCEPT_ENCODING, "identity")

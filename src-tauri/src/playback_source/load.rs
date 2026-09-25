@@ -41,16 +41,28 @@ async fn prepare_direct_source(
     }
 }
 
-fn prepare_network_source(
+async fn prepare_network_source(
     app: &tauri::AppHandle,
     protocol: &str,
     connection_id: &str,
     file_path: &str,
 ) -> Result<PreparedPlaybackSource, String> {
-    let connection = crate::store::network_connection_store::find_network_connection(
+    let mut connection = crate::store::network_connection_store::find_network_connection(
         app,
         connection_id,
     )?;
+    if protocol.eq_ignore_ascii_case("webdav") {
+        let base_url = url::Url::parse(&crate::network::protocols::normalize_http_base_url(
+            &connection.base_url,
+        ))
+        .map_err(|error| format!("Invalid WebDAV URL: {error}"))?;
+        connection = crate::network::tls::ensure_connection_certificate(
+            app,
+            &connection,
+            &base_url,
+        )
+        .await?;
+    }
     let mut playback_url = crate::network::service::resolve_network_playback_url(
         &connection,
         Some(protocol),
@@ -61,6 +73,7 @@ fn prepare_network_source(
         &playback_url,
         &connection.username,
         &connection.password,
+        connection.tls_certificate_der.as_deref(),
     )?;
     if let Some(rewritten) = crate::mpv::rewrite_network_stream_url(protocol, &playback_url) {
         playback_url = rewritten;
@@ -87,7 +100,7 @@ pub(crate) async fn prepare(
             connection_id,
             file_path,
             ..
-        } => prepare_network_source(app, "webdav", &connection_id, &file_path),
+        } => prepare_network_source(app, "webdav", &connection_id, &file_path).await,
         ResolvedPlaybackSourceResult::Dlna { resource_url, .. }
         | ResolvedPlaybackSourceResult::DirectSmb { resource_url, .. } => {
             Ok(prepare_direct_source(app, resource_url).await)
@@ -96,7 +109,7 @@ pub(crate) async fn prepare(
             connection_id,
             file_path,
             ..
-        } => prepare_network_source(app, "smb", &connection_id, &file_path),
+        } => prepare_network_source(app, "smb", &connection_id, &file_path).await,
     }
 }
 

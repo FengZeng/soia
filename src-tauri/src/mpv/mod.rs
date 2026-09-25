@@ -24,7 +24,9 @@ pub(crate) fn prepare_network_stream_url(
     url: &str,
     username: &str,
     password: &str,
+    tls_certificate_der: Option<&str>,
 ) -> Result<String, String> {
+    crate::media_gateway::register_tls_certificate(url, tls_certificate_der);
     let username = username.trim();
     if username.is_empty() {
         return Ok(url.to_string());

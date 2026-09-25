@@ -743,6 +743,9 @@ const onCreateConnectionSubmit = async () => {
         }
         connection.label = normalizedLabel;
         connection.protocol = createForm.protocol;
+        if (connection.baseUrl !== baseUrl) {
+            connection.tlsCertificateDer = null;
+        }
         connection.baseUrl = baseUrl;
         connection.username = username;
         connection.password = requiresAuthFields.value ? createForm.password : "";

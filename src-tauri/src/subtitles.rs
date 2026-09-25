@@ -247,6 +247,7 @@ fn resolve_network_subtitle_url(
         &playback_url,
         &connection.username,
         &connection.password,
+        connection.tls_certificate_der.as_deref(),
     )?;
     Ok(crate::mpv::rewrite_network_stream_url(protocol_hint, &playback_url)
         .unwrap_or(playback_url))

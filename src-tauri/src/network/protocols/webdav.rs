@@ -202,22 +202,53 @@ pub async fn list_directory(
     let normalized_path = normalize_path(path);
     let target_url = build_target_url(&base_url, &root_segments, &normalized_path)?;
 
-    let client = crate::network::proxy::configure_client_builder(
-        app,
-        reqwest::Client::builder().timeout(Duration::from_secs(15)),
-    )?
-    .build()
-        .map_err(|e| e.to_string())?;
     let propfind = Method::from_bytes(b"PROPFIND").map_err(|e| e.to_string())?;
-    let request = client
-        .request(propfind, target_url.clone())
-        .header("Depth", "1")
-        .header("Content-Type", "application/xml; charset=utf-8")
-        .body(PROPFIND_BODY.to_string());
-    let response = apply_auth(request, connection)
+    let send = |client: &reqwest::Client| {
+        apply_auth(
+            client
+                .request(propfind.clone(), target_url.clone())
+                .header("Depth", "1")
+                .header("Content-Type", "application/xml; charset=utf-8")
+                .body(PROPFIND_BODY.to_string()),
+            connection,
+        )
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    };
+    let build_client = |certificate: Option<&str>| -> Result<reqwest::Client, String> {
+        let builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .redirect(crate::network::tls::no_tls_downgrade_redirects());
+        let builder = crate::network::tls::configure_pinned_client_builder(builder, certificate)?;
+        let builder = if certificate.is_some() {
+            builder
+        } else {
+            crate::network::proxy::configure_client_builder(app, builder)?
+        };
+        builder
+            .build()
+            .map_err(|error| error.to_string())
+    };
+    let client = build_client(connection.tls_certificate_der.as_deref())?;
+    let response = match send(&client).await {
+        Ok(response) => response,
+        Err(error)
+            if connection.tls_certificate_der.is_none()
+                && base_url.scheme() == "https"
+                && crate::network::tls::is_certificate_error(&error) =>
+        {
+            let strict_error = error.to_string();
+            let certificate = crate::network::tls::trust_local_certificate(
+                app,
+                connection,
+                &target_url,
+            )
+            .await
+            .map_err(|trust_error| format!("{strict_error}; {trust_error}"))?;
+            let client = build_client(Some(&certificate))?;
+            send(&client).await.map_err(|error| error.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
 
     let status = response.status();
     if !status.is_success() {
@@ -311,6 +342,7 @@ mod tests {
             username: String::new(),
             password: String::new(),
             default_path: "/".to_string(),
+            tls_certificate_der: None,
         }
     }
 
