@@ -8,7 +8,7 @@ import type { PlaylistSummaryDto } from "./generated/PlaylistSummaryDto";
 import type { NetworkBrowseResultDto } from "./generated/NetworkBrowseResultDto";
 import type { NetworkConnectionSummaryDto } from "./generated/NetworkConnectionSummaryDto";
 
-export const WEBSOCKET_PROTOCOL_VERSION = 6;
+export const WEBSOCKET_PROTOCOL_VERSION = 7;
 
 export type WebSocketServerMessage =
     | { type: "hello"; protocolVersion: number }

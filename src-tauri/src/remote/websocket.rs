@@ -4,7 +4,7 @@ use super::state::{
     is_connection_active, CachedPlaylistMutation, RemoteControlState,
 };
 use crate::protocol::{
-    BrowseNetworkConnectionDto, CommandEnvelopeDto, CommandResultDto, CoreErrorDto, DeletePlaylistDto, GetPlaylistEntriesPageDto, ImportPlaylistFromSourceDto, NetworkBrowseEntryDto, NetworkBrowseResultDto, NetworkConnectionSummaryDto, PlayPlaylistEntryDto, PlaybackCommandDto, PlaybackSnapshotDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto, PROTOCOL_VERSION,
+    BrowseNetworkConnectionDto, CommandEnvelopeDto, CommandResultDto, CoreErrorDto, DeletePlaylistDto, GetPlaylistEntriesPageDto, ImportPlaylistFromSourceDto, NetworkBrowseEntryDto, NetworkBrowseResultDto, NetworkConnectionSummaryDto, PlayPlaylistEntryDto, PlaybackCommandDto, PlaybackSnapshotDto, PlaylistEntriesPageDto, PlaylistEntryDto, PlaylistSummaryDto, SaveNetworkConnectionDto, PROTOCOL_VERSION,
 };
 use crate::AppState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -29,6 +29,7 @@ enum WebSocketClientMessage {
     DeletePlaylist { id: Option<String>, request: DeletePlaylistDto },
     ImportPlaylistFromSource { id: Option<String>, request: ImportPlaylistFromSourceDto },
     NetworkConnections { id: Option<String> },
+    SaveNetworkConnection { id: Option<String>, request: SaveNetworkConnectionDto },
     BrowseNetworkConnection { id: Option<String>, request: BrowseNetworkConnectionDto },
     Ping { id: Option<String> },
 }
@@ -207,6 +208,22 @@ async fn handle_websocket_text(
             match crate::store::network_connection_store::list_network_connections(&state.app_handle) {
                 Ok(connections) => WebSocketServerMessage::NetworkConnections { id, connections: connections.into_iter().map(|item| NetworkConnectionSummaryDto { id: item.id, label: item.label, protocol: item.protocol }).collect() },
                 Err(_) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message: "network connections are unavailable".to_string() } },
+            }
+        }
+        Ok(WebSocketClientMessage::SaveNetworkConnection { id, request }) => {
+            let connection = crate::store::network_connection_store::NetworkConnectionRecord {
+                id: request.id,
+                label: request.label,
+                protocol: request.protocol,
+                base_url: request.base_url,
+                username: request.username,
+                password: request.password,
+                default_path: request.default_path,
+                tls_certificate_der: None,
+            };
+            match crate::store::network_connection_store::save_network_connection(&state.app_handle, connection) {
+                Ok(connections) => WebSocketServerMessage::NetworkConnections { id, connections: connections.into_iter().map(|item| NetworkConnectionSummaryDto { id: item.id, label: item.label, protocol: item.protocol }).collect() },
+                Err(message) => WebSocketServerMessage::Error { id, error: CoreErrorDto::ExecutionFailed { message } },
             }
         }
         Ok(WebSocketClientMessage::BrowseNetworkConnection { id, request }) => {
@@ -508,7 +525,7 @@ async fn send_ws_json(
 
 #[cfg(test)]
 mod tests {
-    use super::{navigation_action_to_envelope, WebSocketServerMessage};
+    use super::{navigation_action_to_envelope, WebSocketClientMessage, WebSocketServerMessage};
     use crate::protocol::{PlaybackCommandDto, PROTOCOL_VERSION};
 
     #[test]
@@ -534,5 +551,35 @@ mod tests {
 
         assert_eq!(message["type"], "hello");
         assert_eq!(message["protocol_version"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn save_network_connection_message_accepts_camel_case_fields() {
+        let message = serde_json::from_str::<WebSocketClientMessage>(
+            r#"{
+                "type":"saveNetworkConnection",
+                "id":"request-1",
+                "request":{
+                    "id":"webdav-1",
+                    "label":"NAS",
+                    "protocol":"webdav",
+                    "baseUrl":"http://nas.local/dav",
+                    "username":"media",
+                    "password":"secret",
+                    "defaultPath":"/Movies"
+                }
+            }"#,
+        )
+        .expect("save network connection message should deserialize");
+
+        match message {
+            WebSocketClientMessage::SaveNetworkConnection { id, request } => {
+                assert_eq!(id.as_deref(), Some("request-1"));
+                assert_eq!(request.id, "webdav-1");
+                assert_eq!(request.base_url, "http://nas.local/dav");
+                assert_eq!(request.default_path, "/Movies");
+            }
+            _ => panic!("unexpected websocket message"),
+        }
     }
 }

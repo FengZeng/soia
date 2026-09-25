@@ -3,13 +3,18 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import type { NetworkBrowseResultDto } from "../core-client/generated/NetworkBrowseResultDto";
 import type { NetworkConnectionSummaryDto } from "../core-client/generated/NetworkConnectionSummaryDto";
 import type { PlaybackSnapshotDto } from "../core-client/generated/PlaybackSnapshotDto";
+import type { SaveNetworkConnectionDto } from "../core-client/generated/SaveNetworkConnectionDto";
 import { remoteCoreClient } from "./remoteCoreClient";
+import RemoteNetworkConnectionModal from "./RemoteNetworkConnectionModal.vue";
 
 const connections = ref<NetworkConnectionSummaryDto[]>([]);
 const selectedConnection = ref<NetworkConnectionSummaryDto | null>(null);
 const result = ref<NetworkBrowseResultDto | null>(null);
 const loading = ref(false);
 const error = ref("");
+const addConnectionOpen = ref(false);
+const savingConnection = ref(false);
+const saveConnectionError = ref("");
 const pathHistory = ref<string[]>([]);
 const playbackKey = ref<string | null>(null);
 const dlnaParentById = reactive(new Map<string, string>());
@@ -124,6 +129,32 @@ const refresh = async () => {
   }
   await load(result.value?.path);
 };
+const errorMessage = (value: unknown) => {
+  if (!value || typeof value !== "object") return "Failed to add connection";
+  const clientError = value as { type?: string; message?: string; error?: { message?: string } };
+  return clientError.error?.message || clientError.message || "Failed to add connection";
+};
+const openAddConnection = () => {
+  saveConnectionError.value = "";
+  addConnectionOpen.value = true;
+};
+const closeAddConnection = () => {
+  if (savingConnection.value) return;
+  addConnectionOpen.value = false;
+  saveConnectionError.value = "";
+};
+const saveConnection = async (connection: SaveNetworkConnectionDto) => {
+  savingConnection.value = true;
+  saveConnectionError.value = "";
+  try {
+    connections.value = await remoteCoreClient.saveNetworkConnection(connection);
+    addConnectionOpen.value = false;
+  } catch (nextError) {
+    saveConnectionError.value = errorMessage(nextError);
+  } finally {
+    savingConnection.value = false;
+  }
+};
 const goBack = async () => {
   const parentPath = pathHistory.value.at(-1);
   if (!parentPath || loading.value) return;
@@ -168,10 +199,11 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
-  <section class="remote-network"><div class="remote-network__heading"><button v-if="!atHome" class="remote-network__home" aria-label="Network home" title="Home" @click="goHome"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5v8A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5Z"/><path d="M9 20v-6h6v6"/></svg></button><h2>{{ atHome ? 'Media sources' : selectedConnection?.label }}</h2><button class="remote-network__refresh" :disabled="loading" aria-label="Refresh" title="Refresh" @click="refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg></button></div>
+  <section class="remote-network"><div class="remote-network__heading"><button v-if="!atHome" class="remote-network__home" aria-label="Network home" title="Home" @click="goHome"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5v8A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5Z"/><path d="M9 20v-6h6v6"/></svg></button><h2>{{ atHome ? 'Media sources' : selectedConnection?.label }}</h2><button v-if="atHome" class="remote-network__add" aria-label="Add connection" title="Add connection" @click="openAddConnection">+</button><button class="remote-network__refresh" :disabled="loading" aria-label="Refresh" title="Refresh" @click="refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg></button></div>
     <p v-if="error" class="remote-playlists__error">{{ error }}</p>
     <div v-if="atHome" class="remote-network__connections"><button v-for="item in connections" :key="item.id" class="remote-network__entry" @click="openConnection(item)"><span>⌁</span><span>{{ item.label }}<small>{{ item.protocol }}</small></span></button><p v-if="!connections.length && !loading">No network sources available</p></div>
     <template v-else><div v-if="result?.path !== '/'" class="remote-network__path"><button v-if="pathHistory.length" class="remote-network__back" :disabled="loading" aria-label="Back to parent folder" @click="goBack"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 18-6-6 6-6M8 12h12"/></svg></button><button class="remote-network__crumb remote-network__crumb--root" :disabled="loading" @click="browsePath('/')">/</button><template v-for="(crumb, index) in pathCrumbs" :key="crumb.path"><span v-if="index > 0">/</span><button class="remote-network__crumb" :class="{ 'remote-network__crumb--current': crumb.path === result?.path }" :disabled="loading || crumb.path === result?.path" @click="browsePath(crumb.path)">{{ crumb.label }}</button></template></div><button v-for="entry in result?.entries ?? []" :key="entry.path" class="remote-network__entry" :class="{ 'remote-network__entry--playing': isPlayingEntry(entry), 'remote-network__entry--contains-playing': containsPlayingEntry(entry) }" :aria-current="isPlayingEntry(entry) || containsPlayingEntry(entry) ? 'true' : undefined" @click="open(entry)"><svg v-if="entry.entryType === 'dir'" class="remote-network__folder" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2.5h6.5A2.5 2.5 0 0 1 21 9v8.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5Z"/></svg><span v-else>▶</span><span class="remote-network__entry-name">{{ entry.name }}</span><small v-if="isPlayingEntry(entry)">Playing</small></button></template>
     <p v-if="loading">Loading…</p>
+    <RemoteNetworkConnectionModal :open="addConnectionOpen" :saving="savingConnection" :error="saveConnectionError" @close="closeAddConnection" @submit="saveConnection" />
   </section>
 </template>

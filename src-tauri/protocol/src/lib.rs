@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Playback ordering mode owned by the playlist domain.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -117,6 +117,19 @@ pub struct ImportPlaylistFromSourceDto {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkConnectionSummaryDto { pub id: String, pub label: String, pub protocol: String }
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveNetworkConnectionDto {
+    pub id: String,
+    pub label: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub username: String,
+    pub password: String,
+    pub default_path: String,
+}
 
 #[derive(Clone, Debug, Deserialize, TS)]
 #[ts(export)]
@@ -617,6 +630,7 @@ pub fn export_types(path: impl AsRef<Path>) -> Result<(), String> {
     PlayPlaylistEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
     ImportPlaylistFromSourceDto::export_all_to(path).map_err(|error| error.to_string())?;
     NetworkConnectionSummaryDto::export_all_to(path).map_err(|error| error.to_string())?;
+    SaveNetworkConnectionDto::export_all_to(path).map_err(|error| error.to_string())?;
     BrowseNetworkConnectionDto::export_all_to(path).map_err(|error| error.to_string())?;
     NetworkBrowseEntryDto::export_all_to(path).map_err(|error| error.to_string())?;
     NetworkBrowseResultDto::export_all_to(path).map_err(|error| error.to_string())?;

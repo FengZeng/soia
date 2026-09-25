@@ -18,6 +18,7 @@ import type { PlaylistMutationResultDto } from "./generated/PlaylistMutationResu
 import type { BrowseNetworkConnectionDto } from "./generated/BrowseNetworkConnectionDto";
 import type { NetworkBrowseResultDto } from "./generated/NetworkBrowseResultDto";
 import type { NetworkConnectionSummaryDto } from "./generated/NetworkConnectionSummaryDto";
+import type { SaveNetworkConnectionDto } from "./generated/SaveNetworkConnectionDto";
 import { PlaybackCommandContext } from "./playbackCommandContext";
 import {
     isNewerSnapshot,
@@ -245,6 +246,10 @@ export class WebSocketCoreClient implements CoreClient {
 
     getNetworkConnections(): Promise<NetworkConnectionSummaryDto[]> {
         return this.sendPlaylistRequest("networkConnections", {}, this.pendingNetworkConnections, true);
+    }
+
+    saveNetworkConnection(request: SaveNetworkConnectionDto): Promise<NetworkConnectionSummaryDto[]> {
+        return this.sendPlaylistRequest("saveNetworkConnection", { request }, this.pendingNetworkConnections, true);
     }
 
     browseNetworkConnection(request: BrowseNetworkConnectionDto): Promise<NetworkBrowseResultDto> {

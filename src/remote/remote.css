@@ -183,7 +183,8 @@ button, select, input[type="range"] { -webkit-tap-highlight-color: transparent; 
 .eyebrow { margin: 0; color: #8aa7e4; font-size: 9px; font-weight: 800; letter-spacing: .24em; }
 .remote-network { display: grid; min-width: 0; gap: 10px; padding: 22px 4px; }
 .remote-network__heading { display: flex; min-width: 0; align-items: center; justify-content: flex-start; gap: 10px; }
-.remote-network__home, .remote-network__refresh { display: grid !important; width: 36px !important; height: 36px; place-items: center; border: 1px solid rgb(155 192 255 / 22%) !important; border-radius: 10px !important; padding: 0 !important; color: #bdd5ff !important; background: rgb(58 91 140 / 45%) !important; }
+.remote-network__home, .remote-network__add, .remote-network__refresh { display: grid !important; width: 36px !important; height: 36px; place-items: center; border: 1px solid rgb(155 192 255 / 22%) !important; border-radius: 10px !important; padding: 0 !important; color: #bdd5ff !important; background: rgb(58 91 140 / 45%) !important; }
+.remote-network__add { font-size: 24px; font-weight: 350; line-height: 1; }
 .remote-network__home, .remote-network__back, .remote-network__refresh { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 .remote-network__home svg, .remote-network__back svg, .remote-network__refresh svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
 .remote-network__refresh svg { fill: currentColor; stroke: none; }
@@ -202,6 +203,23 @@ button, select, input[type="range"] { -webkit-tap-highlight-color: transparent; 
 .remote-network__crumb { border: 0; padding: 2px; color: #b9c8df; background: transparent; font-weight: 650; white-space: nowrap; }
 .remote-network__crumb:not(:disabled) { color: #8fb6ff; cursor: pointer; }
 .remote-network__crumb--current { color: #d9e3f2; }
+
+.remote-network-modal__backdrop { position: fixed; z-index: 20; inset: 0; background: rgb(2 4 8 / 72%); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.remote-network-modal { position: fixed; z-index: 21; top: 50%; left: 50%; display: grid; width: min(calc(100% - 32px), 440px); max-height: calc(100svh - 32px); gap: 14px; border: 1px solid rgb(174 199 255 / 20%); border-radius: 22px; padding: 20px; overflow: auto; color: #edf3ff; background: linear-gradient(155deg, rgb(31 38 55 / 98%), rgb(14 17 25 / 98%)); box-shadow: 0 28px 80px rgb(0 0 0 / 55%), inset 0 1px rgb(255 255 255 / 8%); transform: translate(-50%, -50%); }
+.remote-network-modal__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.remote-network-modal__header span { color: #83a7ed; font-size: 9px; font-weight: 800; letter-spacing: .18em; }
+.remote-network-modal__header h3 { margin: 4px 0 0; font-size: 20px; }
+.remote-network-modal__header button { width: 34px; height: 34px; border: 1px solid rgb(255 255 255 / 10%); border-radius: 10px; color: #b8c4d8; background: rgb(255 255 255 / 5%); font-size: 22px; }
+.remote-network-modal label { display: grid; gap: 6px; color: #b7c3d8; font-size: 11px; font-weight: 700; }
+.remote-network-modal label small { color: #737f93; font-size: 10px; font-weight: 550; }
+.remote-network-modal input, .remote-network-modal select { width: 100%; min-height: 43px; border: 1px solid rgb(179 201 244 / 15%); border-radius: 11px; padding: 10px 12px; color: #f0f4fc; background: rgb(5 8 14 / 45%); outline: none; }
+.remote-network-modal input:focus, .remote-network-modal select:focus { border-color: rgb(122 161 255 / 70%); box-shadow: 0 0 0 3px rgb(94 140 255 / 13%); }
+.remote-network-modal input::placeholder { color: #647087; }
+.remote-network-modal__error { margin: 0; border: 1px solid rgb(255 119 119 / 18%); border-radius: 10px; padding: 9px 11px; color: #ffaaa9; background: rgb(122 32 38 / 14%); font-size: 11px; }
+.remote-network-modal__actions { display: grid; grid-template-columns: 1fr 1.35fr; gap: 9px; margin-top: 4px; }
+.remote-network-modal__actions button { min-height: 42px; border: 1px solid rgb(144 173 232 / 18%); border-radius: 11px; color: #cfdaec; background: rgb(255 255 255 / 5%); font-weight: 750; }
+.remote-network-modal__actions button:last-child { border-color: rgb(151 179 255 / 25%); color: #fff; background: linear-gradient(135deg, #779cff, #5f70e8); box-shadow: inset 0 1px rgb(255 255 255 / 24%); }
+.remote-network-modal button:disabled { opacity: .5; }
 
 .now-playing h1 {
   display: -webkit-box;
