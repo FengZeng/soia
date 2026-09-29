@@ -71,11 +71,8 @@ export const useAppBootstrap = (coreClient: CoreClient) => {
     const shouldKeepControlsVisible = () =>
         isPointerOverUi.value || (isMacOS && isPipEnabled.value);
 
-    const { hideAllMenus, toggleMenu, closeAllMenus } = useMenuControls(
-        tracks,
-        speed,
-        adjustments,
-    );
+    const { showSurroundMenu, hideAllMenus, toggleMenu, closeAllMenus } =
+        useMenuControls(tracks, speed, adjustments);
 
     const {
         isFullscreenTransitioning,
@@ -177,6 +174,7 @@ export const useAppBootstrap = (coreClient: CoreClient) => {
         isPipEnabled,
         schedulePointerRefresh,
         shouldKeepControlsVisible,
+        showSurroundMenu,
         hideAllMenus,
         toggleMenu,
         closeAllMenus,
