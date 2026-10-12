@@ -568,7 +568,7 @@ unsafe fn apply_audio_route(
 unsafe fn apply_carried_track_ids(client: *mut c_void, sid: i64, aid: i64) {
     let set_cmd = CString::new("set").expect("MPV command contains null byte");
 
-    for (name, value) in [("sid", sid), ("aid", aid)] {
+    for (name, value) in carried_track_ids(sid, aid) {
         let property_name = CString::new(name).expect("MPV property name contains null byte");
         let property_value = CString::new(value.to_string())
             .expect("MPV property value contains null byte");
@@ -586,6 +586,14 @@ unsafe fn apply_carried_track_ids(client: *mut c_void, sid: i64, aid: i64) {
             );
         }
     }
+}
+
+fn carried_track_ids(sid: i64, aid: i64) -> Vec<(&'static str, i64)> {
+    let mut tracks = vec![("sid", sid)];
+    if aid > 0 {
+        tracks.push(("aid", aid));
+    }
+    tracks
 }
 
 #[cfg(target_os = "linux")]
