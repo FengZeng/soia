@@ -50,7 +50,6 @@ const {
     shouldShowUpdateHint,
     updateHintText,
     openProjectGithub,
-    openSubreddit,
     isApplyingMediaAssociation,
     setMediaAssociationToSoia,
     installUpdate,
@@ -950,25 +949,6 @@ onBeforeUnmount(() => {
                                     @click.prevent="openProjectGithub"
                                 >
                                     https://github.com/FengZeng/soia
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="panel__row panel__row--card" data-window-no-drag>
-                        <div class="panel__card-text">
-                            <div class="panel__card-title">{{ tr("Reddit") }}</div>
-                        </div>
-                        <div class="panel__control panel__control--card">
-                            <div class="panel__social-actions">
-                                <a
-                                    class="panel__link-button"
-                                    href="https://www.reddit.com/r/soia"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    data-window-no-drag
-                                    @click.prevent="openSubreddit"
-                                >
-                                    https://www.reddit.com/r/soia
                                 </a>
                             </div>
                         </div>

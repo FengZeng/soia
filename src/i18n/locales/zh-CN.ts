@@ -82,7 +82,6 @@ export const messages: Record<string, string> = {
     "Anime Mode": "动漫模式",
     About: "关于",
     GitHub: "GitHub",
-    Reddit: "Reddit",
     Runtime: "运行环境",
     "Clear All Local Data": "清除所有本地数据",
     "No settings yet": "暂无设置",
