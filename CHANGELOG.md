@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.13] - 2026-10-18
+
+### Features
+
+- Added network connection creation to the browser-based Remote Controller for WebDAV, SMB, and HTTP DLNA sources.
+- Added automatic trust and certificate pinning for local HTTPS WebDAV servers, allowing private or self-signed certificates while rejecting unexpected certificate changes.
+
+### Improvements
+
+- WebDAV and HTTP DLNA addresses entered without a URL scheme now default to `http://`, including host-and-port addresses.
+- Removed the community link from Settings > About.
+
+### Fixes
+
+- Fixed automatic audio track selection not being preserved after playback stops. ([#33](https://github.com/FengZeng/soia/issues/33))
+
 ## [0.2.12] - 2026-09-19
 
 ### Features
@@ -219,7 +235,6 @@
 
 - Added a Disable Subtitles option to force subtitles off on file load.
 - Added persistent manual window state restoration.
-- Added a link to the Soia subreddit in Settings.
 
 ### Improvements
 

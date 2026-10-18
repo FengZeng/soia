@@ -19,19 +19,18 @@ You can also go to System Settings > Privacy & Security and click "Open Anyway" 
 
 The app is open-source and its code is publicly available for anyone to inspect.
 
-## [0.2.12] - 2026-09-19
+## [0.2.13] - 2026-10-18
 
 ### Highlights
 
-* **User mpv config file support** ([#12](https://github.com/FengZeng/soia/issues/12))
-  Point Soia at your own mpv config file in Settings > General and it is loaded at startup.
-  **Note:** not every mpv option is fully compatible with Soia's rendering and playback pipeline, so some settings may be ignored or behave differently. Changes take effect after a restart.
+* **Add network sources from the Remote Controller**
+  Create WebDAV, SMB, and HTTP DLNA connections directly from the browser-based Remote Controller, without returning to the desktop app.
 
-* **Correct HDR and Dolby Vision colors on macOS**
-  Fixed washed-out or overly dark HDR and Dolby Vision playback on macOS with display-P3/PQ output hints and perceptual gamut mapping.
+* **Safer local HTTPS WebDAV connections**
+  Soia can now trust and pin private or self-signed certificates from local HTTPS WebDAV servers. A saved connection continues to require the same certificate, protecting it from unexpected certificate changes.
 
-* **Sorting in the Network browser** ([#30](https://github.com/FengZeng/soia/issues/30))
-  Sort network folders and files by name or date added, ascending or descending. Folders stay at the top in every sort mode.
+* **Easier network address entry**
+  WebDAV and HTTP DLNA addresses no longer require an explicit URL scheme. Addresses such as `nas.local:5244/dav` are automatically treated as HTTP URLs.
 
-* **Simplified Chinese support**
-  Added a Language setting in Settings > General with Simplified Chinese (简体中文) alongside English.
+* **Playback and settings cleanup** ([#33](https://github.com/FengZeng/soia/issues/33))
+  Fixed automatic audio track selection after playback stops, and removed the community link from Settings > About.
