@@ -30,4 +30,5 @@ export interface MediaTrack {
     is_default?: boolean;
     forced?: boolean;
     external?: boolean;
+    external_filename?: string;
 }

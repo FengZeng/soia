@@ -471,7 +471,7 @@ const {
 const onFileLoaded = async () => {
     await onFileLoadedBase();
     if (subtitlesDisabled.value) {
-        subtitleAppearance.forceDisableSubtitles();
+        await tracks.setSubtitlesDisabled(true);
     }
     await adjustments.applyColorAdjustmentsForMedia(player.state.media.url);
     await adjustments.applyCropZoomForMedia(player.state.media.url);

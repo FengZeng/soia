@@ -235,24 +235,6 @@ fn matching_subtitle_entries(
     scored.into_iter().map(|(_, _, entry)| entry).collect()
 }
 
-fn resolve_network_subtitle_url(
-    connection: &crate::store::network_connection_store::NetworkConnectionRecord,
-    protocol_hint: &str,
-    path: &str,
-) -> Result<String, String> {
-    let playback_url =
-        crate::network::service::resolve_network_playback_url(connection, Some(protocol_hint), path)?;
-    let playback_url = crate::mpv::prepare_network_stream_url(
-        protocol_hint,
-        &playback_url,
-        &connection.username,
-        &connection.password,
-        connection.tls_certificate_der.as_deref(),
-    )?;
-    Ok(crate::mpv::rewrite_network_stream_url(protocol_hint, &playback_url)
-        .unwrap_or(playback_url))
-}
-
 async fn network_subtitle_matches(
     app: &tauri::AppHandle,
     connection_id: &str,
@@ -325,20 +307,20 @@ async fn network_subtitle_matches(
     let matches = matching_subtitle_entries(&media_names, current_path, entries);
     Ok(matches
         .into_iter()
-        .filter_map(|entry| {
+        .map(|entry| {
             let path = match protocol {
                 crate::network::service::BrowseProtocol::Webdav => {
-                    resolve_network_subtitle_url(&connection, "webdav", &entry.path).ok()?
+                    crate::playback_source::create_webdav_playback_key(connection_id, &entry.path)
                 }
                 crate::network::service::BrowseProtocol::Smb => {
-                    resolve_network_subtitle_url(&connection, "smb", &entry.path).ok()?
+                    crate::playback_source::create_smb_playback_key(connection_id, &entry.path)
                 }
                 crate::network::service::BrowseProtocol::Dlna => entry.path,
             };
-            Some(ExternalSubtitleMatch {
+            ExternalSubtitleMatch {
                 path,
                 name: entry.name,
-            })
+            }
         })
         .collect())
 }

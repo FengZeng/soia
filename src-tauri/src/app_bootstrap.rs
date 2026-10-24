@@ -137,6 +137,7 @@ fn build_app_state(
             Arc::new(crate::casting::ChromecastAdapter::new()),
         ]),
         playback_load_coordinator: crate::core::playback_loading::PlaybackLoadCoordinator::new(),
+        track_selection: crate::core::track_selection::TrackSelectionRuntime::default(),
         navigation_service: crate::core::navigation::NavigationService::new(),
         playlist_service: crate::core::playlist_service::PlaylistService::new(),
         playlist_source_operations: crate::core::playlist_source_operations::PlaylistSourceOperationStore::new(),

@@ -198,6 +198,8 @@ unsafe extern "C" {
     pub(super) fn mpv_load_config_file(ctx: *mut c_void, filename: *const c_char) -> c_int;
     pub(super) fn mpv_initialize(ctx: *mut c_void) -> c_int;
     pub(super) fn mpv_command(ctx: *mut c_void, args: *const *const c_char) -> c_int;
+    pub(super) fn mpv_command_async(ctx: *mut c_void, reply_userdata: u64, args: *const *const c_char) -> c_int;
+    pub(super) fn mpv_abort_async_command(ctx: *mut c_void, reply_userdata: u64);
     pub(super) fn mpv_set_option(
         ctx: *mut c_void,
         name: *const c_char,
@@ -220,6 +222,8 @@ unsafe extern "C" {
     ) -> c_int;
     pub(super) fn mpv_wait_event(ctx: *mut c_void, timeout: f64) -> *mut MpvEvent;
     pub(super) fn mpv_get_property_string(ctx: *mut c_void, name: *const c_char) -> *mut c_char;
+    pub(super) fn mpv_get_property(ctx: *mut c_void, name: *const c_char, format: mpv_format, data: *mut c_void) -> c_int;
+    pub(super) fn mpv_free_node_contents(node: *mut mpv_node);
     pub(super) fn mpv_free(data: *mut c_void);
 }
 

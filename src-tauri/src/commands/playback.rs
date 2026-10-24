@@ -10,7 +10,7 @@ use crate::protocol::{
 };
 
 use crate::{
-    json_value_to_string, mpv_command_checked, mpv_set_option_string_checked, with_mpv, AppState,
+    json_value_to_string, mpv_set_option_string_checked, with_mpv, AppState,
     OpenFileState,
 };
 
@@ -28,7 +28,7 @@ pub(crate) async fn execute_playback_command(
     state: tauri::State<'_, AppState>,
     envelope: crate::protocol::CommandEnvelopeDto,
 ) -> Result<crate::protocol::CommandResultDto, crate::protocol::CoreErrorDto> {
-    let result = state.playback_service.execute(&state, envelope).await;
+    let result = state.playback_service.execute(&app, &state, envelope).await;
     if result.is_ok() {
         emit_playback_snapshot(&app, &state.playback_state.current());
         crate::commands::casting::emit_cast_snapshot(
@@ -46,6 +46,24 @@ pub(crate) fn get_playback_snapshot(
     state.playback_state.current()
 }
 
+#[tauri::command]
+pub(crate) async fn load_external_playback_track(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    playback_key: String,
+    kind: String,
+    path: String,
+    select: bool,
+    title: String,
+) -> Result<bool, String> {
+    let kind = match kind.as_str() {
+        "audio" => crate::store::track_preferences::TrackKind::Audio,
+        "sub" => crate::store::track_preferences::TrackKind::Subtitle,
+        _ => return Err("unsupported external track type".into()),
+    };
+    crate::core::track_selection::load_external_track(&app, &state, &playback_key, kind, &path, select, &title).await
+}
+
 pub(crate) fn emit_playback_snapshot(
     app: &tauri::AppHandle,
     snapshot: &crate::protocol::PlaybackSnapshotDto,
@@ -56,7 +74,8 @@ pub(crate) fn emit_playback_snapshot(
 }
 
 #[tauri::command]
-pub(crate) fn mpv_run_command(
+pub(crate) async fn mpv_run_command(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     args: Vec<serde_json::Value>,
 ) -> Result<(), String> {
@@ -66,9 +85,7 @@ pub(crate) fn mpv_run_command(
         .map(json_value_to_string)
         .collect::<Result<Vec<_>, _>>()?;
     let args_str: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
-    with_mpv(&state, |mpv_guard| {
-        mpv_command_checked(mpv_guard, &args_str)
-    })
+    crate::core::track_selection::run_legacy_command(&app, &state, &args_str).await
 }
 
 #[tauri::command]
@@ -78,6 +95,11 @@ pub(crate) fn mpv_set_option_string(
     value: serde_json::Value,
 ) -> Result<(), String> {
     let value_str = json_value_to_string(value)?;
+    if name == "sid" {
+        if let Some(key) = state.playback_state.current().playback_key {
+            state.track_selection.cancel_restore(&key, crate::store::track_preferences::TrackKind::Subtitle);
+        }
+    }
     with_mpv(&state, |mpv_guard| {
         mpv_set_option_string_checked(mpv_guard, &name, &value_str)
     })
@@ -800,10 +822,18 @@ pub(crate) async fn load_source(
         }
     };
     let mpv_load_options = prepared.mpv_load_options.clone();
+    let track_preferences = crate::store::track_preferences::load(app, &source_key)
+        .unwrap_or_else(|error| {
+            log::warn!("failed to load track preferences: {error}");
+            Default::default()
+        });
+    let subtitles_disabled = crate::store::ui_state_store::load_setting_value(app, "DISABLE_SUBTITLES")
+        .ok().flatten().as_deref() == Some("On");
     let effective_title = preferred_title.clone().or(prepared.title.clone());
     let load_result = state
         .playback_load_coordinator
         .execute_if_current(generation, || {
+            state.track_selection.begin(generation, source_key.clone(), track_preferences, subtitles_disabled);
             if let Err(error) = app.emit(
                 "playback-load-prepared",
                 PlaybackLoadPreparedPayload {

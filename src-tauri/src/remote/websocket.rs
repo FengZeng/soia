@@ -373,7 +373,7 @@ async fn handle_websocket_text(
                         warn!("remote control: failed to emit seek start: {error}");
                     }
                 }
-                match app_state.playback_service.execute(&app_state, envelope).await {
+                match app_state.playback_service.execute(&state.app_handle, &app_state, envelope).await {
                     Ok(result) => WebSocketServerMessage::CommandResult { result },
                     Err(error) => {
                         if is_seek {

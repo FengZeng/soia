@@ -1,5 +1,6 @@
 use super::ffi::{
     mpv_command, mpv_destroy, mpv_event_id, mpv_format, mpv_free, mpv_get_property_string,
+    mpv_get_property, mpv_free_node_contents,
     mpv_node, mpv_observe_property, mpv_wait_event, MpvEventEndFile, MpvEventProperty,
 };
 use super::hdr_output::HdrOutputController;
@@ -8,7 +9,7 @@ use crate::AppState;
 use log::{debug, error, info, trace, warn};
 use serde::Serialize;
 use std::ffi::{c_void, CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -137,6 +138,7 @@ struct MediaTrack {
     is_default: Option<bool>,
     forced: Option<bool>,
     external: Option<bool>,
+    external_filename: Option<String>,
 }
 
 impl From<&MediaTrack> for crate::protocol::MediaTrackDto {
@@ -163,6 +165,7 @@ impl From<&MediaTrack> for crate::protocol::MediaTrackDto {
             is_default: track.is_default,
             forced: track.forced,
             external: track.external,
+            external_filename: track.external_filename.clone(),
         }
     }
 }
@@ -565,35 +568,43 @@ unsafe fn apply_audio_route(
     }
 }
 
-unsafe fn apply_carried_track_ids(client: *mut c_void, sid: i64, aid: i64) {
-    let set_cmd = CString::new("set").expect("MPV command contains null byte");
-
-    for (name, value) in carried_track_ids(sid, aid) {
-        let property_name = CString::new(name).expect("MPV property name contains null byte");
-        let property_value = CString::new(value.to_string())
-            .expect("MPV property value contains null byte");
-        let args: [*const c_char; 4] = [
-            set_cmd.as_ptr(),
-            property_name.as_ptr(),
-            property_value.as_ptr(),
-            std::ptr::null(),
-        ];
-        let result = mpv_command(client, args.as_ptr());
-        if result < 0 {
-            warn!(
-                "track carry-over: failed to set {}={} (mpv error {})",
-                name, value, result
-            );
-        }
+pub(super) unsafe fn set_track_id(client: *mut c_void, kind: crate::store::track_preferences::TrackKind, id: i64) -> bool {
+    let value = if id == 0 { "no".to_string() } else { id.to_string() };
+    let result = run_client_command(client, &["set", kind.property(), &value]);
+    if result < 0 {
+        warn!("failed to restore {}={value}: mpv error {result}", kind.property());
     }
+    result >= 0
 }
 
-fn carried_track_ids(sid: i64, aid: i64) -> Vec<(&'static str, i64)> {
-    let mut tracks = vec![("sid", sid)];
-    if aid > 0 {
-        tracks.push(("aid", aid));
+unsafe fn apply_carried_track_ids(app: &AppHandle, client: *mut c_void, playback: &Option<(u64, String)>, sid: i64, aid: i64) {
+    let Some((generation, _)) = playback else { return };
+    app.state::<AppState>().track_selection.carry(*generation, sid, aid, |kind, id| {
+        set_track_id(client, kind, id);
+    });
+}
+
+pub(super) unsafe fn read_tracks_for_restore(client: *mut c_void) -> Vec<crate::protocol::MediaTrackDto> {
+    let mut node: mpv_node = std::mem::zeroed();
+    let name = CString::new("track-list").unwrap();
+    if mpv_get_property(client, name.as_ptr(), mpv_format::MPV_FORMAT_NODE, &mut node as *mut _ as *mut c_void) < 0 {
+        return Vec::new();
     }
-    tracks
+    let value = parse_node(&mut node);
+    mpv_free_node_contents(&mut node);
+    value.as_array().into_iter().flatten().map(|item| crate::protocol::MediaTrackDto {
+        id: item["id"].as_i64().unwrap_or(0),
+        track_type: item["type"].as_str().unwrap_or("").to_string(),
+        external: item["external"].as_bool(),
+        external_filename: item["external-filename"].as_str().map(str::to_string),
+        ..Default::default()
+    }).collect()
+}
+
+pub(super) unsafe fn restore_track_preferences(app: &AppHandle, client: *mut c_void, generation: u64, tracks: &[crate::protocol::MediaTrackDto]) {
+    app.state::<AppState>().track_selection.restore(generation, tracks, |kind, id| {
+        set_track_id(client, kind, id)
+    });
 }
 
 #[cfg(target_os = "linux")]
@@ -779,6 +790,7 @@ pub(super) fn mpv_event_loop(
     let mut is_current_file_loaded: bool = false;
     let mut starting_playback: Option<(u64, String)> = None;
     let mut loaded_playback: Option<(u64, String)> = None;
+    let mut external_tracks = super::external_tracks::ExternalTrackLoader::default();
 
     unsafe {
         observe_property(
@@ -902,6 +914,7 @@ pub(super) fn mpv_event_loop(
             if stop_flag.load(Ordering::Relaxed) {
                 break;
             }
+            external_tracks.pump(&app_handle, event_client, &loaded_playback);
             let event = mpv_wait_event(event_client, 0.1);
             if pending_audio_reload_at.is_some_and(|deadline| Instant::now() >= deadline) {
                 pending_audio_reload_at = None;
@@ -944,7 +957,11 @@ pub(super) fn mpv_event_loop(
             }
 
             match (*event).event_id {
+                mpv_event_id::MPV_EVENT_COMMAND_REPLY => {
+                    external_tracks.complete(&app_handle, event_client, (*event).reply_usrdata, (*event).error, &loaded_playback);
+                }
                 mpv_event_id::MPV_EVENT_START_FILE => {
+                    external_tracks.cancel_all(event_client);
                     #[cfg(debug_assertions)]
                     debug!("MPV Event Loop: MPV_EVENT_START_FILE received.");
                     set_render_target_visible(&app_handle, true);
@@ -1024,10 +1041,18 @@ pub(super) fn mpv_event_loop(
                     is_playing.store(true, Ordering::Relaxed);
                     is_current_file_loaded = true;
                     loaded_playback = starting_playback.take();
+                    if let Some((generation, key)) = loaded_playback.as_ref() {
+                        let tracks = read_tracks_for_restore(event_client);
+                        let sources = app_handle.state::<AppState>().track_selection.saved_external_tracks(*generation, &tracks);
+                        crate::core::external_tracks::restore_saved(&app_handle, *generation, key, sources);
+                        restore_track_preferences(&app_handle, event_client, *generation, &tracks);
+                    }
                     if let Some(title) = last_media_title.as_deref() {
                         if series_matcher.on_media_title_change(title) {
                             apply_carried_track_ids(
+                                &app_handle,
                                 event_client,
+                                &loaded_playback,
                                 carried_sid,
                                 carried_aid,
                             );
@@ -1243,7 +1268,9 @@ pub(super) fn mpv_event_loop(
                                                 && series_matcher.on_media_title_change(&title)
                                             {
                                                 apply_carried_track_ids(
+                                                    &app_handle,
                                                     event_client,
+                                                    &loaded_playback,
                                                     carried_sid,
                                                     carried_aid,
                                                 );
@@ -1655,6 +1682,7 @@ pub(super) fn mpv_event_loop(
                                                 is_default: as_bool("default"),
                                                 forced: as_bool("forced"),
                                                 external: as_bool("external"),
+                                                external_filename: as_string("external-filename"),
                                             });
                                         }
                                         // Track selected sid/aid for carry-over even when the
@@ -1668,10 +1696,15 @@ pub(super) fn mpv_event_loop(
                                             .find(|t| t.track_type == "audio" && t.selected)
                                             .map(|t| t.id)
                                             .unwrap_or(0);
-                                        let snapshot_tracks = tracks
+                                        let snapshot_tracks: Vec<_> = tracks
                                             .iter()
                                             .map(crate::protocol::MediaTrackDto::from)
                                             .collect();
+                                        if is_current_file_loaded {
+                                            if let Some((generation, _)) = loaded_playback.as_ref() {
+                                                restore_track_preferences(&app_handle, event_client, *generation, &snapshot_tracks);
+                                            }
+                                        }
                                         update_snapshot(&app_handle, |snapshot| {
                                             snapshot.tracks = snapshot_tracks;
                                         });
@@ -1764,6 +1797,7 @@ pub(super) fn mpv_event_loop(
                     }
                 }
                 mpv_event_id::MPV_EVENT_END_FILE => {
+                    external_tracks.cancel_all(event_client);
                     is_playing.store(false, Ordering::Relaxed);
                     set_render_target_visible(&app_handle, false);
                     last_is_buffering = false;
@@ -1811,6 +1845,7 @@ pub(super) fn mpv_event_loop(
                     );
                 }
                 mpv_event_id::MPV_EVENT_IDLE => {
+                    external_tracks.cancel_all(event_client);
                     seek_speed_refresh_active = false;
                     next_seek_speed_refresh_at = None;
                     starting_playback = None;
@@ -1844,6 +1879,10 @@ pub(super) fn mpv_event_loop(
     }
 
     unsafe {
+        external_tracks.cancel_all(event_client);
+        for request in app_handle.state::<AppState>().track_selection.take_external_requests() {
+            request.finish(Ok(false));
+        }
         mpv_destroy(event_client);
     }
     eof_reached.store(false, Ordering::SeqCst);

@@ -241,7 +241,7 @@ fn select_play_history_delete_candidates(
     collect_rows(rows)
 }
 
-fn trim_play_history(tx: &Transaction<'_>, device_id: &str, now: i64) -> Result<(), String> {
+pub(super) fn trim_play_history(tx: &Transaction<'_>, device_id: &str, now: i64) -> Result<(), String> {
     let mut stmt = tx
         .prepare(
             "SELECT id, path, record_version
@@ -438,6 +438,40 @@ mod resume_tests {
             resolve_resume_position_from_history(Some((99.5, 100.0)), 12.0),
             12.0,
         );
+    }
+}
+
+#[cfg(test)]
+mod track_preference_tests {
+    use super::*;
+    use crate::protocol::PlaybackSnapshotDto;
+    use crate::store::track_preferences::{save_to_connection, TrackKind};
+
+    #[test]
+    fn stale_history_and_progress_updates_preserve_core_track_preferences() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        media_db::ensure_schema(&mut conn).unwrap();
+        let snapshot = PlaybackSnapshotDto { playback_key: Some("video".into()), ..Default::default() };
+        save_to_connection(&mut conn, &snapshot, TrackKind::Audio, 2, Some("dub.mka"), "device").unwrap();
+        save_to_connection(&mut conn, &snapshot, TrackKind::Subtitle, 0, None, "device").unwrap();
+        let entry: PlayHistoryEntry = serde_json::from_value(serde_json::json!({
+            "path": "video", "lastPosition": 50, "duration": 120, "lastPlayedAt": 1,
+        })).unwrap();
+        let tx = conn.transaction().unwrap();
+        upsert_play_history_entries(&tx, &[entry.clone()], "device", 2).unwrap();
+        upsert_play_history_progress_entry(&tx, &entry, "device", 3).unwrap();
+        tx.commit().unwrap();
+        let selection: (Option<i64>, Option<i64>, Option<String>, f64) = conn.query_row(
+            "SELECT selected_audio_track_id, selected_subtitle_track_id, selected_audio_track_path,
+                    last_position FROM play_history WHERE path = 'video'", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(selection, (Some(2), Some(0), Some("dub.mka".into()), 50.0));
+        let tx = conn.transaction().unwrap();
+        delete_play_history_except(&tx, &[], "device", 4).unwrap();
+        tx.commit().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM play_history", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
 }
 

@@ -113,7 +113,7 @@ export const useSubtitleState = (
         activeSubTarget.value = "primary";
         secondarySubId.value = 0;
         await invoke("mpv_set_option_string", { name: "secondary-sid", value: "no" });
-        await coreClient.execute({ type: "disableSubtitles" });
+        await invoke("mpv_set_option_string", { name: "sid", value: "no" });
     };
 
     const enableAutoSubtitleSelection = async () => {

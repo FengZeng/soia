@@ -242,10 +242,20 @@ export const useMediaTracks = (
         mode: "select" | "auto",
         mediaKey?: string,
         title?: string,
+        background = false,
     ): Promise<boolean> => {
         if (mediaKey && getMediaKey() !== mediaKey) return false;
         try {
             const displayTitle = title?.trim() || titleFromPath(path);
+            if (background && mediaKey) {
+                return await invoke<boolean>("load_external_playback_track", {
+                    playbackKey: mediaKey,
+                    kind: "sub",
+                    path,
+                    select: mode === "select",
+                    title: displayTitle,
+                });
+            }
             await invoke("mpv_run_command", {
                 args: ["sub-add", path, mode, displayTitle],
             });
@@ -321,6 +331,7 @@ export const useMediaTracks = (
             next.mode,
             next.mediaKey,
             next.title,
+            true,
         );
         if (generation !== backgroundSubtitleGeneration) {
             trackUpdateWaiter.cancel();
@@ -412,6 +423,7 @@ export const useMediaTracks = (
         is_default: track.isDefault ?? undefined,
         forced: track.forced ?? undefined,
         external: track.external ?? undefined,
+        external_filename: track.externalFilename ?? undefined,
     });
 
     const handleTracksSnapshot = (tracks: MediaTrackDto[]) => {
@@ -661,8 +673,12 @@ export const useMediaTracks = (
         for (const audioPath of audioPaths) {
             if (getMediaKey() !== mediaKey) return;
             try {
-                await invoke("mpv_run_command", {
-                    args: ["audio-add", audioPath, "select"],
+                await invoke("load_external_playback_track", {
+                    playbackKey: mediaKey,
+                    kind: "audio",
+                    path: audioPath,
+                    select: true,
+                    title: titleFromPath(audioPath),
                 });
             } catch {
                 // ignore if file is missing or mpv rejects it

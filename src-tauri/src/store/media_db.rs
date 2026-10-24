@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 pub const MAX_PLAY_HISTORY: i64 = 100;
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 pub fn now_millis() -> i64 {
     Utc::now().timestamp_millis()
@@ -51,7 +51,7 @@ pub fn local_device_id(conn: &Connection) -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 
-fn ensure_schema(conn: &mut Connection) -> Result<(), String> {
+pub(super) fn ensure_schema(conn: &mut Connection) -> Result<(), String> {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;
@@ -61,15 +61,22 @@ fn ensure_schema(conn: &mut Connection) -> Result<(), String> {
         migrate_schema_v2_to_v3(conn)?;
         migrate_schema_v3_to_v4(conn)?;
         migrate_schema_v4_to_v5(conn)?;
+        migrate_schema_v5_to_v6(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
     } else if version == 3 {
         migrate_schema_v3_to_v4(conn)?;
         migrate_schema_v4_to_v5(conn)?;
+        migrate_schema_v5_to_v6(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
     } else if version == 4 {
         migrate_schema_v4_to_v5(conn)?;
+        migrate_schema_v5_to_v6(conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+            .map_err(|e| e.to_string())?;
+    } else if version == 5 {
+        migrate_schema_v5_to_v6(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(|e| e.to_string())?;
     } else if version != SCHEMA_VERSION {
@@ -227,6 +234,10 @@ fn reset_schema(conn: &Connection) -> Result<(), String> {
              is_live_playback INTEGER NOT NULL DEFAULT 0 CHECK (is_live_playback IN (0, 1)),
              external_audio TEXT NOT NULL DEFAULT '[]',
              external_sub TEXT NOT NULL DEFAULT '[]',
+             selected_audio_track_id INTEGER CHECK (selected_audio_track_id > 0),
+             selected_subtitle_track_id INTEGER CHECK (selected_subtitle_track_id >= 0),
+             selected_audio_track_path TEXT,
+             selected_subtitle_track_path TEXT,
              created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL,
              record_version INTEGER NOT NULL DEFAULT 1 CHECK (record_version > 0),
@@ -394,6 +405,22 @@ fn migrate_schema_v4_to_v5(conn: &mut Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn migrate_schema_v5_to_v6(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for (column, definition) in [
+        ("selected_audio_track_id", "INTEGER CHECK (selected_audio_track_id > 0)"),
+        ("selected_subtitle_track_id", "INTEGER CHECK (selected_subtitle_track_id >= 0)"),
+        ("selected_audio_track_path", "TEXT"),
+        ("selected_subtitle_track_path", "TEXT"),
+    ] {
+        if !table_has_column(&tx, "play_history", column)? {
+            tx.execute_batch(&format!("ALTER TABLE play_history ADD COLUMN {column} {definition};"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
@@ -573,6 +600,34 @@ mod tests {
             })
             .expect("read playlist state");
         assert_eq!(state_count, 1);
+    }
+
+    #[test]
+    fn schema_v5_migration_preserves_history_and_installation_identity() {
+        let mut conn = memory_conn();
+        ensure_schema(&mut conn).unwrap();
+        let device = local_device_id(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE play_history DROP COLUMN selected_audio_track_id;
+             ALTER TABLE play_history DROP COLUMN selected_subtitle_track_id;
+             ALTER TABLE play_history DROP COLUMN selected_audio_track_path;
+             ALTER TABLE play_history DROP COLUMN selected_subtitle_track_path;
+             INSERT INTO play_history (id, path, last_position, duration, last_played_at,
+                 created_at, updated_at, last_modified_by_device_id)
+             VALUES ('history', 'video', 42, 120, 1, 1, 1, 'device');
+             PRAGMA user_version = 5;",
+        ).unwrap();
+        ensure_schema(&mut conn).unwrap();
+        ensure_schema(&mut conn).unwrap();
+        assert_eq!(local_device_id(&conn).unwrap(), device);
+        let row: (f64, Option<i64>, Option<i64>, Option<String>, Option<String>) = conn.query_row(
+            "SELECT last_position, selected_audio_track_id, selected_subtitle_track_id,
+                    selected_audio_track_path, selected_subtitle_track_path FROM play_history",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        ).unwrap();
+        assert_eq!(row, (42.0, None, None, None, None));
+        let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 6);
     }
 
     #[test]

@@ -373,6 +373,7 @@ pub struct MediaTrackDto {
     pub is_default: Option<bool>,
     pub forced: Option<bool>,
     pub external: Option<bool>,
+    pub external_filename: Option<String>,
 }
 
 /// Stable, transport-safe playback state sent to Tauri and WebSocket clients.

@@ -1,4 +1,5 @@
 mod event_loop;
+mod external_tracks;
 mod ffi;
 mod handle;
 mod hdr_output;

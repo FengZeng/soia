@@ -197,6 +197,7 @@ impl PlaybackService {
 
     pub(crate) async fn execute(
         &self,
+        app: &tauri::AppHandle,
         state: &AppState,
         envelope: CommandEnvelopeDto,
     ) -> Result<CommandResultDto, CoreErrorDto> {
@@ -242,14 +243,34 @@ impl PlaybackService {
         validate_track_selection(&envelope.command, &state.playback_state.current())?;
 
         let command = envelope.command.clone();
+        let selection_snapshot = state.playback_state.current();
+        let selection = super::track_selection::selection_command(&command);
+        if let (Some((kind, _)), Some(key)) = (selection, selection_snapshot.playback_key.as_deref()) {
+            state.track_selection.cancel_restore(key, kind);
+        }
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
         self.sender
             .send(QueuedCommand { command: envelope.command, response: response_sender })
             .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?;
-        let result = response_receiver
+        let applied = response_receiver
             .recv()
-            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?
-            .and_then(|()| {
+            .map_err(|error| CoreErrorDto::ExecutionFailed { message: error.to_string() })?;
+        if applied.is_ok() {
+            if let Some((kind, track_id)) = selection {
+                let external_path = selection_snapshot.tracks.iter()
+                    .find(|track| track.track_type == kind.mpv_type() && track.id == track_id)
+                    .and_then(|track| track.external_filename.as_deref());
+                let saved = external_path.map(|url| state.track_selection.external_source(
+                    selection_snapshot.playback_key.as_deref().unwrap_or(""), kind, url,
+                )).transpose().and_then(|source| crate::store::track_preferences::save(
+                    app, &selection_snapshot, kind, track_id, source.as_deref(),
+                ));
+                if let Err(error) = saved {
+                    log::warn!("failed to save track selection: {error}");
+                }
+            }
+        }
+        let result = applied.and_then(|()| {
                 let observed_snapshot = state.playback_state.current();
                 if command_is_already_reflected(&command, &observed_snapshot) {
                     return Ok(CommandResultDto {

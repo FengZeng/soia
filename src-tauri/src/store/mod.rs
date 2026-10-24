@@ -5,5 +5,6 @@ pub mod network_connection_store;
 pub mod play_history;
 pub mod playlist_store;
 pub mod playback_store;
+pub(crate) mod track_preferences;
 pub mod storage_paths;
 pub mod ui_state_store;
