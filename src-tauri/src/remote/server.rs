@@ -5,6 +5,7 @@ use super::state::{
     REMOTE_CONTROL_RUNTIME, REMOTE_CONTROL_TOKEN,
 };
 use super::websocket::websocket;
+use crate::store::ui_state_store;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, options, post};
 use axum::Router;
@@ -23,12 +24,15 @@ pub(crate) fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    let enabled = ui_state_store::load_ui_state(&app_handle)?
+        .remote_control_enabled
+        .unwrap_or(false);
     let bind_addr = std::env::var(BIND_ENV_VAR).unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
     let listener = StdTcpListener::bind(&bind_addr).map_err(|error| error.to_string())?;
     let addr = listener.local_addr().map_err(|error| error.to_string())?;
     let token = resolve_auth_token(TOKEN_ENV_VAR);
     let control_runtime = Arc::new(Mutex::new(RemoteControlRuntime {
-        enabled: false,
+        enabled,
         pair_code: None,
         sessions: Default::default(),
         playlist_mutation_results: Default::default(),

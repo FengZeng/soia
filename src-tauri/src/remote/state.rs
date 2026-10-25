@@ -1,4 +1,5 @@
 use crate::protocol::{CoreErrorDto, PlaylistSummaryDto};
+use crate::store::ui_state_store::{self, UiState};
 use qrcode::QrCode;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -113,9 +114,20 @@ pub(crate) fn get_remote_control_status() -> Result<RemoteControlStatus, String>
     })
 }
 
-pub(crate) fn set_remote_control_enabled(enabled: bool) -> Result<RemoteControlStatus, String> {
+pub(crate) fn set_remote_control_enabled(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<RemoteControlStatus, String> {
     let runtime = remote_runtime()?;
     let mut runtime = runtime.lock().map_err(|error| error.to_string())?;
+    ui_state_store::save_ui_state(
+        app,
+        UiState {
+            active_panel: None,
+            remote_control_enabled: Some(enabled),
+            ..UiState::default()
+        },
+    )?;
     runtime.enabled = enabled;
     runtime.pair_code = None;
     if !enabled {

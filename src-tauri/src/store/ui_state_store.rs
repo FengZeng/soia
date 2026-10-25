@@ -35,6 +35,8 @@ pub struct UiState {
     #[serde(default)]
     pub settings: Option<SettingsState>,
     #[serde(default)]
+    pub remote_control_enabled: Option<bool>,
+    #[serde(default)]
     pub rendering: Option<RenderingState>,
     #[serde(default)]
     pub audio: Option<crate::audio_output::AudioSettings>,
@@ -63,6 +65,7 @@ impl Default for UiState {
             window_state: None,
             network: None,
             settings: None,
+            remote_control_enabled: None,
             rendering: None,
             audio: None,
             playback_adjustments: None,
@@ -84,6 +87,7 @@ impl UiState {
             window_state: incoming.window_state.or(self.window_state),
             network: incoming.network.or(self.network),
             settings: incoming.settings.or(self.settings),
+            remote_control_enabled: incoming.remote_control_enabled.or(self.remote_control_enabled),
             rendering: incoming.rendering.or(self.rendering),
             audio: incoming.audio.or(self.audio),
             playback_adjustments: match (self.playback_adjustments, incoming.playback_adjustments) {

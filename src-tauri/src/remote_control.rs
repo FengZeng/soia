@@ -25,9 +25,10 @@ pub(crate) fn get_remote_control_status() -> Result<state::RemoteControlStatus, 
 
 #[tauri::command]
 pub(crate) fn set_remote_control_enabled(
+    app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<state::RemoteControlStatus, String> {
-    state::set_remote_control_enabled(enabled)
+    state::set_remote_control_enabled(&app, enabled)
 }
 
 #[tauri::command]
